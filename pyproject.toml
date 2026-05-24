@@ -1,0 +1,40 @@
+[project]
+name = "slack-bot"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.136.3",
+    "uvicorn[standard]==0.47.0",
+    "redis==7.4.0",
+    "rq==2.9.0",
+    "httpx==0.28.1",
+    "openai>=2.38.0",
+    "ruff>=0.15.14",
+    "flake8-pyproject>=1.2.4",
+]
+
+[tool.flake8]
+max-line-length = 170
+exclude = [".git", "__pycache__", ".venv", "config/"]
+
+[tool.ruff]
+required-version = ">=0.15.14"
+src = ["src", "tests"]
+indent-width = 4
+line-length = 170
+output-format = "full"
+target-version = "py312"
+exclude = [".venv", "*.ipynb", "config/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "SIM"]
+ignore = ["SIM108", "UP006", "UP015", "UP035", "UP045"]
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 60
+indent-style = "space"
+preview = true
+quote-style = "double"
+skip-magic-trailing-comma = true
+exclude = ["generated"]
