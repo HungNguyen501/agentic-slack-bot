@@ -19,7 +19,8 @@ DATABRICKS_WAREHOUSE_ID = os.environ["DATABRICKS_WAREHOUSE_ID"]
 DATABRICKS_ACCESS_TOKEN = os.environ["DATABRICKS_ACCESS_TOKEN"]
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 
-PROMPT_FILE_PATH = os.path.join(os.path.dirname(__file__), "system_prompt.md")
+SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
+ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gpt-4o-mini")
 HISTORY_TTL = 86400  # 24 hours
 MAX_HISTORY_TURNS = 20  # keep last 20 user/assistant pairs
 
@@ -27,18 +28,114 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 redis_client = Redis.from_url(REDIS_URL)
 
 
-def _load_system_prompt() -> str:
-    """Read from disk on every call so prompt edits take effect without a restart.
+def _parse_skill_file(filename: str) -> dict:
+    """Parse frontmatter and body from a skill .md file.
 
-    Returns:
-        System prompt text with leading/trailing whitespace stripped.
+    Frontmatter format (between --- delimiters):
+        name: jobs
+        always: false
+        description: ...
     """
+    with open(os.path.join(SKILLS_DIR, filename), encoding="utf-8") as fh:
+        content = fh.read()
+    meta, body = {}, content
+    if content.startswith("---\n"):
+        parts = content.split("---\n", 2)
+        if len(parts) == 3:
+            for line in parts[1].splitlines():
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    meta[k.strip()] = v.strip()
+            body = parts[2]
+    return {
+        "filename": filename,
+        "name": meta.get("name", filename),
+        "always": meta.get("always", "false").lower() == "true",
+        "description": meta.get("description", ""),
+        "body": body.strip(),
+    }
+
+
+def _load_all_skills() -> list[dict]:
+    """Load and parse all skill files from disk, sorted by filename."""
+    return [
+        _parse_skill_file(f)
+        for f in sorted(f for f in os.listdir(SKILLS_DIR) if f.endswith(".md"))
+    ]
+
+
+def _select_skills(question: str, selectable: list[dict], history: list[dict] | None = None) -> set[str]:
+    """Router: one LLM call to pick which domain skills are relevant for this question.
+
+    Falls back to all skills if the call fails.
+    """
+    if not selectable:
+        return set()
+
+    skill_menu = "\n".join(
+        f'- "{s["name"]}": {s["description"]}' for s in selectable
+    )
+
+    # Give the router the last 5 turns so vague follow-ups ("try again", "now filter by X")
+    # inherit the domain context from the prior exchange.
+    context = ""
+    if history:
+        recent = history[-10:]  # last 5 user/assistant pairs
+        lines = [
+            f"{m['role'].capitalize()}: {str(m.get('content', ''))[:300]}"
+            for m in recent
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+        if lines:
+            context = "\n\nPrior conversation (for context only):\n" + "\n".join(lines)
+
+    try:
+        response = openai_client.chat.completions.create(
+            model=ROUTER_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a skill router for a Databricks data assistant. "
+                        "Given a user question, return a JSON object with key \"skills\" "
+                        "containing an array of skill names needed to answer it. "
+                        "Include every skill that could be relevant — when in doubt, include it.\n\n"
+                        "Available skills:\n" + skill_menu + context
+                    ),
+                },
+                {"role": "user", "content": question},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=100,
+        )
+        result = json.loads(response.choices[0].message.content)
+        selected = {s.strip().lower() for s in result.get("skills", []) if isinstance(s, str)}
+        if not selected:
+            log.warning("Router returned no skills; falling back to all skills")
+            return {s["name"] for s in selectable}
+        log.info("Router selected skills: %s", selected)
+        return selected
+    except Exception:
+        log.error("Skill router failed, falling back to all skills:\n%s", traceback.format_exc())
+        return {s["name"] for s in selectable}
+
+
+def _load_system_prompt(question: str, history: list[dict] | None = None) -> str:
+    """Build the system prompt by loading always-on skills + router-selected domain skills."""
     today = date.today()
-    cutoff = today - timedelta(days=90)
-    base = open(PROMPT_FILE_PATH).read().strip()
+    cutoff = today - timedelta(days=180)
+
+    all_skills = _load_all_skills()
+    always_skills = [s for s in all_skills if s["always"]]
+    selectable = [s for s in all_skills if not s["always"]]
+
+    selected_names = _select_skills(question, selectable, history)
+    active = always_skills + [s for s in selectable if s["name"].lower() in selected_names]
+
+    base = "\n\n---\n\n".join(s["body"] for s in active)
     return (
         f"Today's date: {today.isoformat()}\n"
-        f"90-day window cutoff: {cutoff.isoformat()} — any date on or after this is within the allowed window.\n\n"
+        f"180-day window cutoff: {cutoff.isoformat()} — any date on or after this is within the allowed window.\n\n"
         f"{base}"
     )
 
@@ -144,7 +241,7 @@ def _run_databricks_query(sql: str) -> str:
         msg = data.get("status", {}).get("error", {}).get("message", "unknown error")
         return f"Query failed: {msg}"
     if state == "CANCELLED":
-        return "Query was cancelled (exceeded 30s timeout)."
+        return "Query was cancelled (exceeded 50s timeout)."
 
     manifest = data.get("manifest", {})
     columns = [c["name"] for c in manifest.get("schema", {}).get("columns", [])]
@@ -188,7 +285,7 @@ def run_agent(question: str, thread_ts: str) -> str:
     history = _load_history(thread_ts)
     log.info("Loaded %d history messages for thread %s", len(history), thread_ts)
 
-    messages: list[dict] = [{"role": "system", "content": _load_system_prompt()}]
+    messages: list[dict] = [{"role": "system", "content": _load_system_prompt(question, history)}]
     messages.extend(history)
     messages.append({"role": "user", "content": question})
 

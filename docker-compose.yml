@@ -35,7 +35,7 @@ services:
   worker:
     build: .
     volumes:
-      - ./src/worker/system_prompt.md:/app/worker/system_prompt.md:ro
+      - ./src/worker/skills:/app/worker/skills
     environment:
       SERVICE: worker
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}

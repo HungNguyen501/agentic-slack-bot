@@ -79,9 +79,6 @@ def reply_to_mention(channel: str, thread_ts: str, user: str | None = None, text
             log.exception("Agent error: %s", exc)
             answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
 
-    if user:
-        answer = f"<@{user}> {answer}"
-
     ts = _post_slack_message(channel, thread_ts, answer)
     log.info("Posted reply to %s (thread %s)", channel, thread_ts)
     return ts
