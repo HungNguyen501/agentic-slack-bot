@@ -12,7 +12,7 @@ build-image:
 	docker buildx build -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
 
 compose-up:
-	@docker compose up -d
+	@docker compose up -d --build
 
 compose-down:
 	@docker compose down --remove-orphans

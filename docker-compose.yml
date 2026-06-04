@@ -44,12 +44,26 @@ services:
       DATABRICKS_HOST: ${DATABRICKS_HOST}
       DATABRICKS_WAREHOUSE_ID: ${DATABRICKS_WAREHOUSE_ID}
       DATABRICKS_ACCESS_TOKEN: ${DATABRICKS_ACCESS_TOKEN}
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
     deploy:
       replicas: ${WORKER_COUNT:-2}
+
+  scheduler:
+    build: .
+    environment:
+      SERVICE: scheduler
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      REDIS_URL: redis://redis:6379/0
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
+      SCHEDULER_INTERVAL: "180"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   ngrok:
     image: ngrok/ngrok:latest

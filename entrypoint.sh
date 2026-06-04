@@ -8,8 +8,11 @@ case "$SERVICE" in
   worker)
     exec rq worker slack_events
     ;;
+  scheduler)
+    exec python -m scheduler.app
+    ;;
   *)
-    echo "ERROR: SERVICE must be 'receiver' or 'worker', got: '${SERVICE}'"
+    echo "ERROR: SERVICE must be 'receiver', 'worker', or 'scheduler', got: '${SERVICE}'"
     exit 1
     ;;
 esac
