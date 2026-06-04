@@ -1,10 +1,15 @@
 ---
 name: jobs
 always: false
-description: Use when the question is about job definitions, task structures, task dependencies, job schedules, trigger types, job run history, run success/failure rates, run durations, or pipeline workflows.
+description: Use when the question is about job definitions, task structures, task dependencies, job schedules, trigger types, individual job run detail rows (run IDs, termination codes, task-level breakdown), or pipeline workflows. For aggregated run stats (success rates, p95 duration, failure counts over time) use the semantic skill instead.
 ---
 
 ## Skill: Jobs & Pipelines
+
+> **Aggregation questions (success rate, failure rate, p95 duration, run counts over time):**
+> Use `vireox_infra.semantic.vw_job_run_stats` from the **semantic** skill.
+> It pre-resolves SCD2 dedup, the jobs JOIN, and pre-computes is_success/is_failure flags.
+> Use the raw tables below only for individual run rows, task-level detail, or job definition lookup.
 
 **system.lakeflow.jobs** *(SCD2 — no time restriction)*
 - Columns: `account_id`, `workspace_id`, `job_id`, `name`, `description`, `creator_id`, `creator_user_name`, `run_as`, `run_as_user_name`, `trigger_type`, `trigger` (struct), `paused`, `timeout_seconds`, `tags`, `create_time`, `change_time`, `delete_time`
