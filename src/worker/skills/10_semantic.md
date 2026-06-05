@@ -166,6 +166,7 @@ ORDER BY 1 DESC, 3 DESC
 | `query_date` | Calendar date (use for daily GROUP BY) |
 | `start_time` | Query start timestamp |
 | `from_result_cache` | Boolean — true if result cache served it |
+| `client_application` | Client application that issued the query (e.g. Databricks SQL, dbt, JDBC, Tableau) |
 
 **Measures (SELECT)**
 
@@ -195,6 +196,20 @@ FROM vireox_infra.semantic.vw_query_perf
 WHERE query_date >= CURRENT_DATE - INTERVAL 7 DAYS
 GROUP BY executed_by
 ORDER BY p95_ms DESC
+LIMIT 20
+```
+
+**Example — top usage by client application last 30 days:**
+```sql
+SELECT client_application,
+       SUM(total_queries)      AS queries,
+       AVG(avg_duration_ms)    AS avg_ms,
+       AVG(cache_hit_rate_pct) AS cache_hit_pct
+FROM vireox_infra.semantic.vw_query_perf
+WHERE query_date >= CURRENT_DATE - INTERVAL 30 DAYS
+  AND client_application IS NOT NULL
+GROUP BY client_application
+ORDER BY queries DESC
 LIMIT 20
 ```
 

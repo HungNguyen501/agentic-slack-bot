@@ -24,6 +24,7 @@ SELECT
   produced_rows,
   written_bytes,
   from_result_cache,
+  client_application,
   CASE WHEN execution_status = 'FINISHED' THEN 1 ELSE 0 END AS is_success,
   CASE WHEN execution_status = 'FAILED'   THEN 1 ELSE 0 END AS is_failure,
   CASE WHEN execution_status = 'CANCELED' THEN 1 ELSE 0 END AS is_cancelled,
@@ -83,6 +84,12 @@ fields:
   - name: from_result_cache
     expr: from_result_cache
     comment: "True if the result was served from the result cache"
+
+  - name: client_application
+    expr: client_application
+    comment: "Client application that issued the query (e.g. Databricks SQL, dbt, JDBC, Tableau)"
+    synonyms: [app, application, tool, client]
+    display_name: "Client Application"
 
 measures:
   - name: total_queries
