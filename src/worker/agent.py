@@ -9,6 +9,7 @@ from openai import OpenAI
 from redis import Redis
 
 from connectors import databricks, postgres
+from connectors.bots import BotConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker.agent")
@@ -18,9 +19,6 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gpt-4o-mini")
-SCHEDULE_ADMIN_USERS: frozenset[str] = frozenset({
-    "U08UQ1FG39S",  # Hung
-})
 _SCHEDULE_TOOLS = {"list_schedules", "add_schedule", "update_schedule", "remove_schedule"}
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -126,12 +124,18 @@ def _select_skills(question: str, selectable: list[dict], history: list[dict] | 
         return {s["name"] for s in selectable}
 
 
-def _load_system_prompt(question: str, history: list[dict] | None = None) -> str:
+def _load_system_prompt(
+    question: str,
+    history: list[dict] | None = None,
+    enabled_skills: list[str] | None = None,
+) -> str:
     """Build the system prompt by combining always-on skills with router-selected domain skills.
 
     Args:
         question: The user's question, used by the skill router to pick relevant domain skills.
         history: Recent conversation messages passed to the router for follow-up context.
+        enabled_skills: If non-empty, restricts selectable skills to this allowlist. An empty
+            list (the default) means all skills are available.
 
     Returns:
         Assembled system prompt string including today's date, the 180-day window cutoff,
@@ -143,6 +147,9 @@ def _load_system_prompt(question: str, history: list[dict] | None = None) -> str
     all_skills = _load_all_skills()
     always_skills = [s for s in all_skills if s["always"]]
     selectable = [s for s in all_skills if not s["always"]]
+
+    if enabled_skills:
+        selectable = [s for s in selectable if s["name"] in enabled_skills]
 
     selected_names = _select_skills(question, selectable, history)
     active = always_skills + [s for s in selectable if s["name"].lower() in selected_names]
@@ -288,7 +295,7 @@ def _get_agent_tools() -> list[dict]:
     ]
 
 
-def _dispatch_schedule_tool(name: str, args: dict) -> str:
+def _dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
     """Execute a schedule management tool and return a human-readable result string.
 
     Args:
@@ -313,7 +320,7 @@ def _dispatch_schedule_tool(name: str, args: dict) -> str:
             return f"```\n{chr(10).join(rows)}\n```"
 
         if name == "add_schedule":
-            s = postgres.add_schedule(args["cron"], args["channel"], args["question"])
+            s = postgres.add_schedule(args["cron"], args["channel"], args["question"], bot_id=bot_id)
             return f"Schedule created — id: `{s['id']}`"
 
         if name == "update_schedule":
@@ -340,14 +347,14 @@ def _dispatch_schedule_tool(name: str, args: dict) -> str:
     return f"Unknown schedule tool: {name}"
 
 
-def _dispatch_tool(name: str, args: dict, user_id: str | None) -> str:
-    """Route a single tool call to the correct handler, enforcing the schedule admin whitelist.
+def _dispatch_tool(name: str, args: dict, user_id: str | None, admin_users: frozenset[str], bot_id: str) -> str:
+    """Route a single tool call to the correct handler, enforcing the per-bot admin whitelist.
 
     Args:
         name: Tool name as returned by the LLM.
         args: Parsed JSON arguments from the LLM tool call.
-        user_id: Slack user ID of the requester; schedule tools are rejected if this is not
-            in SCHEDULE_ADMIN_USERS.
+        user_id: Slack user ID of the requester.
+        admin_users: Per-bot set of Slack user IDs allowed to manage schedules.
 
     Returns:
         String result to pass back to the LLM as the tool response.
@@ -363,33 +370,47 @@ def _dispatch_tool(name: str, args: dict, user_id: str | None) -> str:
         return databricks.get_job_run(run_id)
 
     if name in _SCHEDULE_TOOLS:
-        if user_id not in SCHEDULE_ADMIN_USERS:
+        if user_id not in admin_users:
             return "You are not authorized to manage schedules."
-        return _dispatch_schedule_tool(name, args)
+        return _dispatch_schedule_tool(name, args, bot_id)
 
     return f"Unknown tool: {name}"
 
 
-def run_agent(question: str, thread_ts: str, user_id: str | None = None) -> str:
+def run_agent(
+    question: str,
+    thread_ts: str,
+    user_id: str | None = None,
+    bot: BotConfig | None = None,
+) -> str:
     """Run the OpenAI agentic loop with per-thread conversation history.
 
     Args:
         question: User's question with the @mention prefix already stripped.
         thread_ts: Slack thread timestamp used to scope conversation history.
         user_id: Slack user ID of the requester; used for schedule tool authorization.
+        bot: Per-bot config carrying admin_users and enabled_skills.
 
     Returns:
         Agent's final answer as a Slack-formatted string.
     """
+    if bot is None:
+        raise ValueError("bot is required — must be loaded from the bots registry")
+
+    admin_users = bot.admin_users
+    enabled_skills = bot.enabled_skills
+
     history = _load_history(thread_ts)
     log.info("Loaded %d history messages for thread %s", len(history), thread_ts)
 
-    messages: list[dict] = [{"role": "system", "content": _load_system_prompt(question, history)}]
+    messages: list[dict] = [
+        {"role": "system", "content": _load_system_prompt(question, history, enabled_skills)}
+    ]
     messages.extend(history)
 
     # Prepend the current user's authorization status so the LLM re-evaluates
     # permissions for this request rather than echoing a prior refusal from history.
-    is_authorized = user_id in SCHEDULE_ADMIN_USERS
+    is_authorized = user_id in admin_users
     auth_note = (
         f"[Current requester: {user_id or 'unknown'} — "
         + ("authorized for schedule management]" if is_authorized else "NOT authorized for schedule management]")
@@ -416,7 +437,7 @@ def run_agent(question: str, thread_ts: str, user_id: str | None = None) -> str:
 
         for tool_call in msg.tool_calls:
             args = json.loads(tool_call.function.arguments)
-            result = _dispatch_tool(tool_call.function.name, args, user_id)
+            result = _dispatch_tool(tool_call.function.name, args, user_id, admin_users, bot.bot_id)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
     return "Sorry, I hit a processing limit. Please try a more specific question."

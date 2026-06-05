@@ -17,7 +17,7 @@ services:
     build: .
     environment:
       SERVICE: receiver
-      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
       REDIS_URL: redis://redis:6379/0
     depends_on:
       redis:
@@ -38,13 +38,12 @@ services:
       - ./src/worker/skills:/app/worker/skills
     environment:
       SERVICE: worker
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
       REDIS_URL: redis://redis:6379/0
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DATABRICKS_HOST: ${DATABRICKS_HOST}
       DATABRICKS_WAREHOUSE_ID: ${DATABRICKS_WAREHOUSE_ID}
       DATABRICKS_ACCESS_TOKEN: ${DATABRICKS_ACCESS_TOKEN}
-      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
     depends_on:
       redis:
         condition: service_healthy
@@ -56,9 +55,8 @@ services:
     build: .
     environment:
       SERVICE: scheduler
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
-      REDIS_URL: redis://redis:6379/0
       SUPABASE_DB_URL: ${SUPABASE_DB_URL}
+      REDIS_URL: redis://redis:6379/0
       SCHEDULER_INTERVAL: "180"
     depends_on:
       redis:

@@ -10,10 +10,11 @@ from fastapi import FastAPI, HTTPException, Request
 from redis import Redis
 from rq import Queue, Retry
 
+from connectors.bots import BotConfig, get_by_workspace
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
 
-SLACK_SIGNING_SECRET = os.environ["SLACK_SIGNING_SECRET"].encode()
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 
 redis_conn = Redis.from_url(REDIS_URL)
@@ -22,10 +23,11 @@ queue = Queue(name="slack_events", connection=redis_conn)
 app = FastAPI()
 
 
-def verify_slack_signature(timestamp: str, signature: str, body: bytes) -> bool:
+def verify_slack_signature(secret: bytes, timestamp: str, signature: str, body: bytes) -> bool:
     """Reject requests with an invalid HMAC-SHA256 signature or a timestamp older than 5 minutes.
 
     Args:
+        secret: Bot-specific signing secret bytes.
         timestamp: X-Slack-Request-Timestamp header value.
         signature: X-Slack-Signature header value (e.g. v0=abc123...).
         body: Raw request bytes used to recompute the expected signature.
@@ -42,7 +44,7 @@ def verify_slack_signature(timestamp: str, signature: str, body: bytes) -> bool:
         return False
 
     basestring = b"v0:" + timestamp.encode() + b":" + body
-    expected = "v0=" + hmac.new(SLACK_SIGNING_SECRET, basestring, hashlib.sha256).hexdigest()
+    expected = "v0=" + hmac.new(secret, basestring, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 
 
@@ -59,6 +61,16 @@ def already_seen(event_id: str) -> bool:
     return not was_new
 
 
+def _resolve_bot(payload: dict) -> BotConfig:
+    """Return the bot config for this Slack workspace; raises if not found."""
+    workspace_id = payload.get("team_id")
+    if workspace_id:
+        bot = get_by_workspace(workspace_id)
+        if bot:
+            return bot
+    raise HTTPException(status_code=500, detail=f"No active bot configured for workspace {workspace_id!r}")
+
+
 @app.post("/slack/events")
 async def slack_events(request: Request):
     """Handle Slack event callbacks — deduplicate, drop bot messages, and enqueue app_mention jobs.
@@ -70,11 +82,13 @@ async def slack_events(request: Request):
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
 
-    if not verify_slack_signature(timestamp, signature, body):
-        log.warning("Invalid Slack signature")
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
+    # Parse first to resolve which bot (and therefore which signing secret) owns this event.
     payload = json.loads(body)
+    bot = _resolve_bot(payload)
+
+    if not verify_slack_signature(bot.signing_secret, timestamp, signature, body):
+        log.warning("Invalid Slack signature for bot_id=%s", bot.bot_id)
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
     if payload.get("type") == "url_verification":
         return {"challenge": payload["challenge"]}
@@ -97,10 +111,11 @@ async def slack_events(request: Request):
                 thread_ts=event.get("thread_ts") or event["ts"],
                 user=event.get("user"),
                 text=event.get("text", ""),
+                bot_id=bot.bot_id,
                 job_timeout=120,
                 retry=Retry(max=3, interval=[10, 30, 60]),
             )
-            log.info("Enqueued job %s for event %s", job.id, event_id)
+            log.info("Enqueued job %s for event %s (bot_id=%s)", job.id, event_id, bot.bot_id)
 
     return {"ok": True}
 

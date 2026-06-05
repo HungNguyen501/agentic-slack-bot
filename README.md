@@ -4,6 +4,8 @@ An agentic Slack bot that answers questions about your Databricks data infrastru
 
 Powered by OpenAI with function calling. A lightweight router model selects only the relevant skill context for each question; the main model then queries Databricks system tables on demand and replies in-thread with full conversation context.
 
+Multiple independent bots (one per Slack workspace or use-case) are supported. All bot credentials and configuration live in a `bots` table in Supabase — no per-bot env vars needed.
+
 ## Architecture
 
 ![workflow](./docs/workflow.jpg)
@@ -12,9 +14,9 @@ Powered by OpenAI with function calling. A lightweight router model selects only
 
 | Service | Responsibility |
 |---|---|
-| **receiver** | FastAPI app that accepts incoming Slack webhook events. Verifies HMAC-SHA256 signatures, deduplicates events via Redis, and enqueues `app_mention` payloads onto the `slack_events` RQ queue. |
-| **worker** | RQ consumer that processes queued Slack events. Runs the OpenAI agent loop — routes skills, executes Databricks SQL queries, fetches job run error details, manages scheduled questions, and posts replies back to Slack threads. Scales horizontally via `WORKER_COUNT`. |
-| **scheduler** | Background loop that polls Supabase every `SCHEDULER_INTERVAL` seconds. Evaluates each saved cron schedule against the current time and enqueues `process_scheduled_question` jobs for any that are due. |
+| **receiver** | FastAPI app that accepts incoming Slack webhook events. Resolves the bot by Slack `team_id` from Supabase, verifies the per-bot HMAC-SHA256 signature, deduplicates events via Redis, and enqueues `app_mention` payloads onto the `slack_events` RQ queue. |
+| **worker** | RQ consumer that processes queued Slack events. Loads per-bot config (token, skills, admin users) from Supabase, runs the OpenAI agent loop, executes Databricks SQL queries, fetches job run error details, manages scheduled questions, and posts replies back to Slack threads. Scales horizontally via `WORKER_COUNT`. |
+| **scheduler** | Background loop that polls Supabase every `SCHEDULER_INTERVAL` seconds. Evaluates each saved cron schedule against the current time and enqueues `process_scheduled_question` jobs for any that are due, passing the schedule's `bot_id` so the correct bot posts the answer. |
 | **redis** | Message broker and deduplication store. Distributes jobs between workers (competing-consumer), tracks seen Slack event IDs, and records per-schedule last-fired timestamps. |
 | **ngrok** | Tunnels `receiver:8123` to a public HTTPS URL so Slack can reach the bot during local development. |
 
@@ -22,10 +24,12 @@ Powered by OpenAI with function calling. A lightweight router model selects only
 
 | Module | Responsibility |
 |---|---|
-| `src/receiver/` | Slack webhook handler — signature verification, URL challenge, event deduplication, and RQ enqueue. |
+| `src/receiver/` | Slack webhook handler — per-bot signature verification, URL challenge, event deduplication, and RQ enqueue. |
 | `src/worker/` | Agent core — OpenAI function-calling loop, skill loading and routing, tool dispatch (SQL, job details, schedule CRUD), and thread history management. |
-| `src/scheduler/` | Cron scheduler — reads schedules from Supabase, evaluates firing windows, and enqueues periodic questions. |
-| `src/connectors/` | Thin clients for external systems: `databricks.py` (Statement API, Jobs REST API) and `postgres.py` (Supabase schedule CRUD). |
+| `src/scheduler/` | Cron scheduler — reads schedules from Supabase, evaluates firing windows, and enqueues periodic questions per bot. |
+| `src/connectors/bots.py` | Bot registry — loads `BotConfig` (token, signing secret, enabled skills, admin users) from the Supabase `bots` table by workspace ID or bot ID. |
+| `src/connectors/databricks.py` | Databricks clients — Statement API (SQL queries) and Jobs REST API (run details). |
+| `src/connectors/postgres.py` | Supabase clients — schedule CRUD. |
 | `src/worker/skills/` | Markdown skill files loaded into the agent system prompt. The router selects which skills to include based on the user's question. |
 | `src/databricks/metric_views/` | SQL view definitions for the semantic layer (`vw_dbu_cost`, `vw_job_run_stats`, `vw_query_perf`) deployed to `vireox_infra.semantic` in Databricks. |
 
@@ -46,22 +50,43 @@ Data window: **last 180 days** for all event and history tables.
 
 ## Setup
 
-### 1. Fill in `.env`
+### 1. Create the database tables
+
+Run [`src/migrations/001_multi_bot.sql`](src/migrations/001_multi_bot.sql) against your Supabase database to create the `bots` table and add `bot_id` to the `schedules` table.
+
+### 2. Register your bot in Supabase
+
+Insert one row per Slack app into the `bots` table:
+
+```sql
+INSERT INTO bots (id, bot_token, signing_secret, enabled_skills, admin_users, workspace_id)
+VALUES (
+  'my-bot',                          -- unique slug
+  'xoxb-...',                        -- OAuth bot token from Slack app config
+  'your_signing_secret',             -- signing secret from Slack app config
+  '{}',                              -- empty = all skills; or e.g. '{"jobs","billing"}'
+  ARRAY['U08UQ1FG39S'],              -- Slack user IDs allowed to manage schedules
+  'T08FGJLPELA'                      -- Slack workspace ID (team_id)
+);
+```
+
+- **Bot token** and **signing secret**: Slack app config → Basic Information / OAuth & Permissions
+- **Workspace ID**: shown as `team_id` in any Slack event payload, or visible in your Slack workspace URL
+
+### 3. Fill in `.env`
 
 ```bash
 cp .env.example .env
-# Fill in all values
+# Fill in SUPABASE_DB_URL, OPENAI_API_KEY, DATABRICKS_*, NGROK_AUTHTOKEN
 ```
 
-Set `WORKER_COUNT` to the number of concurrent workers you want (default: `2`).
-
-### 2. Start services
+### 4. Start services
 
 ```bash
 docker compose up --build
 ```
 
-### 3. Finish Slack setup
+### 5. Finish Slack setup
 
 Open http://localhost:4040 → copy the `https://...ngrok-free.app` URL.
 
@@ -72,7 +97,7 @@ Back in Slack app config:
 - **Subscribe to bot events** → add `app_mention`
 - **Save Changes** → reinstall the app if prompted.
 
-### 4. Test
+### 6. Test
 
 Invite the bot to a channel: `/invite @yourbot`
 
@@ -86,6 +111,14 @@ Try asking:
 ```
 
 Follow-up questions work — the bot remembers the thread conversation for 24 hours.
+
+## Adding a second bot
+
+1. Create a second Slack app at https://api.slack.com/apps
+2. Insert another row into the `bots` table with its token, signing secret, and workspace ID
+3. No deployment changes needed — the receiver resolves bots dynamically at runtime
+
+Each bot can have its own `enabled_skills` (to restrict what it can answer) and `admin_users` (to control who can manage its schedules).
 
 ## Scaling workers
 
@@ -134,10 +167,18 @@ description: Use when the question is about X, Y, or Z.
 
 The router uses the `description` field to decide when to load it. Set `always: true` to load it on every request regardless.
 
-## Optional environment variables
+To restrict a skill to specific bots, set `enabled_skills` on the bot's row in Supabase. An empty array means all skills are available.
 
-| Variable | Default | Description |
+## Environment variables
+
+| Variable | Required | Description |
 |---|---|---|
-| `WORKER_COUNT` | `2` | Number of concurrent worker containers |
-| `ROUTER_MODEL` | `gpt-4o-mini` | Model used for skill routing (cheap, fast) |
-| `SCHEDULER_INTERVAL` | `180` | Seconds between scheduler polling ticks |
+| `SUPABASE_DB_URL` | Yes | PostgreSQL connection string for Supabase |
+| `OPENAI_API_KEY` | Yes | OpenAI API key |
+| `DATABRICKS_HOST` | Yes | Databricks workspace URL |
+| `DATABRICKS_WAREHOUSE_ID` | Yes | SQL warehouse ID for statement execution |
+| `DATABRICKS_ACCESS_TOKEN` | Yes | Databricks personal access token |
+| `NGROK_AUTHTOKEN` | Yes | ngrok auth token (local dev only) |
+| `WORKER_COUNT` | No | Number of concurrent worker containers (default: `2`) |
+| `ROUTER_MODEL` | No | Model used for skill routing (default: `gpt-4o-mini`) |
+| `SCHEDULER_INTERVAL` | No | Seconds between scheduler polling ticks (default: `180`) |

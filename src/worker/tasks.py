@@ -1,16 +1,15 @@
 """RQ worker tasks — resolved by dotted name (e.g. worker.tasks.reply_to_mention)."""
 import logging
-import os
 import re
 
 import httpx
 
+from connectors.bots import get_by_id as get_bot
 from worker.agent import run_agent
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
 
-SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 # Strip all Slack user/bot mention tokens like <@U12345> wherever they appear
 _MENTION_RE = re.compile(r"<@[^>]+>\s*", re.UNICODE)
 
@@ -73,13 +72,14 @@ def _split_message(text: str, max_len: int = 3000) -> list[str]:
     return chunks
 
 
-def _post_slack_message(channel: str, text: str, thread_ts: str | None = None) -> str:
+def _post_slack_message(channel: str, text: str, thread_ts: str | None = None, *, token: str) -> str:
     """Post a message to Slack and return its timestamp.
 
     Args:
         channel: Slack channel ID to post into.
         text: Message body in Slack mrkdwn format.
         thread_ts: If provided, posts as a reply in that thread; otherwise posts a new top-level message.
+        token: Bot OAuth token (xoxb-...) to authenticate the request.
 
     Returns:
         The Slack message timestamp (ts) of the posted message.
@@ -91,7 +91,7 @@ def _post_slack_message(channel: str, text: str, thread_ts: str | None = None) -
     resp = httpx.post(
         url="https://slack.com/api/chat.postMessage",
         headers={
-            "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
         },
         json=payload,
@@ -106,7 +106,13 @@ def _post_slack_message(channel: str, text: str, thread_ts: str | None = None) -
     return data["ts"]
 
 
-def reply_to_mention(channel: str, thread_ts: str, user: str | None = None, text: str = "") -> str:
+def reply_to_mention(
+    channel: str,
+    thread_ts: str,
+    bot_id: str,
+    user: str | None = None,
+    text: str = "",
+) -> str:
     """Strip the @mention, run the agent, and post the answer back into the Slack thread.
 
     Args:
@@ -115,10 +121,12 @@ def reply_to_mention(channel: str, thread_ts: str, user: str | None = None, text
         user: Slack user ID of the person who mentioned the bot; forwarded to the agent
             for schedule management authorization.
         text: Raw message text including the @mention prefix.
+        bot_id: Bot identifier used to load per-bot config (token, skills, admin users).
 
     Returns:
         The Slack message timestamp (ts) of the last posted reply chunk.
     """
+    bot = get_bot(bot_id)
     question = _MENTION_RE.sub("", text).strip()
 
     if not question:
@@ -127,9 +135,9 @@ def reply_to_mention(channel: str, thread_ts: str, user: str | None = None, text
             "jobs, user's access control or data lineage."
         )
     else:
-        log.info("Running agent for question: %.200s", question)
+        log.info("Running agent for question: %.200s (bot_id=%s)", question, bot_id)
         try:
-            answer = run_agent(question, thread_ts, user_id=user)
+            answer = run_agent(question, thread_ts, user_id=user, bot=bot)
         except Exception as exc:
             log.exception("Agent error: %s", exc)
             answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
@@ -137,12 +145,12 @@ def reply_to_mention(channel: str, thread_ts: str, user: str | None = None, text
     chunks = _split_message(answer)
     ts = thread_ts
     for chunk in chunks:
-        ts = _post_slack_message(channel, chunk, thread_ts)
+        ts = _post_slack_message(channel, chunk, thread_ts, token=bot.bot_token)
     log.info("Posted reply (%d chunk(s)) to %s (thread %s)", len(chunks), channel, thread_ts)
     return ts
 
 
-def process_scheduled_question(channel: str, question: str, **kwargs) -> str:
+def process_scheduled_question(channel: str, question: str, bot_id: str, **kwargs) -> str:
     """Run the agent for a scheduled question and post the result as a new Slack thread.
 
     Posts the question as a top-level message, then replies with the agent's answer in
@@ -152,16 +160,18 @@ def process_scheduled_question(channel: str, question: str, **kwargs) -> str:
     Args:
         channel: Slack channel ID to post into.
         question: The question text to send to the agent.
+        bot_id: Bot identifier used to load per-bot config (token, skills, admin users).
 
     Returns:
         The Slack message timestamp (ts) of the agent's reply.
     """
-    log.info("Running scheduled agent for channel=%s question=%.200s", channel, question)
+    bot = get_bot(bot_id)
+    log.info("Running scheduled agent for channel=%s question=%.200s (bot_id=%s)", channel, question, bot_id)
 
-    header_ts = _post_slack_message(channel, f"*Scheduled question:* _{question}_")
+    header_ts = _post_slack_message(channel, f"*Scheduled question:* _{question}_", token=bot.bot_token)
 
     try:
-        answer = run_agent(question, header_ts)
+        answer = run_agent(question, header_ts, bot=bot)
     except Exception as exc:
         log.exception("Scheduled agent error: %s", exc)
         answer = "Sorry, I ran into an error while processing the scheduled question."
@@ -169,6 +179,6 @@ def process_scheduled_question(channel: str, question: str, **kwargs) -> str:
     chunks = _split_message(answer)
     ts = header_ts
     for chunk in chunks:
-        ts = _post_slack_message(channel, chunk, header_ts)
+        ts = _post_slack_message(channel, chunk, header_ts, token=bot.bot_token)
     log.info("Posted scheduled answer (%d chunk(s)) to %s (thread %s)", len(chunks), channel, header_ts)
     return ts

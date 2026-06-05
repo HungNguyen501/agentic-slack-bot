@@ -12,38 +12,54 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(_DB_URL, row_factory=dict_row)
 
 
-def get_schedules() -> list[dict]:
-    """Fetch all schedules from Supabase ordered by creation time.
+def get_schedules(bot_id: str | None = None) -> list[dict]:
+    """Fetch schedules from Supabase ordered by creation time.
+
+    Args:
+        bot_id: If provided, returns only schedules for that bot. Otherwise returns all schedules.
 
     Returns:
-        List of schedule dicts with string-serialized id, cron, channel, and question fields.
+        List of schedule dicts with string-serialized id, cron, channel, question, and bot_id fields.
     """
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, cron, channel, question FROM schedules ORDER BY created_at")
+        if bot_id is not None:
+            cur.execute(
+                "SELECT id, cron, channel, question, bot_id FROM schedules "
+                "WHERE bot_id = %s OR bot_id IS NULL ORDER BY created_at",
+                (bot_id,),
+            )
+        else:
+            cur.execute("SELECT id, cron, channel, question, bot_id FROM schedules ORDER BY created_at")
         return [_serialize(r) for r in cur.fetchall()]
 
 
-def add_schedule(cron: str, channel: str, question: str) -> dict:
+def add_schedule(cron: str, channel: str, question: str, bot_id: str | None = None) -> dict:
     """Insert a new schedule row and return the created record.
 
     Args:
         cron: Cron expression in UTC, e.g. "0 9 * * 1-5".
         channel: Slack channel ID to post the scheduled question into.
         question: The question text the bot will ask on each trigger.
+        bot_id: Bot that owns this schedule; None means it runs with the default bot.
 
     Returns:
-        The newly created schedule as a dict with id, cron, channel, question, and created_at.
+        The newly created schedule as a dict with id, cron, channel, question, bot_id, and created_at.
     """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO schedules (cron, channel, question) VALUES (%s, %s, %s) "
-            "RETURNING id, cron, channel, question, created_at",
-            (cron, channel, question),
+            "INSERT INTO schedules (cron, channel, question, bot_id) VALUES (%s, %s, %s, %s) "
+            "RETURNING id, cron, channel, question, bot_id, created_at",
+            (cron, channel, question, bot_id),
         )
         return _serialize(cur.fetchone())
 
 
-def update_schedule(id: str, cron: str | None = None, channel: str | None = None, question: str | None = None) -> dict | None:
+def update_schedule(
+    id: str,
+    cron: str | None = None,
+    channel: str | None = None,
+    question: str | None = None,
+) -> dict | None:
     """Update one or more fields of an existing schedule row.
 
     Args:
@@ -74,7 +90,7 @@ def update_schedule(id: str, cron: str | None = None, channel: str | None = None
         return None
 
     params.append(id)
-    sql = f"UPDATE schedules SET {', '.join(fields)} WHERE id = %s RETURNING id, cron, channel, question, updated_at"
+    sql = f"UPDATE schedules SET {', '.join(fields)} WHERE id = %s RETURNING id, cron, channel, question, bot_id, updated_at"
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         row = cur.fetchone()

@@ -96,17 +96,22 @@ def run() -> None:
                 key = _schedule_key(entry)
                 redis_client.set(key, now.replace(tzinfo=None).isoformat(), ex=86400)
 
+                # Use the schedule's bot_id if set; fall back to "default" (env-var bot)
+                bot_id = entry.get("bot_id") or "default"
+
                 queue.enqueue(
                     "worker.tasks.process_scheduled_question",
                     channel=entry["channel"],
                     question=entry["question"],
+                    bot_id=bot_id,
                     job_timeout=120,
                     retry=rq.Retry(max=3, interval=[10, 30, 60]),
                 )
                 log.info(
-                    "Enqueued scheduled question  channel=%s  cron=%r",
+                    "Enqueued scheduled question  channel=%s  cron=%r  bot_id=%s",
                     entry["channel"],
                     entry["cron"],
+                    bot_id,
                 )
 
         time.sleep(CHECK_INTERVAL)
