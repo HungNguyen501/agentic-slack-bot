@@ -80,3 +80,19 @@ URL: `https://adb-1072468836148393.13.azuredatabricks.net/jobs/<job_id>/runs/<ru
 - Task run: `run_id` = `job_task_run_timeline.run_id` (task-level ID)
 
 Always format as a Slack embedded link: `<URL|Job: <job_name> — Run <run_id>>`
+
+---
+
+## Investigating Job Failures — Error Details
+
+System tables store only `result_state` and `termination_code` (short codes like `DRIVER_ERROR`). **Actual error messages** are only available via the Jobs REST API.
+
+**Two-step pattern for failure investigation:**
+
+1. Query `system.lakeflow.job_run_timeline` to find failed `run_id`s (filter `result_state IN ('FAILED','ERROR','TIMED_OUT')`).
+2. For each run the user wants to investigate, call `get_job_run_details(run_id)` to fetch the human-readable error message and per-task failure details.
+
+**When the user asks "why did job X fail?" or "show error details":**
+- Always call `get_job_run_details` — do not stop at `termination_code` alone.
+- If multiple runs failed, call it for the most recent failure (or each run the user asks about).
+- Present the error message clearly and include the run URL for the user to drill in.

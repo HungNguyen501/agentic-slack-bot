@@ -215,6 +215,24 @@ def _get_agent_tools() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "get_job_run_details",
+                "description": (
+                    "Fetch the actual error message and per-task failure details for a specific "
+                    "Databricks job run via the Jobs REST API. Use this after identifying a failed "
+                    "run_id from execute_query to get the human-readable error text for investigation."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {"type": "string", "description": "The job run ID from job_run_timeline.run_id"},
+                    },
+                    "required": ["run_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "list_schedules",
                 "description": "List all active scheduled questions.",
                 "parameters": {"type": "object", "properties": {}},
@@ -338,6 +356,11 @@ def _dispatch_tool(name: str, args: dict, user_id: str | None) -> str:
         sql = args.get("sql", "")
         log.info("Databricks query: %s", sql)
         return databricks.run_query(sql)
+
+    if name == "get_job_run_details":
+        run_id = args.get("run_id", "")
+        log.info("Fetching job run details for run_id=%s", run_id)
+        return databricks.get_job_run(run_id)
 
     if name in _SCHEDULE_TOOLS:
         if user_id not in SCHEDULE_ADMIN_USERS:
