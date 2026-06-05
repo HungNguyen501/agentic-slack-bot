@@ -386,7 +386,15 @@ def run_agent(question: str, thread_ts: str, user_id: str | None = None) -> str:
 
     messages: list[dict] = [{"role": "system", "content": _load_system_prompt(question, history)}]
     messages.extend(history)
-    messages.append({"role": "user", "content": question})
+
+    # Prepend the current user's authorization status so the LLM re-evaluates
+    # permissions for this request rather than echoing a prior refusal from history.
+    is_authorized = user_id in SCHEDULE_ADMIN_USERS
+    auth_note = (
+        f"[Current requester: {user_id or 'unknown'} — "
+        + ("authorized for schedule management]" if is_authorized else "NOT authorized for schedule management]")
+    )
+    messages.append({"role": "user", "content": f"{auth_note}\n{question}"})
 
     for _ in range(10):
         response = openai_client.chat.completions.create(
@@ -399,7 +407,7 @@ def run_agent(question: str, thread_ts: str, user_id: str | None = None) -> str:
 
         if not msg.tool_calls:
             answer = msg.content or "I wasn't able to generate a response."
-            history.append({"role": "user", "content": question})
+            history.append({"role": "user", "content": question})  # store clean question, not the auth-annotated one
             history.append({"role": "assistant", "content": answer})
             _save_history(thread_ts, history)
             return answer
