@@ -19,7 +19,7 @@ class BotConfig:
     signing_secret: bytes
     enabled_skills: list[str] = field(default_factory=list)
     admin_users: frozenset[str] = field(default_factory=frozenset)
-    workspace_id: str | None = None
+    app_id: str | None = None
 
 
 def _connect():
@@ -33,16 +33,16 @@ def _row_to_config(row: Any) -> BotConfig:
         signing_secret=str(row["signing_secret"]).encode(),
         enabled_skills=list(row.get("enabled_skills") or []),
         admin_users=frozenset(row.get("admin_users") or []),
-        workspace_id=str(row["workspace_id"]) if row.get("workspace_id") else None,
+        app_id=str(row["app_id"]) if row.get("app_id") else None,
     )
 
 
-def get_by_workspace(workspace_id: str) -> BotConfig | None:
-    """Return the active bot for a Slack workspace, or None if not found."""
+def get_by_app_id(app_id: str) -> BotConfig | None:
+    """Return the active bot for a Slack app ID, or None if not found."""
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM bots WHERE workspace_id = %s AND active = TRUE LIMIT 1",
-            (workspace_id,),
+            "SELECT * FROM bots WHERE app_id = %s AND active = TRUE LIMIT 1",
+            (app_id,),
         )
         row = cur.fetchone()
         return _row_to_config(row) if row else None

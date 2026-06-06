@@ -9,8 +9,8 @@ create table if not exists public.bots (
     enabled_skills text[]      not null default '{}',
     -- slack user ids allowed to manage schedules for this bot
     admin_users    text[]      not null default '{}',
-    -- slack workspace id (team_id) used by the receiver to resolve the bot
-    workspace_id   text,
+    -- slack app id used by the receiver to resolve the bot
+    app_id   text,
     active         boolean     not null default true,
     created_at timestamp with time zone not null default now(),
     updated_at timestamp with time zone not null default now()

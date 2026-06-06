@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from redis import Redis
 from rq import Queue, Retry
 
-from connectors.bots import BotConfig, get_by_workspace
+from connectors.bots import BotConfig, get_by_app_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
@@ -24,16 +24,11 @@ app = FastAPI()
 
 
 def verify_slack_signature(secret: bytes, timestamp: str, signature: str, body: bytes) -> bool:
-    """Reject requests with an invalid HMAC-SHA256 signature or a timestamp older than 5 minutes.
+    """Return True if the HMAC-SHA256 signature is valid and the request is within 5 minutes.
 
     Args:
-        secret: Bot-specific signing secret bytes.
-        timestamp: X-Slack-Request-Timestamp header value.
-        signature: X-Slack-Signature header value (e.g. v0=abc123...).
-        body: Raw request bytes used to recompute the expected signature.
-
-    Returns:
-        True if the signature is valid and the request is fresh.
+        secret: bot signing secret. timestamp: X-Slack-Request-Timestamp.
+        signature: X-Slack-Signature (v0=hex). body: raw request bytes.
     """
     try:
         ts = int(timestamp)
@@ -49,34 +44,35 @@ def verify_slack_signature(secret: bytes, timestamp: str, signature: str, body: 
 
 
 def already_seen(event_id: str) -> bool:
-    """Atomic Redis SET NX — returns True if the event_id was already recorded.
+    """Return True if this event_id was already processed (atomic Redis SET NX).
 
     Args:
         event_id: Slack event_id from the event_callback payload.
-
-    Returns:
-        True if the event was already processed; False if it is new.
     """
     was_new = redis_conn.set(f"seen:{event_id}", "1", nx=True, ex=600)
     return not was_new
 
 
 def _resolve_bot(payload: dict) -> BotConfig:
-    """Return the bot config for this Slack workspace; raises if not found."""
-    workspace_id = payload.get("team_id")
-    if workspace_id:
-        bot = get_by_workspace(workspace_id)
+    """Return the bot config for this Slack app; raises HTTPException if not found.
+
+    Args:
+        payload: parsed Slack event payload containing api_app_id.
+    """
+    app_id = payload.get("api_app_id")
+    if app_id:
+        bot = get_by_app_id(app_id)
         if bot:
             return bot
-    raise HTTPException(status_code=500, detail=f"No active bot configured for workspace {workspace_id!r}")
+    raise HTTPException(status_code=500, detail=f"No active bot configured for app {app_id!r}")
 
 
 @app.post("/slack/events")
-async def slack_events(request: Request):
-    """Handle Slack event callbacks — deduplicate, drop bot messages, and enqueue app_mention jobs.
+async def slack_events(request: Request) -> dict:
+    """Verify signature, deduplicate, and enqueue app_mention events.
 
     Args:
-        request: Incoming FastAPI request containing the raw Slack event payload.
+        request: incoming FastAPI request with raw Slack event payload.
     """
     body = await request.body()
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
@@ -101,7 +97,7 @@ async def slack_events(request: Request):
             log.info("Duplicate event %s — skipped", event_id)
             return {"ok": True}
 
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        if event.get("app_id") == bot.app_id or event.get("subtype") == "bot_message":
             return {"ok": True}
 
         if event.get("type") == "app_mention":
