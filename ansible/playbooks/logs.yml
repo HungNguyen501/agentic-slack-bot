@@ -1,0 +1,27 @@
+---
+# Fetch recent logs from deployed services.
+#
+# Usage:
+#   ansible-playbook playbooks/logs.yml -i inventory/hosts.ini
+#   ansible-playbook playbooks/logs.yml -i inventory/hosts.ini -e log_service=worker
+#   ansible-playbook playbooks/logs.yml -i inventory/hosts.ini -e log_tail=100
+
+- name: Fetch service logs
+  hosts: all
+  vars:
+    log_service: ""
+    log_tail: "50"
+  tasks:
+    - name: Fetch logs
+      command: >-
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml
+        logs --tail {{ log_tail }} {{ log_service }}
+      args:
+        chdir: "{{ slack_bot_deploy_dir }}"
+      become: true
+      register: service_logs
+      changed_when: false
+
+    - name: Print logs
+      debug:
+        msg: "{{ service_logs.stdout_lines }}"

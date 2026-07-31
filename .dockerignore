@@ -1,2 +1,5 @@
+.claude
+.ruff_cache
 .venv
+CLAUDE.md
 README.md

@@ -1,0 +1,45 @@
+---
+# Deploy Agentic Slack Bot via docker compose.
+# Pulls pre-built image from Docker Hub — no build on the server.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy.yml -i inventory/hosts.ini -vv
+#
+# Overridable variables:
+#   -e slack_bot_deploy_image_tag=v2026.06.28   (default: latest)
+#   -e slack_bot_deploy_dir=<path>              (default: /var/workspace/agentic-slack-bot)
+#   -e slack_bot_deploy_env_src=<local-path>    (default: project root .env)
+#   -e slack_bot_deploy_worker_count=<n>        (default: 2)
+
+- name: Deploy Agentic Slack Bot
+  hosts: all
+  serial: 1
+  vars:
+    slack_bot_deploy_env_src: "{{ playbook_dir }}/../../.env"
+  pre_tasks:
+    - name: Check local .env file exists
+      stat:
+        path: "{{ slack_bot_deploy_env_src }}"
+      delegate_to: localhost
+      become: false
+      register: env_stat
+
+    - name: Fail if .env not found
+      fail:
+        msg: "Local .env file not found at {{ slack_bot_deploy_env_src }}. Pass -e slack_bot_deploy_env_src=<path> to override."
+      when: not env_stat.stat.exists
+  roles:
+    - role: slack_bot_deploy
+  tasks:
+    - name: Show running services
+      command: >-
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+      args:
+        chdir: "{{ slack_bot_deploy_dir }}"
+      become: true
+      register: compose_ps
+      changed_when: false
+
+    - name: Print service status
+      debug:
+        msg: "{{ compose_ps.stdout_lines }}"
