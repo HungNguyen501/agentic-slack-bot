@@ -1,0 +1,10 @@
+---
+- name: Stop Agentic Slack Bot services
+  hosts: all
+  tasks:
+    - name: Stop services
+      command: >-
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans
+      args:
+        chdir: "{{ slack_bot_deploy_dir }}"
+      become: true

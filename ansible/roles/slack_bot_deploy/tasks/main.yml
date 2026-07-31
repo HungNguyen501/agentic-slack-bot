@@ -1,0 +1,100 @@
+---
+- name: Ensure deploy directory exists
+  file:
+    path: "{{ slack_bot_deploy_dir }}"
+    state: directory
+    mode: "0755"
+  become: true
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Copy docker-compose.yml
+  copy:
+    src: "{{ playbook_dir }}/../../docker-compose.yml"
+    dest: "{{ slack_bot_deploy_dir }}/docker-compose.yml"
+    mode: "0644"
+  become: true
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Copy skills directory
+  copy:
+    src: "{{ playbook_dir }}/../../src/worker/skills/"
+    dest: "{{ slack_bot_deploy_dir }}/src/worker/skills/"
+    mode: "0644"
+  become: true
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Copy .env file
+  copy:
+    src: "{{ slack_bot_deploy_env_src }}"
+    dest: "{{ slack_bot_deploy_dir }}/.env"
+    mode: "0600"
+  become: true
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Render docker-compose.prod.yml with image tag
+  template:
+    src: docker-compose.prod.yml.j2
+    dest: "{{ slack_bot_deploy_dir }}/docker-compose.prod.yml"
+    mode: "0644"
+  become: true
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Pull images from Docker Hub
+  command: >-
+    docker compose
+    -f docker-compose.yml
+    -f docker-compose.prod.yml
+    pull receiver worker scheduler
+  args:
+    chdir: "{{ slack_bot_deploy_dir }}"
+  become: true
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Start services
+  command: >-
+    docker compose
+    -f docker-compose.yml
+    -f docker-compose.prod.yml
+    up -d --no-build --force-recreate
+    {{ slack_bot_deploy_services | join(' ') }}
+  args:
+    chdir: "{{ slack_bot_deploy_dir }}"
+  become: true
+  environment:
+    WORKER_COUNT: "{{ slack_bot_deploy_worker_count }}"
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Remove .env file from remote host
+  file:
+    path: "{{ slack_bot_deploy_dir }}/.env"
+    state: absent
+  become: true
+  tags:
+    - deploy_init
+    - deploy_update
+
+- name: Restart services (without re-pull)
+  command: >-
+    docker compose
+    -f docker-compose.yml
+    -f docker-compose.prod.yml
+    restart {{ slack_bot_deploy_services | join(' ') }}
+  args:
+    chdir: "{{ slack_bot_deploy_dir }}"
+  become: true
+  tags:
+    - deploy_restart

@@ -1,0 +1,10 @@
+---
+- name: Sync skill files to server
+  hosts: all
+  tasks:
+    - name: Copy skills directory
+      copy:
+        src: "{{ playbook_dir }}/../../src/worker/skills/"
+        dest: "{{ slack_bot_deploy_dir }}/src/worker/skills/"
+        mode: "0644"
+      become: true

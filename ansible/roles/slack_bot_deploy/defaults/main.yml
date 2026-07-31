@@ -1,0 +1,14 @@
+---
+slack_bot_deploy_dir: /var/workspace/agentic-slack-bot
+slack_bot_deploy_env_src: ""
+slack_bot_deploy_worker_count: "2"
+
+slack_bot_deploy_image_repo: hungwnguyen/agentic-slack-bot
+slack_bot_deploy_image_tag: latest
+
+slack_bot_deploy_services:
+  - redis
+  - receiver
+  - worker
+  - scheduler
+  - ngrok

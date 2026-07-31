@@ -1,0 +1,5 @@
+---
+slack_bot_deploy_dir: /var/workspace/agentic-slack-bot
+slack_bot_deploy_image_repo: hungwnguyen/agentic-slack-bot
+slack_bot_deploy_image_tag: v2026.06.28
+slack_bot_deploy_worker_count: "4"
