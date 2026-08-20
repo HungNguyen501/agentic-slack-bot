@@ -5,7 +5,7 @@ import re
 import httpx
 
 from connectors.bots import get_by_id as get_bot
-from worker.agent import run_agent
+from worker.agent import run_agent, summarize_answer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
@@ -106,6 +106,31 @@ def _post_slack_message(channel: str, text: str, thread_ts: str | None = None, *
     return data["ts"]
 
 
+def _update_slack_message(channel: str, ts: str, text: str, *, token: str) -> None:
+    """Edit an existing Slack message in place.
+
+    Args:
+        channel: Slack channel ID containing the message.
+        ts: Timestamp of the message to update.
+        text: New message body in Slack mrkdwn format.
+        token: Bot OAuth token (xoxb-...) to authenticate the request.
+    """
+    resp = httpx.post(
+        url="https://slack.com/api/chat.update",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        json={"channel": channel, "ts": ts, "text": text},
+        timeout=15.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    if not data.get("ok"):
+        raise RuntimeError(f"Slack API error: {data.get('error')}")
+
+
 def reply_to_mention(
     channel: str,
     thread_ts: str,
@@ -151,11 +176,13 @@ def reply_to_mention(
 
 
 def process_scheduled_question(channel: str, question: str, bot_id: str, **kwargs) -> str:
-    """Run the agent for a scheduled question and post the result as a new Slack thread.
+    """Run the agent for a scheduled question, then post the question with a results summary
+    as the thread root and the full answer as a reply inside that thread.
 
-    Posts the question as a top-level message, then replies with the agent's answer in
-    that thread. The thread timestamp is used as the history key so each scheduled run
-    gets a fresh conversation context.
+    The thread root is posted first (as a placeholder) so its timestamp can be used as the
+    history key while the agent runs; it's then edited in place once the answer and summary
+    are ready. Using the real thread timestamp from the start means the thread can be used
+    to continue the conversation with follow-up @mentions afterward.
 
     Args:
         channel: Slack channel ID to post into.
@@ -163,7 +190,7 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
         bot_id: Bot identifier used to load per-bot config (token, skills, admin users).
 
     Returns:
-        The Slack message timestamp (ts) of the agent's reply.
+        The Slack message timestamp (ts) of the agent's detailed reply.
     """
     bot = get_bot(bot_id)
     log.info("Running scheduled agent for channel=%s question=%.200s (bot_id=%s)", channel, question, bot_id)
@@ -172,9 +199,18 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
 
     try:
         answer = run_agent(question, header_ts, bot=bot)
+        summary = summarize_answer(question, answer)
     except Exception as exc:
         log.exception("Scheduled agent error: %s", exc)
         answer = "Sorry, I ran into an error while processing the scheduled question."
+        summary = answer
+
+    _update_slack_message(
+        channel,
+        header_ts,
+        f"*Scheduled question:* _{question}_\n\n{summary}",
+        token=bot.bot_token,
+    )
 
     chunks = _split_message(answer)
     ts = header_ts

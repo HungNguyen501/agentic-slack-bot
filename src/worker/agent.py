@@ -377,6 +377,41 @@ def _dispatch_tool(name: str, args: dict, user_id: str | None, admin_users: froz
     return f"Unknown tool: {name}"
 
 
+def summarize_answer(question: str, answer: str) -> str:
+    """Condense a full agent answer into a short Slack-friendly summary.
+
+    Args:
+        question: The original question that produced the answer.
+        answer: The agent's full answer text.
+
+    Returns:
+        A 1-3 sentence summary in Slack mrkdwn, or the original answer if summarization fails.
+    """
+    try:
+        response = openai_client.chat.completions.create(
+            model=ROUTER_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Summarize the following answer to a Databricks data question into 1-3 short "
+                        "sentences suitable as a Slack message preview. Write it in a funny, friendly, "
+                        "easy-to-understand tone — like a helpful teammate, not a report. Light humor "
+                        "and a touch of personality (an emoji or two is fine) are welcome, but never at "
+                        "the expense of accuracy: keep concrete numbers and key findings exact, and drop "
+                        "supporting detail rather than the facts. Use Slack mrkdwn, no headers."
+                    ),
+                },
+                {"role": "user", "content": f"Question: {question}\n\nAnswer:\n{answer}"},
+            ],
+            max_tokens=150,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        log.error("Summarization failed, falling back to full answer:\n%s", traceback.format_exc())
+        return answer
+
+
 def run_agent(
     question: str,
     thread_ts: str,
