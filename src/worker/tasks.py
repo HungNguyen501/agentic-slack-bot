@@ -2,9 +2,9 @@
 import logging
 import re
 
-from connectors import slack
+from connectors import databricks, slack
 from connectors.bots import get_by_id as get_bot
-from models.access_request_view import format_submission_table
+from models.access_request_submission import VerifiedAccessRequest
 from worker.agent import run_agent, summarize_answer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -192,11 +192,52 @@ def process_data_access_submission(
         fields,
     )
 
+    user_email = (fields.get("user_email") or "").strip()
+    principal_type = fields.get("principal_type", "")
+
+    if principal_type == "Service principals":
+        record = databricks.find_service_principal_by_email(user_email)
+        if not record:
+            return slack.post_message(
+                channel,
+                f"Couldn't find a service principal matching `{user_email}` in Databricks. "
+                "Please double-check the email and resubmit the form.",
+                thread_ts,
+                token=bot.bot_token,
+            )
+        display_name = record["displayName"]
+        principal = record["applicationId"]
+    else:
+        record = databricks.find_user_by_email(user_email)
+        if not record:
+            return slack.post_message(
+                channel,
+                f"Couldn't find a user matching `{user_email}` in Databricks. "
+                "Please double-check the email and resubmit the form.",
+                thread_ts,
+                token=bot.bot_token,
+            )
+        display_name = record.get("userName", user_email)
+        principal = user_email
+
+    verified = VerifiedAccessRequest(
+        display_name=display_name,
+        user_email=user_email,
+        principal=principal,
+        filter_column=fields.get("filter_column", ""),
+        allowed_value=fields.get("allowed_value", ""),
+        scope_column=fields.get("scope_column", ""),
+        scope_value=fields.get("scope_value", ""),
+        principal_type=principal_type,
+        groups=fields.get("groups") or [],
+        tags=fields.get("tags") or [],
+    )
+
     reviewer_mentions = ", ".join(f"<@{r}>" for r in reviewers) or "the data team"
     message = (
         f"*Data Access Request*\n"
         f"User <@{requester_id}> requests adding data access with the following content:\n"
-        f"{format_submission_table(fields)}\n"
+        f"{verified.to_mrkdwn()}\n"
         f"Please help review: {reviewer_mentions}"
     )
     return slack.post_message(channel, message, thread_ts, token=bot.bot_token)

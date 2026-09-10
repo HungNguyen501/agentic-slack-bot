@@ -13,7 +13,7 @@ from rq import Queue, Retry
 
 from connectors import slack
 from connectors.bots import BotConfig, get_by_app_id
-from models.access_request_view import build_access_request_view
+from models.access_request_view import build_access_request_view, validate_submission
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
@@ -175,6 +175,12 @@ async def slack_interactivity(request: Request) -> dict:
 
     if payload_type == "view_submission":
         view = payload.get("view", {})
+        fields = _extract_view_submission_fields(view)
+
+        errors = validate_submission(fields)
+        if errors:
+            return {"response_action": "errors", "errors": errors}
+
         metadata = json.loads(view.get("private_metadata") or "{}")
         job = queue.enqueue(
             "worker.tasks.process_data_access_submission",
@@ -184,7 +190,7 @@ async def slack_interactivity(request: Request) -> dict:
             requester_id=metadata.get("requester_id"),
             request_type=metadata.get("request_type"),
             reviewers=metadata.get("reviewers") or [],
-            fields=_extract_view_submission_fields(view),
+            fields=fields,
             job_timeout=30,
         )
         log.info("Enqueued job %s for data access submission (bot_id=%s)", job.id, bot.bot_id)

@@ -4,7 +4,9 @@
 
 **Receiver** (`src/receiver/`) does exactly two things: verify the Slack signature and enqueue the job. Never add agent logic, Databricks calls, or Supabase reads to this service.
 
-Exception: `/slack/interactivity`'s `block_actions` handler calls `views.open` directly instead of enqueuing. Slack's `trigger_id` expires ~3 seconds after issuance — a window the RQ queue can't reliably guarantee under load — and the view is built by a pure function (`connectors.slack.build_access_request_view`) from data already carried in the button's `value`, so no extra Supabase/Databricks I/O is introduced. Its `view_submission` handler has no such constraint and follows the normal verify → enqueue pattern.
+Exceptions, both narrowly scoped to `/slack/interactivity`:
+- Its `block_actions` handler calls `views.open` directly instead of enqueuing. Slack's `trigger_id` expires ~3 seconds after issuance — a window the RQ queue can't reliably guarantee under load — and the view is built by a pure function (`models.access_request_view.build_access_request_view`) from data already carried in the button's `value`, so no extra Supabase/Databricks I/O is introduced.
+- Its `view_submission` handler runs `models.access_request_view.validate_submission()` — pure regex format validation, no I/O — synchronously before enqueuing, because Slack requires field errors on the view_submission response itself (`response_action: "errors"`) before the modal closes; an async worker reply would arrive after the modal is already gone. Anything requiring real I/O (the Databricks principal lookup) still happens in the worker task after enqueuing.
 
 **Worker** (`src/worker/`) owns all agent logic. It must not listen on any port or call Slack Event API endpoints directly.
 
