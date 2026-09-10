@@ -394,17 +394,23 @@ def summarize_answer(question: str, answer: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "Summarize the following answer to a Databricks data question into 1-3 short "
-                        "sentences suitable as a Slack message preview. Write it in a funny, friendly, "
-                        "easy-to-understand tone — like a helpful teammate, not a report. Light humor "
-                        "and a touch of personality (an emoji or two is fine) are welcome, but never at "
-                        "the expense of accuracy: keep concrete numbers and key findings exact, and drop "
-                        "supporting detail rather than the facts. Use Slack mrkdwn, no headers."
+                        "Summarize the following answer to a Databricks data question into 1-2 short "
+                        "sentences suitable as a Slack message preview — a teaser, not the report itself. "
+                        "The full detailed answer is posted right below in the same thread, so give only "
+                        "the high-level gist (e.g. overall counts or status) and never repeat detail that "
+                        "belongs in the full answer: no bullet lists, no per-item breakdowns, no links. "
+                        "Write it in a funny, friendly, easy-to-understand tone — like a helpful teammate, "
+                        "not a report. Light humor and a touch of personality (an emoji or two is fine) "
+                        "are welcome, but never at the expense of accuracy: any number you do mention must "
+                        "be exact. React with genuine feeling to the result: if everything looks healthy "
+                        "(e.g. zero failures), celebrate it warmly (\"Great day, no failed jobs!\"); if "
+                        "something's off, show a bit of empathy or mild concern rather than staying flat "
+                        "and neutral. Use Slack mrkdwn, no headers."
                     ),
                 },
                 {"role": "user", "content": f"Question: {question}\n\nAnswer:\n{answer}"},
             ],
-            max_tokens=150,
+            max_tokens=80,
         )
         return response.choices[0].message.content.strip()
     except Exception:
