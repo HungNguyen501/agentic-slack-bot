@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from openai import OpenAI
 from redis import Redis
 
-from connectors import databricks, postgres
+from connectors import databricks, postgres, slack
 from connectors.bots import BotConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,6 +20,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gpt-4o-mini")
 _SCHEDULE_TOOLS = {"list_schedules", "add_schedule", "update_schedule", "remove_schedule"}
+_DATA_ACCESS_TOOLS = {"request_data_access"}
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 redis_client = Redis.from_url(REDIS_URL)
@@ -292,6 +293,27 @@ def _get_agent_tools() -> list[dict]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "request_data_access",
+                "description": (
+                    "Start a data access request for the current user. Use when the user asks to "
+                    "request, get, or apply for access to a dataset, table filter, or scoped permission. "
+                    "This checks eligibility and, if allowed, posts an interactive form for the user to fill in."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "request_type": {
+                            "type": "string",
+                            "description": "The access request category, e.g. 'table_row_filter_access'.",
+                        },
+                    },
+                    "required": ["request_type"],
+                },
+            },
+        },
     ]
 
 
@@ -347,7 +369,78 @@ def _dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
     return f"Unknown schedule tool: {name}"
 
 
-def _dispatch_tool(name: str, args: dict, user_id: str | None, admin_users: frozenset[str], bot_id: str) -> str:
+def _dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
+    """Check eligibility for a data access request and, if allowed, post an interactive form button.
+
+    Args:
+        args: Parsed JSON arguments from the LLM tool call; expects "request_type".
+        user_id: Slack user ID of the requester, carried through to the form submission.
+        channel: Slack channel ID the request was made in — must be whitelisted for this request_type.
+        thread_ts: Thread timestamp to post the form button into.
+        bot: Per-bot config carrying bot_id (for the eligibility lookup) and bot_token (to post to Slack).
+
+    Returns:
+        A confirmation string once the form button is posted, or a polite refusal string if this
+        request_type isn't configured or isn't allowed in this channel.
+    """
+    request_type = args.get("request_type", "")
+    try:
+        category = postgres.get_access_request_category(bot.bot_id, request_type)
+    except Exception as exc:
+        log.exception("Access request category lookup failed")
+        return f"Error checking access-request eligibility: {exc}"
+
+    if not category or channel not in category["channel_ids"]:
+        return (
+            "Sorry, data access requests of this type aren't available in this channel. "
+            "Please reach out to your data team directly."
+        )
+
+    button_value = json.dumps(
+        {
+            "request_type": request_type,
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "requester_id": user_id,
+            "reviewers": category["reviewers"],
+        }
+    )
+    try:
+        slack.post_message(
+            channel,
+            f"Click below to fill out a *{request_type}* data access request.",
+            thread_ts,
+            blocks=[
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Open Form"},
+                            "action_id": "open_access_request_form",
+                            "value": button_value,
+                        }
+                    ],
+                }
+            ],
+            token=bot.bot_token,
+        )
+    except Exception as exc:
+        log.exception("Failed to post data access request button")
+        return f"Error opening the data access request form: {exc}"
+
+    return "I've posted a button in this thread — click it to open the data access request form."
+
+
+def _dispatch_tool(
+    name: str,
+    args: dict,
+    user_id: str | None,
+    admin_users: frozenset[str],
+    bot: BotConfig,
+    channel: str,
+    thread_ts: str,
+) -> str:
     """Route a single tool call to the correct handler, enforcing the per-bot admin whitelist.
 
     Args:
@@ -355,6 +448,9 @@ def _dispatch_tool(name: str, args: dict, user_id: str | None, admin_users: froz
         args: Parsed JSON arguments from the LLM tool call.
         user_id: Slack user ID of the requester.
         admin_users: Per-bot set of Slack user IDs allowed to manage schedules.
+        bot: Per-bot config carrying bot_id, bot_token, admin_users, enabled_skills.
+        channel: Slack channel ID the request was made in.
+        thread_ts: Thread timestamp of the conversation.
 
     Returns:
         String result to pass back to the LLM as the tool response.
@@ -372,7 +468,10 @@ def _dispatch_tool(name: str, args: dict, user_id: str | None, admin_users: froz
     if name in _SCHEDULE_TOOLS:
         if user_id not in admin_users:
             return "You are not authorized to manage schedules."
-        return _dispatch_schedule_tool(name, args, bot_id)
+        return _dispatch_schedule_tool(name, args, bot.bot_id)
+
+    if name in _DATA_ACCESS_TOOLS:
+        return _dispatch_data_access_tool(args, user_id, channel, thread_ts, bot)
 
     return f"Unknown tool: {name}"
 
@@ -421,6 +520,7 @@ def summarize_answer(question: str, answer: str) -> str:
 def run_agent(
     question: str,
     thread_ts: str,
+    channel: str,
     user_id: str | None = None,
     bot: BotConfig | None = None,
 ) -> str:
@@ -429,6 +529,8 @@ def run_agent(
     Args:
         question: User's question with the @mention prefix already stripped.
         thread_ts: Slack thread timestamp used to scope conversation history.
+        channel: Slack channel ID the question was asked in; needed by tools that post
+            interactive messages (e.g. request_data_access) into the same thread.
         user_id: Slack user ID of the requester; used for schedule tool authorization.
         bot: Per-bot config carrying admin_users and enabled_skills.
 
@@ -478,7 +580,7 @@ def run_agent(
 
         for tool_call in msg.tool_calls:
             args = json.loads(tool_call.function.arguments)
-            result = _dispatch_tool(tool_call.function.name, args, user_id, admin_users, bot.bot_id)
+            result = _dispatch_tool(tool_call.function.name, args, user_id, admin_users, bot, channel, thread_ts)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
     return "Sorry, I hit a processing limit. Please try a more specific question."

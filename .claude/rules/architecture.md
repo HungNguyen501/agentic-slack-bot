@@ -4,6 +4,8 @@
 
 **Receiver** (`src/receiver/`) does exactly two things: verify the Slack signature and enqueue the job. Never add agent logic, Databricks calls, or Supabase reads to this service.
 
+Exception: `/slack/interactivity`'s `block_actions` handler calls `views.open` directly instead of enqueuing. Slack's `trigger_id` expires ~3 seconds after issuance — a window the RQ queue can't reliably guarantee under load — and the view is built by a pure function (`connectors.slack.build_access_request_view`) from data already carried in the button's `value`, so no extra Supabase/Databricks I/O is introduced. Its `view_submission` handler has no such constraint and follows the normal verify → enqueue pattern.
+
 **Worker** (`src/worker/`) owns all agent logic. It must not listen on any port or call Slack Event API endpoints directly.
 
 **Scheduler** (`src/scheduler/`) only evaluates cron schedules and enqueues jobs. It must not run the agent itself or post to Slack directly.
@@ -45,7 +47,7 @@ Do not add ad-hoc Redis keys outside these patterns without updating this table.
 
 ## Adding Tools to the Agent
 
-New OpenAI tool schemas go in the `TOOLS` list in `src/worker/agent.py`. The corresponding dispatch branch goes in `execute_tool()` in the same file. Keep tool names snake_case and match them exactly between the schema and dispatch.
+New OpenAI tool schemas go in `_get_agent_tools()` in `src/worker/agent.py`. The corresponding dispatch branch goes in `_dispatch_tool()` in the same file. Keep tool names snake_case and match them exactly between the schema and dispatch.
 
 ## Skill Routing
 

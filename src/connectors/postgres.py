@@ -111,6 +111,28 @@ def remove_schedule(id: str) -> bool:
         return cur.rowcount > 0
 
 
+def get_access_request_category(bot_id: str, request_type: str) -> dict | None:
+    """Fetch the access-control row gating a data access request type for a bot.
+
+    Args:
+        bot_id: Bot identifier the request was made through.
+        request_type: The requested access category, e.g. "table_row_filter_access".
+
+    Returns:
+        Dict with id, bot_id, request_type, channel_ids, and reviewers (the latter two as
+        real lists, not serialized), or None if no category is configured for this
+        bot_id/request_type pair. Not run through _serialize since channel_ids/reviewers
+        are consumed as lists (containment checks), not passed back to the LLM.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, bot_id, request_type, channel_ids, reviewers FROM access_request_categories "
+            "WHERE bot_id = %s AND request_type = %s",
+            (bot_id, request_type),
+        )
+        return cur.fetchone()
+
+
 def _serialize(row: dict | None) -> dict:
     """Convert a psycopg row dict to plain strings for JSON and LLM compatibility.
 

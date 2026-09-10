@@ -2,9 +2,9 @@
 import logging
 import re
 
-import httpx
-
+from connectors import slack
 from connectors.bots import get_by_id as get_bot
+from models.access_request_view import format_submission_table
 from worker.agent import run_agent, summarize_answer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -72,65 +72,6 @@ def _split_message(text: str, max_len: int = 3000) -> list[str]:
     return chunks
 
 
-def _post_slack_message(channel: str, text: str, thread_ts: str | None = None, *, token: str) -> str:
-    """Post a message to Slack and return its timestamp.
-
-    Args:
-        channel: Slack channel ID to post into.
-        text: Message body in Slack mrkdwn format.
-        thread_ts: If provided, posts as a reply in that thread; otherwise posts a new top-level message.
-        token: Bot OAuth token (xoxb-...) to authenticate the request.
-
-    Returns:
-        The Slack message timestamp (ts) of the posted message.
-    """
-    payload: dict = {"channel": channel, "text": text}
-    if thread_ts:
-        payload["thread_ts"] = thread_ts
-
-    resp = httpx.post(
-        url="https://slack.com/api/chat.postMessage",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-        json=payload,
-        timeout=15.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack API error: {data.get('error')}")
-
-    return data["ts"]
-
-
-def _update_slack_message(channel: str, ts: str, text: str, *, token: str) -> None:
-    """Edit an existing Slack message in place.
-
-    Args:
-        channel: Slack channel ID containing the message.
-        ts: Timestamp of the message to update.
-        text: New message body in Slack mrkdwn format.
-        token: Bot OAuth token (xoxb-...) to authenticate the request.
-    """
-    resp = httpx.post(
-        url="https://slack.com/api/chat.update",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-        json={"channel": channel, "ts": ts, "text": text},
-        timeout=15.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack API error: {data.get('error')}")
-
-
 def reply_to_mention(
     channel: str,
     thread_ts: str,
@@ -162,7 +103,7 @@ def reply_to_mention(
     else:
         log.info("Running agent for question: %.200s (bot_id=%s)", question, bot_id)
         try:
-            answer = run_agent(question, thread_ts, user_id=user, bot=bot)
+            answer = run_agent(question, thread_ts, channel, user_id=user, bot=bot)
         except Exception as exc:
             log.exception("Agent error: %s", exc)
             answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
@@ -170,7 +111,7 @@ def reply_to_mention(
     chunks = _split_message(answer)
     ts = thread_ts
     for chunk in chunks:
-        ts = _post_slack_message(channel, chunk, thread_ts, token=bot.bot_token)
+        ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
     log.info("Posted reply (%d chunk(s)) to %s (thread %s)", len(chunks), channel, thread_ts)
     return ts
 
@@ -195,17 +136,17 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
     bot = get_bot(bot_id)
     log.info("Running scheduled agent for channel=%s question=%.200s (bot_id=%s)", channel, question, bot_id)
 
-    header_ts = _post_slack_message(channel, f"*Scheduled question:* _{question}_", token=bot.bot_token)
+    header_ts = slack.post_message(channel, f"*Scheduled question:* _{question}_", token=bot.bot_token)
 
     try:
-        answer = run_agent(question, header_ts, bot=bot)
+        answer = run_agent(question, header_ts, channel, bot=bot)
         summary = summarize_answer(question, answer)
     except Exception as exc:
         log.exception("Scheduled agent error: %s", exc)
         answer = "Sorry, I ran into an error while processing the scheduled question."
         summary = answer
 
-    _update_slack_message(
+    slack.update_message(
         channel,
         header_ts,
         f"*Scheduled question:* _{question}_\n\n{summary}",
@@ -215,6 +156,47 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
     chunks = _split_message(answer)
     ts = header_ts
     for chunk in chunks:
-        ts = _post_slack_message(channel, chunk, header_ts, token=bot.bot_token)
+        ts = slack.post_message(channel, chunk, header_ts, token=bot.bot_token)
     log.info("Posted scheduled answer (%d chunk(s)) to %s (thread %s)", len(chunks), channel, header_ts)
     return ts
+
+
+def process_data_access_submission(
+    bot_id: str,
+    channel: str,
+    thread_ts: str,
+    requester_id: str | None,
+    request_type: str,
+    reviewers: list[str],
+    fields: dict,
+) -> str:
+    """Log a submitted data access request form and post it back into the requesting thread for review.
+
+    Args:
+        bot_id: Bot identifier used to load per-bot config (token).
+        channel: Slack channel ID the original request thread lives in.
+        thread_ts: Timestamp of the thread to post the review request into.
+        requester_id: Slack user ID who submitted the form.
+        request_type: The access request category that was submitted.
+        reviewers: Slack user IDs to notify for review.
+        fields: Flattened {block_id: value} dict extracted from the modal's view.state.values.
+
+    Returns:
+        The Slack message timestamp (ts) of the posted review request.
+    """
+    bot = get_bot(bot_id)
+    log.info(
+        "Data access request submitted: request_type=%s requester_id=%s fields=%s",
+        request_type,
+        requester_id,
+        fields,
+    )
+
+    reviewer_mentions = ", ".join(f"<@{r}>" for r in reviewers) or "the data team"
+    message = (
+        f"*Data Access Request*\n"
+        f"User <@{requester_id}> requests adding data access with the following content:\n"
+        f"{format_submission_table(fields)}\n"
+        f"Please help review: {reviewer_mentions}"
+    )
+    return slack.post_message(channel, message, thread_ts, token=bot.bot_token)

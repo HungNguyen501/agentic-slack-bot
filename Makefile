@@ -1,7 +1,7 @@
 ProjectName := Agentic Slack Bot
 DOCKER_REPO := hungwnguyen
 IMAGE := agentic-slack-bot
-TAG ?= v2026.06.28
+TAG ?= v2026.08.20
 
 install:
 	@uv sync --all-groups --active
