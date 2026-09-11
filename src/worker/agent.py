@@ -390,7 +390,7 @@ def _dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, th
         log.exception("Access request category lookup failed")
         return f"Error checking access-request eligibility: {exc}"
 
-    if not category or channel not in category["channel_ids"]:
+    if not postgres.channel_authorized(category, channel):
         return (
             "Sorry, data access requests of this type aren't available in this channel. "
             "Please reach out to your data team directly."

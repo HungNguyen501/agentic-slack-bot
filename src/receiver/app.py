@@ -166,10 +166,14 @@ async def slack_interactivity(request: Request) -> dict:
         action = payload["actions"][0]
         if action.get("action_id") == "open_access_request_form":
             value = json.loads(action["value"])
+            # The button is visible to everyone in the channel, not just whoever the form was
+            # originally asked for — attribute the request to whoever actually clicked it and
+            # is about to fill it out, not the requester_id baked in when the button was posted.
+            value["requester_id"] = payload["user"]["id"]
             # views.open must be called within ~3s of the trigger_id being issued — the RQ
             # queue can't guarantee that latency under load, so this is called directly here
             # rather than enqueued (see architecture.md's documented exception for this route).
-            view = build_access_request_view(value["request_type"], private_metadata=action["value"])
+            view = build_access_request_view(value["request_type"], private_metadata=json.dumps(value))
             slack.open_view(payload["trigger_id"], view, token=bot.bot_token)
         return {}
 
@@ -191,7 +195,10 @@ async def slack_interactivity(request: Request) -> dict:
             request_type=metadata.get("request_type"),
             reviewers=metadata.get("reviewers") or [],
             fields=fields,
-            job_timeout=30,
+            # A single SCIM listing pass alone can take 15s+ depending on workspace size,
+            # even with the per-submission (not per-email) lookup fix in tasks.py — leave
+            # real headroom rather than cutting it close at 30s.
+            job_timeout=120,
         )
         log.info("Enqueued job %s for data access submission (bot_id=%s)", job.id, bot.bot_id)
         return {}

@@ -34,7 +34,7 @@ Do not add ad-hoc Redis keys outside these patterns without updating this table.
 
 ## Databricks Client
 
-`src/connectors/databricks.py` must:
+`src/connectors/databricks/` (`sql.py` specifically) must:
 - Reject any SQL that is not a SELECT statement
 - Enforce 200-row result cap (show truncation note when exceeded)
 - Use wait_timeout=50 s, on_wait_timeout=CANCEL on the Statement API

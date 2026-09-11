@@ -2,9 +2,11 @@
 import logging
 import re
 
-from connectors import databricks, slack
+from connectors import databricks, postgres, slack
 from connectors.bots import get_by_id as get_bot
 from models.access_request_submission import VerifiedAccessRequest
+from models.access_request_view import parse_emails
+from worker import review
 from worker.agent import run_agent, summarize_answer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -12,6 +14,11 @@ log = logging.getLogger("worker")
 
 # Strip all Slack user/bot mention tokens like <@U12345> wherever they appear
 _MENTION_RE = re.compile(r"<@[^>]+>\s*", re.UNICODE)
+
+# Matches a UUID anywhere after the leading approve/reject keyword, so phrasing like
+# "approve data access request ID=<uuid>" or "approve: <uuid>" works, not just the exact
+# `approve <uuid>` form we ask for in the review message.
+_REQUEST_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 
 
 def _split_message(text: str, max_len: int = 3000) -> list[str]:
@@ -95,6 +102,36 @@ def reply_to_mention(
     bot = get_bot(bot_id)
     question = _MENTION_RE.sub("", text).strip()
 
+    # Reviewers often copy-paste the exact reply we suggest, backticks and all (e.g.
+    # "`approve <id>`") — strip surrounding backticks/punctuation before parsing.
+    review_parts = question.split(maxsplit=1)
+    first_word = review_parts[0].strip("`:,.").lower() if review_parts else ""
+    if first_word in ("approve", "reject"):
+        decision = first_word
+        rest = review_parts[1] if len(review_parts) > 1 else ""
+
+        # Dedupe case-insensitively so the same id repeated (copy-paste accidents) doesn't
+        # trip this, but two genuinely different ids does — acting on just the first one
+        # silently would be surprising if someone meant to reference two different requests.
+        seen = set()
+        distinct_ids = []
+        for m in _REQUEST_ID_RE.findall(rest):
+            if m.lower() not in seen:
+                seen.add(m.lower())
+                distinct_ids.append(m)
+
+        if len(distinct_ids) > 1:
+            result = "I found multiple request ids in that message — please approve or reject one at a time."
+            return slack.post_message(channel, result, thread_ts, token=bot.bot_token)
+
+        request_id = distinct_ids[0] if distinct_ids else None
+        try:
+            result = review.handle_review_decision(bot, channel, thread_ts, user, decision, request_id)
+        except Exception as exc:
+            log.exception("Review decision error: %s", exc)
+            result = "Sorry, something went wrong while processing that review decision."
+        return slack.post_message(channel, result, thread_ts, token=bot.bot_token)
+
     if not question:
         answer = (
             "Hi! Ask me anything about our Databricks catalogs, tables, columns, "
@@ -172,6 +209,11 @@ def process_data_access_submission(
 ) -> str:
     """Log a submitted data access request form and post it back into the requesting thread for review.
 
+    The form's user_emails field can hold multiple comma/newline-separated addresses; this
+    fans out into one independent access_requests row per email (sharing the rest of the
+    form's fields), each with its own id — reviewers approve/reject them individually via the
+    same "approve <id>" mechanism used for any single request.
+
     Args:
         bot_id: Bot identifier used to load per-bot config (token).
         channel: Slack channel ID the original request thread lives in.
@@ -182,7 +224,7 @@ def process_data_access_submission(
         fields: Flattened {block_id: value} dict extracted from the modal's view.state.values.
 
     Returns:
-        The Slack message timestamp (ts) of the posted review request.
+        The Slack message timestamp (ts) of the last posted review-request chunk.
     """
     bot = get_bot(bot_id)
     log.info(
@@ -192,52 +234,122 @@ def process_data_access_submission(
         fields,
     )
 
-    user_email = (fields.get("user_email") or "").strip()
+    # Re-validate against access_request_categories rather than trusting the button's
+    # baked-in snapshot from when the form was first offered — the category or this
+    # channel's entry in it may have been revoked in the time since the button was clicked,
+    # and this is the point where the request actually gets persisted and reviewer-visible.
+    category = postgres.get_access_request_category(bot_id, request_type)
+    if not postgres.channel_authorized(category, channel):
+        return slack.post_message(
+            channel,
+            "Sorry, data access requests of this type aren't available in this channel anymore. "
+            "Please reach out to your data team directly.",
+            thread_ts,
+            token=bot.bot_token,
+        )
+
+    ticket_id = (fields.get("ticket_id") or "").strip()
     principal_type = fields.get("principal_type", "")
+    emails = parse_emails(fields.get("user_emails") or "")
 
+    # One batch lookup for the whole submission rather than one full SCIM listing per email —
+    # each listing paginates the entire workspace, so doing it per-email is what made
+    # multi-email submissions time out (RQ's 30s job_timeout) once there was more than one.
     if principal_type == "Service principals":
-        record = databricks.find_service_principal_by_email(user_email)
-        if not record:
-            return slack.post_message(
-                channel,
-                f"Couldn't find a service principal matching `{user_email}` in Databricks. "
-                "Please double-check the email and resubmit the form.",
-                thread_ts,
-                token=bot.bot_token,
-            )
-        display_name = record["displayName"]
-        principal = record["applicationId"]
+        lookup = databricks.find_service_principals_by_emails(emails)
     else:
-        record = databricks.find_user_by_email(user_email)
-        if not record:
-            return slack.post_message(
-                channel,
-                f"Couldn't find a user matching `{user_email}` in Databricks. "
-                "Please double-check the email and resubmit the form.",
-                thread_ts,
-                token=bot.bot_token,
-            )
-        display_name = record.get("userName", user_email)
-        principal = user_email
-
-    verified = VerifiedAccessRequest(
-        display_name=display_name,
-        user_email=user_email,
-        principal=principal,
-        filter_column=fields.get("filter_column", ""),
-        allowed_value=fields.get("allowed_value", ""),
-        scope_column=fields.get("scope_column", ""),
-        scope_value=fields.get("scope_value", ""),
-        principal_type=principal_type,
-        groups=fields.get("groups") or [],
-        tags=fields.get("tags") or [],
-    )
+        lookup = databricks.find_users_by_emails(emails)
 
     reviewer_mentions = ", ".join(f"<@{r}>" for r in reviewers) or "the data team"
-    message = (
-        f"*Data Access Request*\n"
-        f"User <@{requester_id}> requests adding data access with the following content:\n"
-        f"{verified.to_mrkdwn()}\n"
-        f"Please help review: {reviewer_mentions}"
+    sections = []
+
+    for index, user_email in enumerate(emails, start=1):
+        display_name, principal, principal_missing = _resolve_principal(user_email, principal_type, lookup.get(user_email))
+
+        verified = VerifiedAccessRequest(
+            ticket_id=ticket_id,
+            display_name=display_name,
+            user_email=user_email,
+            principal=principal,
+            filter_column=fields.get("filter_column", ""),
+            allowed_value=fields.get("allowed_value", ""),
+            scope_column=fields.get("scope_column", ""),
+            scope_value=fields.get("scope_value", ""),
+            principal_type=principal_type,
+            groups=fields.get("groups") or [],
+            tags=fields.get("tags") or [],
+        )
+
+        row = postgres.add_access_request(
+            bot_id=bot_id,
+            request_type=request_type,
+            channel=channel,
+            thread_ts=thread_ts,
+            requester_id=requester_id,
+            reviewers=reviewers,
+            ticket_id=ticket_id,
+            user_email=user_email,
+            principal_type=principal_type,
+            display_name=display_name,
+            principal=principal,
+            filter_column=fields.get("filter_column", ""),
+            allowed_value=fields.get("allowed_value", ""),
+            scope_column=fields.get("scope_column", ""),
+            scope_value=fields.get("scope_value", ""),
+            groups=fields.get("groups") or [],
+            tags=fields.get("tags") or [],
+        )
+        request_id = row["id"]
+        expires_line = f"expires_at: {row['expires_at'].strftime('%Y-%m-%d %H:%M UTC')}"
+
+        warning_line = (
+            f":warning: The user `{user_email}` was not found in Databricks — please verify before approving.\n"
+            if principal_missing
+            else ""
+        )
+        sections.append(
+            f"*Request {index} of {len(emails)}* (id: `{request_id}`)\n"
+            f"{verified.to_mrkdwn(extra_lines=[expires_line])}\n"
+            f"{warning_line}"
+            f"Reply `@{bot.bot_id} approve data access request {request_id}` to approve, or "
+            f"`@{bot.bot_id} reject data access request {request_id}` to reject."
+        )
+
+    header = (
+        f"*Data Access Request* — {len(emails)} sub-request(s) for ticket `{ticket_id}`\n"
+        f"User <@{requester_id}> requests adding data access for the following:\n\n"
     )
-    return slack.post_message(channel, message, thread_ts, token=bot.bot_token)
+    footer = f"\nPlease help review: {reviewer_mentions}"
+    divider = "\n" + "─" * 24 + "\n\n"
+    message = header + divider.join(sections) + footer
+
+    ts = thread_ts
+    for chunk in _split_message(message):
+        ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
+    return ts
+
+
+def _resolve_principal(user_email: str, principal_type: str, record: dict | None) -> tuple[str, str, bool]:
+    """Soft-resolve a submitted email to its Databricks display_name/principal.
+
+    Args:
+        user_email: The submitted email.
+        principal_type: "Service principals" or "Users", from the form.
+        record: This email's pre-fetched SCIM match (from a batch lookup covering every
+            email in the submission), or None if no match was found.
+
+    Returns:
+        (display_name, principal, principal_missing) — principal_missing is True only for
+        the "Users" path (users aren't created by this bot, so a missing one is flagged as a
+        warning rather than a hard refusal; approval re-verifies for real — see review.py).
+        The "Service principals" path is never "missing": this workflow is what creates the
+        principal on approval, so not finding one yet is expected, not a warning.
+    """
+    if principal_type == "Service principals":
+        if record:
+            return record["displayName"], record["applicationId"], False
+        return f"svc-{user_email}", "(created on approval)", False
+
+    if record:
+        return record.get("userName", user_email), user_email, False
+    return user_email, "(does not exist)", True

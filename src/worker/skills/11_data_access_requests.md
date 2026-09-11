@@ -10,7 +10,7 @@ Only one request type is currently configured: `table_row_filter_access`.
 
 ## Tools
 
-- `request_data_access(request_type)` — checks whether this request type can be requested in the current channel, and if so, posts a button in the thread that opens an interactive form. The form itself collects user_email, filter_column, allowed_value, scope_column, scope_value, principal_type, groups, and tags — do not ask the user for these fields yourself.
+- `request_data_access(request_type)` — checks whether this request type can be requested in the current channel, and if so, posts a button in the thread that opens an interactive form. The form itself collects ticket_id, user_emails (one or more, comma/newline separated — one access request is created per email), filter_column, allowed_value, scope_column, scope_value, principal_type, groups, and tags — do not ask the user for these fields yourself.
 
 ## Rules
 

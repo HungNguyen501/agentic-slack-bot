@@ -4,52 +4,25 @@ Unlike sql.py/jobs.py (which swallow errors into strings for the LLM tool-call l
 functions are called from worker business logic — so real HTTP/transport failures are left to
 propagate (RQ's retry/failure handling), and None is reserved strictly for "no match found".
 """
-import logging
-
-import httpx
-
-from ._client import HOST, auth_headers
-
-log = logging.getLogger("connectors.databricks.principals")
-
-_PAGE_SIZE = 100
-_MAX_PAGES = 20  # safety cap: up to ~2000 principals
+from ._client import list_scim_resources
 
 
-def _list_scim_resources(resource_path: str) -> list[dict]:
-    """Page through a workspace SCIM v2 collection and return all Resources.
+def _match_user(email: str, users: list[dict]) -> dict | None:
+    needle = email.strip().lower()
+    for user in users:
+        candidates = [user.get("userName", "")] + [e.get("value", "") for e in user.get("emails", [])]
+        if any(needle == c.lower() for c in candidates if c):
+            return user
+    return None
 
-    Args:
-        resource_path: SCIM resource name, e.g. "Users" or "ServicePrincipals".
 
-    Returns:
-        All resources across all pages, up to the safety cap (logs a warning if the cap is
-        hit before totalResults is exhausted).
-    """
-    resources: list[dict] = []
-    start_index = 1
-
-    for page_num in range(_MAX_PAGES):
-        resp = httpx.get(
-            f"{HOST}/api/2.0/preview/scim/v2/{resource_path}",
-            headers=auth_headers(),
-            params={"startIndex": start_index, "count": _PAGE_SIZE},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        page = data.get("Resources", [])
-        resources.extend(page)
-
-        total = data.get("totalResults", 0)
-        start_index += _PAGE_SIZE
-        if not page or start_index > total:
-            return resources
-
-        if page_num == _MAX_PAGES - 1:
-            log.warning("Hit the %d-page safety cap listing %s; %d of %d fetched", _MAX_PAGES, resource_path, len(resources), total)
-
-    return resources
+def _match_service_principal(email: str, service_principals: list[dict]) -> dict | None:
+    needle = email.strip().lower()
+    for sp in service_principals:
+        display_name = sp.get("displayName", "").lower()
+        if display_name.removeprefix("svc-") == needle:
+            return sp
+    return None
 
 
 def find_user_by_email(email: str) -> dict | None:
@@ -61,12 +34,7 @@ def find_user_by_email(email: str) -> dict | None:
     Returns:
         The matching SCIM User resource, or None if no user matches.
     """
-    needle = email.strip().lower()
-    for user in _list_scim_resources("Users"):
-        candidates = [user.get("userName", "")] + [e.get("value", "") for e in user.get("emails", [])]
-        if any(needle == c.lower() for c in candidates if c):
-            return user
-    return None
+    return _match_user(email, list_scim_resources("Users"))
 
 
 def find_service_principal_by_email(email: str) -> dict | None:
@@ -79,9 +47,33 @@ def find_service_principal_by_email(email: str) -> dict | None:
     Returns:
         The matching SCIM ServicePrincipal resource, or None if no service principal matches.
     """
-    needle = email.strip().lower()
-    for sp in _list_scim_resources("ServicePrincipals"):
-        display_name = sp.get("displayName", "").lower()
-        if display_name.removeprefix("svc-") == needle:
-            return sp
-    return None
+    return _match_service_principal(email, list_scim_resources("ServicePrincipals"))
+
+
+def find_users_by_emails(emails: list[str]) -> dict[str, dict | None]:
+    """Batch version of find_user_by_email — lists workspace Users once and matches every
+    requested email against that single list, instead of one full paginated listing per email
+    (which is what made multi-email form submissions time out).
+
+    Args:
+        emails: Email addresses submitted on the access request form.
+
+    Returns:
+        {email: matching SCIM User resource or None}, one entry per input email.
+    """
+    users = list_scim_resources("Users")
+    return {email: _match_user(email, users) for email in emails}
+
+
+def find_service_principals_by_emails(emails: list[str]) -> dict[str, dict | None]:
+    """Batch version of find_service_principal_by_email — lists workspace ServicePrincipals
+    once and matches every requested email against that single list.
+
+    Args:
+        emails: Email addresses submitted on the access request form.
+
+    Returns:
+        {email: matching SCIM ServicePrincipal resource or None}, one entry per input email.
+    """
+    service_principals = list_scim_resources("ServicePrincipals")
+    return {email: _match_service_principal(email, service_principals) for email in emails}

@@ -3,6 +3,28 @@ import re
 from dataclasses import dataclass, field
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_EMAIL_SPLIT_RE = re.compile(r"[,\n]+")
+
+
+def parse_emails(raw: str) -> list[str]:
+    """Split a free-text user_emails field into a deduped list of individual emails.
+
+    Args:
+        raw: The submitted user_emails value — one or more emails separated by commas
+            and/or newlines.
+
+    Returns:
+        Stripped, non-empty emails in first-seen order, deduplicated case-insensitively
+        (a repeated email typed twice shouldn't produce two separate requests).
+    """
+    seen = set()
+    emails = []
+    for part in _EMAIL_SPLIT_RE.split(raw or ""):
+        email = part.strip()
+        if email and email.lower() not in seen:
+            seen.add(email.lower())
+            emails.append(email)
+    return emails
 
 
 @dataclass(frozen=True)
@@ -15,6 +37,8 @@ class FormField:
         options: Selectable values; ignored when text_input is True.
         multi: Render as a multi_static_select instead of a static_select.
         text_input: Render as a free-text plain_text_input instead of a select.
+        multiline: For a text_input field, render a taller box that accepts newlines
+            (used by user_emails so one-per-line paste works, not just comma-separated).
     """
 
     block_id: str
@@ -22,11 +46,14 @@ class FormField:
     options: list[str] = field(default_factory=list)
     multi: bool = False
     text_input: bool = False
+    multiline: bool = False
 
     def to_block(self) -> dict:
         """Render this field as a Slack Block Kit input block."""
         if self.text_input:
-            element = {"type": "plain_text_input", "action_id": "value"}
+            element: dict = {"type": "plain_text_input", "action_id": "value"}
+            if self.multiline:
+                element["multiline"] = True
         else:
             element = {
                 "type": "multi_static_select" if self.multi else "static_select",
@@ -42,7 +69,8 @@ class FormField:
 
 
 ACCESS_REQUEST_FORM_FIELDS: list[FormField] = [
-    FormField(block_id="user_email", label="User email", text_input=True),
+    FormField(block_id="ticket_id", label="Ticket ID", text_input=True),
+    FormField(block_id="user_emails", label="User email(s) — comma or newline separated", text_input=True, multiline=True),
     FormField(block_id="filter_column", label="Filter column", options=["location", "location_market"]),
     FormField(
         block_id="allowed_value",
@@ -164,9 +192,13 @@ def validate_submission(fields: dict) -> dict[str, str]:
         in the shape Slack expects for a view_submission response_action of "errors".
     """
     errors = {}
-    user_email = (fields.get("user_email") or "").strip()
+    emails = parse_emails(fields.get("user_emails") or "")
 
-    if not EMAIL_PATTERN.match(user_email):
-        errors["user_email"] = "Enter a valid email address, e.g. name@example.com."
+    if not emails:
+        errors["user_emails"] = "Enter at least one valid email address, e.g. name@example.com."
+    else:
+        invalid = [e for e in emails if not EMAIL_PATTERN.match(e)]
+        if invalid:
+            errors["user_emails"] = f"Invalid email address(es): {', '.join(invalid)}"
 
     return errors
