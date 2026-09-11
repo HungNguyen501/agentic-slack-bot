@@ -5,12 +5,15 @@ import json
 import logging
 import os
 import time
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
 from redis import Redis
 from rq import Queue, Retry
 
+from connectors import slack
 from connectors.bots import BotConfig, get_by_app_id
+from models.access_request_view import build_access_request_view, validate_submission
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
@@ -114,6 +117,93 @@ async def slack_events(request: Request) -> dict:
             log.info("Enqueued job %s for event %s (bot_id=%s)", job.id, event_id, bot.bot_id)
 
     return {"ok": True}
+
+
+def _extract_view_submission_fields(view: dict) -> dict:
+    """Flatten a Slack view's state.values into a plain {block_id: value} dict.
+
+    Args:
+        view: The "view" object from a view_submission payload.
+
+    Returns:
+        Dict mapping each input block's block_id to its submitted value — a string for
+        plain_text_input/static_select, or a list of strings for multi_static_select.
+    """
+    fields = {}
+    for block_id, actions in view.get("state", {}).get("values", {}).items():
+        action = next(iter(actions.values()))
+        if "selected_option" in action:
+            fields[block_id] = (action["selected_option"] or {}).get("value")
+        elif "selected_options" in action:
+            fields[block_id] = [o["value"] for o in action["selected_options"]]
+        else:
+            fields[block_id] = action.get("value")
+    return fields
+
+
+@app.post("/slack/interactivity")
+async def slack_interactivity(request: Request) -> dict:
+    """Verify signature and handle Slack interactive payloads (block_actions, view_submission).
+
+    Args:
+        request: incoming FastAPI request with a form-urlencoded `payload` field.
+    """
+    body = await request.body()
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
+
+    form = parse_qs(body.decode())
+    payload = json.loads(form["payload"][0])
+    bot = _resolve_bot(payload)
+
+    if not verify_slack_signature(bot.signing_secret, timestamp, signature, body):
+        log.warning("Invalid Slack signature for bot_id=%s", bot.bot_id)
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    payload_type = payload.get("type")
+
+    if payload_type == "block_actions":
+        action = payload["actions"][0]
+        if action.get("action_id") == "open_access_request_form":
+            value = json.loads(action["value"])
+            # The button is visible to everyone in the channel, not just whoever the form was
+            # originally asked for — attribute the request to whoever actually clicked it and
+            # is about to fill it out, not the requester_id baked in when the button was posted.
+            value["requester_id"] = payload["user"]["id"]
+            # views.open must be called within ~3s of the trigger_id being issued — the RQ
+            # queue can't guarantee that latency under load, so this is called directly here
+            # rather than enqueued (see architecture.md's documented exception for this route).
+            view = build_access_request_view(value["request_type"], private_metadata=json.dumps(value))
+            slack.open_view(payload["trigger_id"], view, token=bot.bot_token)
+        return {}
+
+    if payload_type == "view_submission":
+        view = payload.get("view", {})
+        fields = _extract_view_submission_fields(view)
+
+        errors = validate_submission(fields)
+        if errors:
+            return {"response_action": "errors", "errors": errors}
+
+        metadata = json.loads(view.get("private_metadata") or "{}")
+        job = queue.enqueue(
+            "worker.tasks.process_data_access_submission",
+            bot_id=bot.bot_id,
+            channel=metadata.get("channel"),
+            thread_ts=metadata.get("thread_ts"),
+            requester_id=metadata.get("requester_id"),
+            request_type=metadata.get("request_type"),
+            reviewers=metadata.get("reviewers") or [],
+            fields=fields,
+            # A single SCIM listing pass alone can take 15s+ depending on workspace size,
+            # even with the per-submission (not per-email) lookup fix in tasks.py — leave
+            # real headroom rather than cutting it close at 30s.
+            job_timeout=120,
+        )
+        log.info("Enqueued job %s for data access submission (bot_id=%s)", job.id, bot.bot_id)
+        return {}
+
+    return {}
 
 
 @app.get("/healthz")

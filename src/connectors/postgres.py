@@ -111,6 +111,152 @@ def remove_schedule(id: str) -> bool:
         return cur.rowcount > 0
 
 
+def get_access_request_category(bot_id: str, request_type: str) -> dict | None:
+    """Fetch the access-control row gating a data access request type for a bot.
+
+    Args:
+        bot_id: Bot identifier the request was made through.
+        request_type: The requested access category, e.g. "table_row_filter_access".
+
+    Returns:
+        Dict with id, bot_id, request_type, channel_ids, and reviewers (the latter two as
+        real lists, not serialized), or None if no category is configured for this
+        bot_id/request_type pair. Not run through _serialize since channel_ids/reviewers
+        are consumed as lists (containment checks), not passed back to the LLM.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, bot_id, request_type, channel_ids, reviewers FROM access_request_categories "
+            "WHERE bot_id = %s AND request_type = %s",
+            (bot_id, request_type),
+        )
+        return cur.fetchone()
+
+
+def channel_authorized(category: dict | None, channel: str) -> bool:
+    """True if `category` (from get_access_request_category) permits requests in `channel`.
+
+    Shared by the three places that must independently re-check this — asking for the form
+    (worker/agent.py), persisting a submission (worker/tasks.py), and approving (worker/review.py)
+    — since a category can be revoked at any point between those steps.
+    """
+    return bool(category) and channel in category["channel_ids"]
+
+
+def add_access_request(
+    bot_id: str,
+    request_type: str,
+    channel: str,
+    thread_ts: str,
+    requester_id: str | None,
+    reviewers: list[str],
+    ticket_id: str,
+    user_email: str,
+    principal_type: str,
+    display_name: str,
+    principal: str,
+    filter_column: str,
+    allowed_value: str,
+    scope_column: str,
+    scope_value: str,
+    groups: list[str],
+    tags: list[str],
+) -> dict:
+    """Insert a newly submitted access request row with status='pending'.
+
+    Returns:
+        The created row (raw, not _serialize'd — reviewers/groups/tags are consumed as
+        lists by worker/review.py, not passed back to the LLM). Includes the generated `id`,
+        shown to the requester so reviewers can reference it unambiguously.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO access_requests ("
+            "bot_id, request_type, channel, thread_ts, requester_id, reviewers, ticket_id, user_email, "
+            "principal_type, display_name, principal, filter_column, allowed_value, scope_column, scope_value, "
+            "groups, tags"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "RETURNING *",
+            (
+                bot_id,
+                request_type,
+                channel,
+                thread_ts,
+                requester_id,
+                reviewers,
+                ticket_id,
+                user_email,
+                principal_type,
+                display_name,
+                principal,
+                filter_column,
+                allowed_value,
+                scope_column,
+                scope_value,
+                groups,
+                tags,
+            ),
+        )
+        return cur.fetchone()
+
+
+def get_access_request(bot_id: str, request_id: str, thread_ts: str) -> dict | None:
+    """Fetch a specific access request by id, scoped to the thread it's being reviewed in.
+
+    Scoping by thread_ts (in addition to id) prevents a reply in one thread from acting on a
+    request that was submitted in a different thread.
+
+    Args:
+        bot_id: Bot the request was made through.
+        request_id: The access_requests.id a reviewer referenced (e.g. "approve <request_id>").
+        thread_ts: Slack thread timestamp the reply was posted in.
+
+    Returns:
+        The matching row (raw dict, lists as real lists), or None if no such request exists
+        in this thread (including when request_id isn't a valid UUID).
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                "SELECT * FROM access_requests WHERE bot_id = %s AND id = %s AND thread_ts = %s",
+                (bot_id, request_id, thread_ts),
+            )
+        except psycopg.errors.InvalidTextRepresentation:
+            conn.rollback()
+            return None
+        return cur.fetchone()
+
+
+def update_access_request_status(
+    id: str,
+    status: str,
+    *,
+    pr_url: str | None = None,
+    service_principal_id: str | None = None,
+    principal: str | None = None,
+    display_name: str | None = None,
+) -> None:
+    """Update an access request's status and, on approval, the resolved principal fields.
+
+    Args:
+        id: UUID of the access request row.
+        status: New status — "approved" or "rejected".
+        pr_url: The opened pull request's URL, set on approval.
+        service_principal_id: The Databricks SCIM id of the (found-or-created) service
+            principal, set on approval for the "Service principals" path only.
+        principal: The resolved principal identifier (applicationId or user email).
+        display_name: The resolved display name.
+    """
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE access_requests SET status = %s, pr_url = COALESCE(%s, pr_url), "
+            "service_principal_id = COALESCE(%s, service_principal_id), "
+            "principal = COALESCE(%s, principal), display_name = COALESCE(%s, display_name) "
+            "WHERE id = %s",
+            (status, pr_url, service_principal_id, principal, display_name, id),
+        )
+
+
 def _serialize(row: dict | None) -> dict:
     """Convert a psycopg row dict to plain strings for JSON and LLM compatibility.
 

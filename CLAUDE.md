@@ -60,6 +60,7 @@ See `.env.example`. Required:
 - `DATABRICKS_HOST` — workspace URL
 - `DATABRICKS_WAREHOUSE_ID`
 - `DATABRICKS_ACCESS_TOKEN`
+- `GIT_REPO_PAT_DATA_PLATFORM` — GitHub PAT for opening access-control PRs on `VireoAI/vireox-data-platform`
 - `NGROK_AUTHTOKEN` — local dev only
 
 Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-4o-mini), `SCHEDULER_INTERVAL` (default 180 s)
