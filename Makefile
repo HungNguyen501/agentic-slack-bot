@@ -6,10 +6,14 @@ FLYWAY_IMAGE := flyway/flyway:11-alpine
 FLYWAY_URL = $(shell . ./.env && python3 -c "from urllib.parse import urlparse, unquote; u = urlparse('$${SUPABASE_DB_URL}'); print(f'jdbc:postgresql://{u.hostname}:{u.port or 5432}{u.path}?user={unquote(u.username)}&password={unquote(u.password)}')")
 
 install:
-	@uv sync --all-groups --active
+	@uv sync --all-groups --active \
+		&& pre-commit install
 
 lint:
 	@ruff check . && flake8 --show-source --statistics .
+
+lint-sql:
+	@sqlfluff lint src/migrations/ src/databricks/metric_views/
 
 build-image:
 	docker buildx build -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
@@ -63,8 +67,9 @@ help:
 	@echo "$(ProjectName)"
 	@echo ""
 	@echo "Local development:"
-	@echo "  make install              Install dependencies (uv sync --all-groups --active)"
+	@echo "  make install              Install dependencies + pre-commit hooks (make lint, make lint-sql)"
 	@echo "  make lint                 Run ruff + flake8"
+	@echo "  make lint-sql             Run sqlfluff against migrations + metric views"
 	@echo "  make build-image          Build local image, tagged \$$(TAG) and latest"
 	@echo "                              e.g. make build-image TAG=v2026.07.31"
 	@echo "  make compose-up           docker compose up -d --build"

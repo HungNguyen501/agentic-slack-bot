@@ -38,8 +38,8 @@ SELECT
   CASE WHEN r.result_state = 'FAILED'    THEN 1 ELSE 0 END AS is_failure,
   CASE WHEN r.result_state = 'CANCELLED' THEN 1 ELSE 0 END AS is_cancelled,
   CASE WHEN r.result_state = 'TIMED_OUT' THEN 1 ELSE 0 END AS is_timed_out
-FROM system.lakeflow.job_run_timeline r
-JOIN latest_jobs j
+FROM system.lakeflow.job_run_timeline AS r
+INNER JOIN latest_jobs AS j
   ON r.workspace_id = j.workspace_id AND r.job_id = j.job_id
 WHERE r.result_state IS NOT NULL;
 
