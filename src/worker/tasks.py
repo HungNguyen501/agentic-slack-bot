@@ -1,6 +1,10 @@
 """RQ worker tasks — resolved by dotted name (e.g. worker.tasks.reply_to_mention)."""
 import logging
 import re
+import threading
+import time
+
+from slack_sdk.errors import SlackApiError
 
 from connectors import databricks, slack
 from connectors.db.access_request_categories import channel_authorized, get_access_request_category
@@ -21,6 +25,63 @@ _MENTION_RE = re.compile(r"<@[^>]+>\s*", re.UNICODE)
 # "approve data access request ID=<uuid>" or "approve: <uuid>" works, not just the exact
 # `approve <uuid>` form we ask for in the review message.
 _REQUEST_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+_THINKING_INTERVAL_SECONDS = 1.0
+
+# Every conversation's animation thread shares this lock/timestamp so this worker process
+# never fires more than one chat.update per _MIN_GLOBAL_UPDATE_GAP_SECONDS in total, no matter
+# how many conversations are animating at once — otherwise N concurrent conversations means N
+# concurrent update loops with no coordination, which is what actually burns Slack's shared
+# per-workspace chat.update rate limit. This is per-process only (each worker replica has its
+# own budget); fine at this app's scale, but move to a Redis-backed limiter if that stops holding.
+_animation_lock = threading.Lock()
+_last_animation_update = 0.0
+_MIN_GLOBAL_UPDATE_GAP_SECONDS = 1.0
+
+
+def _throttled_animation_update(channel: str, ts: str, text: str, token: str) -> None:
+    """Send one animation frame, dropping it (not queuing it) if another thread just updated.
+
+    A dropped frame just means this conversation's dots don't advance this tick — harmless,
+    since it's decorative. Raises SlackApiError on an actual Slack-side failure (including a
+    429), left for the caller to handle.
+    """
+    global _last_animation_update
+    with _animation_lock:
+        now = time.monotonic()
+        if now - _last_animation_update < _MIN_GLOBAL_UPDATE_GAP_SECONDS:
+            return
+        _last_animation_update = now
+    slack.update_message(channel, ts, text, token=token)
+
+
+def _animate_thinking(channel: str, ts: str, token: str, stop_event: threading.Event) -> None:
+    """Cycle the placeholder message's dots every _THINKING_INTERVAL_SECONDS until stop_event is set.
+
+    Runs on its own thread alongside the (potentially slow) agent loop so the user sees the
+    bot visibly working rather than a static message. stop_event.wait() doubles as the sleep,
+    so setting the event both ends the loop and skips any remaining wait immediately.
+    """
+    frame = 0
+    while not stop_event.wait(_THINKING_INTERVAL_SECONDS):
+        frame += 1
+        text = " ".join([":pepe-pray:"] * frame)
+        try:
+            _throttled_animation_update(channel, ts, text, token)
+        except SlackApiError as exc:
+            if exc.response is not None and exc.response.status_code == 429:
+                # Actually rate-limited despite the throttle (e.g. other traffic on this
+                # token) — back off for exactly as long as Slack says, then keep animating
+                # rather than giving up on the rest of this conversation's animation.
+                retry_after = float(exc.response.headers.get("Retry-After", 1))
+                log.warning("Thinking-animation rate-limited; backing off %.1fs", retry_after)
+                stop_event.wait(retry_after)
+                continue
+            log.exception("Thinking-animation update failed")
+            return
+        except Exception:
+            log.exception("Thinking-animation update failed")
+            return
 
 
 def _split_message(text: str, max_len: int = 3000) -> list[str]:
@@ -139,22 +200,42 @@ def reply_to_mention(
             "Hi! Ask me anything about our Databricks catalogs, tables, columns, "
             "jobs, user's access control or data lineage."
         )
-    else:
-        log.info("Running agent for question: %.200s (bot_id=%s)", question, bot_id)
-        try:
-            answer = run_agent(question, thread_ts, channel, user_id=user, bot=bot)
-        except Exception as exc:
-            log.exception("Agent error: %s", exc)
-            answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
+        return slack.post_message(channel, answer, thread_ts, token=bot.bot_token)
+
+    log.info("Running agent for question: %.200s (bot_id=%s)", question, bot_id)
+    # Posted immediately (before the potentially slow agent loop) and animated in place while
+    # it runs, so the user sees the bot visibly working rather than staring at silence for
+    # however long the tool-calling loop takes.
+    thinking_ts = slack.post_message(channel, ":pepe-pray:", thread_ts, token=bot.bot_token)
+    stop_animation = threading.Event()
+    animation_thread = threading.Thread(
+        target=_animate_thinking,
+        args=(channel, thinking_ts, bot.bot_token, stop_animation),
+        daemon=True,
+    )
+    animation_thread.start()
+
+    try:
+        answer = run_agent(question, thread_ts, channel, user_id=user, bot=bot)
+    except Exception as exc:
+        log.exception("Agent error: %s", exc)
+        answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
+    finally:
+        # Stop and join before touching thinking_ts ourselves — otherwise a final animation
+        # edit still in flight could land after (and clobber) the real answer below.
+        stop_animation.set()
+        animation_thread.join()
 
     if not answer:
         # run_agent returns "" when a tool call already posted everything the user needs
-        # (e.g. the data access request button) — nothing left to reply with.
+        # (e.g. the data access request button) — remove the placeholder, nothing left to reply with.
+        slack.delete_message(channel, thinking_ts, token=bot.bot_token)
         return thread_ts
 
     chunks = _split_message(answer)
-    ts = thread_ts
-    for chunk in chunks:
+    slack.update_message(channel, thinking_ts, chunks[0], token=bot.bot_token)
+    ts = thinking_ts
+    for chunk in chunks[1:]:
         ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
     log.info("Posted reply (%d chunk(s)) to %s (thread %s)", len(chunks), channel, thread_ts)
     return ts

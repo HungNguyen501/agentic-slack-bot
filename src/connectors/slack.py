@@ -1,5 +1,5 @@
 """Slack Web API client — message posting and modal views."""
-import httpx
+from slack_sdk import WebClient
 
 
 def post_message(channel: str, text: str, thread_ts: str | None = None, blocks: list[dict] | None = None, *, token: str) -> str:
@@ -15,28 +15,8 @@ def post_message(channel: str, text: str, thread_ts: str | None = None, blocks: 
     Returns:
         The Slack message timestamp (ts) of the posted message.
     """
-    payload: dict = {"channel": channel, "text": text}
-    if thread_ts:
-        payload["thread_ts"] = thread_ts
-    if blocks:
-        payload["blocks"] = blocks
-
-    resp = httpx.post(
-        url="https://slack.com/api/chat.postMessage",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-        json=payload,
-        timeout=15.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack API error: {data.get('error')}")
-
-    return data["ts"]
+    response = WebClient(token=token).chat_postMessage(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
+    return str(response["ts"])
 
 
 def update_message(channel: str, ts: str, text: str, *, token: str) -> None:
@@ -48,20 +28,18 @@ def update_message(channel: str, ts: str, text: str, *, token: str) -> None:
         text: New message body in Slack mrkdwn format.
         token: Bot OAuth token (xoxb-...) to authenticate the request.
     """
-    resp = httpx.post(
-        url="https://slack.com/api/chat.update",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-        json={"channel": channel, "ts": ts, "text": text},
-        timeout=15.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    WebClient(token=token).chat_update(channel=channel, ts=ts, text=text)
 
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack API error: {data.get('error')}")
+
+def delete_message(channel: str, ts: str, *, token: str) -> None:
+    """Delete an existing Slack message (e.g. a "thinking..." placeholder no longer needed).
+
+    Args:
+        channel: Slack channel ID containing the message.
+        ts: Timestamp of the message to delete.
+        token: Bot OAuth token (xoxb-...) to authenticate the request.
+    """
+    WebClient(token=token).chat_delete(channel=channel, ts=ts)
 
 
 def open_view(trigger_id: str, view: dict, *, token: str) -> None:
@@ -72,17 +50,4 @@ def open_view(trigger_id: str, view: dict, *, token: str) -> None:
         view: Slack view payload, e.g. as built by models.access_request_view.build_access_request_view.
         token: Bot OAuth token (xoxb-...) to authenticate the request.
     """
-    resp = httpx.post(
-        url="https://slack.com/api/views.open",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-        json={"trigger_id": trigger_id, "view": view},
-        timeout=15.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack API error: {data.get('error')}")
+    WebClient(token=token).views_open(trigger_id=trigger_id, view=view)

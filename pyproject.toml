@@ -15,6 +15,7 @@ dependencies = [
     "flake8-pyproject>=1.2.4",
     "pyyaml>=6.0.3",
     "sqlfluff>=4.3.0",
+    "slack-sdk>=3.44.1",
 ]
 
 [tool.flake8]
