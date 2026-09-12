@@ -1,5 +1,4 @@
 -- Data access request categories: gates the request_data_access agent tool.
--- Run once against your Supabase database before deploying.
 
 create table if not exists public.access_request_categories (
     id uuid not null default gen_random_uuid(),

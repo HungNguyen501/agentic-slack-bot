@@ -1,5 +1,4 @@
 -- Submitted data access requests + their review/approval state.
--- Run once against your Supabase database before deploying.
 
 create type access_request_status as enum ('pending', 'approved', 'rejected');
 
