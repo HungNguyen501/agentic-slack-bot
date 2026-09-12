@@ -166,6 +166,16 @@ async def slack_interactivity(request: Request) -> dict:
         action = payload["actions"][0]
         if action.get("action_id") == "open_access_request_form":
             value = json.loads(action["value"])
+            # Missing expires_at means this button was posted before the TTL feature shipped —
+            # default to 0 (always in the past) so those old buttons are refused, not grandfathered in.
+            if time.time() > value.get("expires_at", 0):
+                queue.enqueue(
+                    "worker.tasks.notify_access_request_button_expired",
+                    bot_id=bot.bot_id,
+                    channel=value["channel"],
+                    thread_ts=value["thread_ts"],
+                )
+                return {}
             # The button is visible to everyone in the channel, not just whoever the form was
             # originally asked for — attribute the request to whoever actually clicked it and
             # is about to fill it out, not the requester_id baked in when the button was posted.

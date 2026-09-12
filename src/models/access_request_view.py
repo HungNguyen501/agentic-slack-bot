@@ -3,15 +3,20 @@ import re
 from dataclasses import dataclass, field
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_EMAIL_SPLIT_RE = re.compile(r"[,\n]+")
+
+# How long the "Open Form" button posted by _dispatch_data_access_tool stays clickable.
+# src/worker/agent.py uses this to stamp expires_at into the button's value when posting it;
+# src/receiver/app.py just compares expires_at against the current time, no TTL math of its own.
+ACCESS_REQUEST_BUTTON_TTL_SECONDS = 3600
 
 
 def parse_emails(raw: str) -> list[str]:
     """Split a free-text user_emails field into a deduped list of individual emails.
 
     Args:
-        raw: The submitted user_emails value — one or more emails separated by commas
-            and/or newlines.
+        raw: The submitted user_emails value — one email per line. Commas are not
+            treated as separators; a comma on a line makes that line invalid (caught
+            by validate_submission), not multiple emails.
 
     Returns:
         Stripped, non-empty emails in first-seen order, deduplicated case-insensitively
@@ -19,8 +24,8 @@ def parse_emails(raw: str) -> list[str]:
     """
     seen = set()
     emails = []
-    for part in _EMAIL_SPLIT_RE.split(raw or ""):
-        email = part.strip()
+    for line in (raw or "").split("\n"):
+        email = line.strip()
         if email and email.lower() not in seen:
             seen.add(email.lower())
             emails.append(email)
@@ -38,7 +43,7 @@ class FormField:
         multi: Render as a multi_static_select instead of a static_select.
         text_input: Render as a free-text plain_text_input instead of a select.
         multiline: For a text_input field, render a taller box that accepts newlines
-            (used by user_emails so one-per-line paste works, not just comma-separated).
+            (used by user_emails, which requires exactly one email per line).
     """
 
     block_id: str
@@ -70,7 +75,7 @@ class FormField:
 
 ACCESS_REQUEST_FORM_FIELDS: list[FormField] = [
     FormField(block_id="ticket_id", label="Ticket ID", text_input=True),
-    FormField(block_id="user_emails", label="User email(s) — comma or newline separated", text_input=True, multiline=True),
+    FormField(block_id="user_emails", label="User email(s) — one per line", text_input=True, multiline=True),
     FormField(block_id="filter_column", label="Filter column", options=["location", "location_market"]),
     FormField(
         block_id="allowed_value",
@@ -192,7 +197,14 @@ def validate_submission(fields: dict) -> dict[str, str]:
         in the shape Slack expects for a view_submission response_action of "errors".
     """
     errors = {}
-    emails = parse_emails(fields.get("user_emails") or "")
+    raw = fields.get("user_emails") or ""
+
+    comma_lines = [line.strip() for line in raw.split("\n") if "," in line]
+    if comma_lines:
+        errors["user_emails"] = "Enter one email per line — commas are not allowed, e.g. remove the comma(s) in: " + ", ".join(comma_lines)
+        return errors
+
+    emails = parse_emails(raw)
 
     if not emails:
         errors["user_emails"] = "Enter at least one valid email address, e.g. name@example.com."

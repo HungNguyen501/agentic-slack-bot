@@ -145,6 +145,11 @@ def reply_to_mention(
             log.exception("Agent error: %s", exc)
             answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
 
+    if not answer:
+        # run_agent returns "" when a tool call already posted everything the user needs
+        # (e.g. the data access request button) — nothing left to reply with.
+        return thread_ts
+
     chunks = _split_message(answer)
     ts = thread_ts
     for chunk in chunks:
@@ -196,6 +201,23 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
         ts = slack.post_message(channel, chunk, header_ts, token=bot.bot_token)
     log.info("Posted scheduled answer (%d chunk(s)) to %s (thread %s)", len(chunks), channel, header_ts)
     return ts
+
+
+def notify_access_request_button_expired(bot_id: str, channel: str, thread_ts: str) -> None:
+    """Tell the thread that a clicked "Open Form" button is past its TTL and won't open.
+
+    Args:
+        bot_id: Bot identifier used to load per-bot config (token).
+        channel: Slack channel ID the button was posted into.
+        thread_ts: Thread timestamp to reply into.
+    """
+    bot = get_bot(bot_id)
+    slack.post_message(
+        channel,
+        "This request button has expired. Please ask again to get a new one.",
+        thread_ts,
+        token=bot.bot_token,
+    )
 
 
 def process_data_access_submission(

@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import time
 import traceback
 from datetime import date, timedelta
 
@@ -10,6 +11,7 @@ from redis import Redis
 
 from connectors import databricks, postgres, slack
 from connectors.bots import BotConfig
+from models.access_request_view import ACCESS_REQUEST_BUTTON_TTL_SECONDS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker.agent")
@@ -21,6 +23,11 @@ SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gpt-4o-mini")
 _SCHEDULE_TOOLS = {"list_schedules", "add_schedule", "update_schedule", "remove_schedule"}
 _DATA_ACCESS_TOOLS = {"request_data_access"}
+_ACCESS_REQUEST_POSTED_MESSAGE = (
+    "Click below to fill out a data access request. "
+    f"This link expires in {int(ACCESS_REQUEST_BUTTON_TTL_SECONDS / 60)} minutes."
+)
+
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 redis_client = Redis.from_url(REDIS_URL)
@@ -403,14 +410,20 @@ def _dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, th
             "thread_ts": thread_ts,
             "requester_id": user_id,
             "reviewers": category["reviewers"],
+            "created_at": int(time.time()),
+            "expires_at": int(time.time()) + ACCESS_REQUEST_BUTTON_TTL_SECONDS,
         }
     )
     try:
         slack.post_message(
             channel,
-            f"Click below to fill out a *{request_type}* data access request.",
+            _ACCESS_REQUEST_POSTED_MESSAGE,
             thread_ts,
             blocks=[
+                # message_text alone is only the notification fallback once `blocks` is set —
+                # Slack renders the blocks array in-channel, so the TTL notice needs its own
+                # section block here or it never actually shows up next to the button.
+                {"type": "section", "text": {"type": "mrkdwn", "text": _ACCESS_REQUEST_POSTED_MESSAGE}},
                 {
                     "type": "actions",
                     "elements": [
@@ -429,7 +442,7 @@ def _dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, th
         log.exception("Failed to post data access request button")
         return f"Error opening the data access request form: {exc}"
 
-    return "I've posted a button in this thread — click it to open the data access request form."
+    return _ACCESS_REQUEST_POSTED_MESSAGE
 
 
 def _dispatch_tool(
@@ -582,5 +595,11 @@ def run_agent(
             args = json.loads(tool_call.function.arguments)
             result = _dispatch_tool(tool_call.function.name, args, user_id, admin_users, bot, channel, thread_ts)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+
+            if tool_call.function.name in _DATA_ACCESS_TOOLS and result == _ACCESS_REQUEST_POSTED_MESSAGE:
+                history.append({"role": "user", "content": question})
+                history.append({"role": "assistant", "content": result})
+                _save_history(thread_ts, history)
+                return ""
 
     return "Sorry, I hit a processing limit. Please try a more specific question."
