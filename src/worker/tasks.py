@@ -188,12 +188,30 @@ def reply_to_mention(
             return slack.post_message(channel, result, thread_ts, token=bot.bot_token)
 
         request_id = distinct_ids[0] if distinct_ids else None
+
+        # Approval does real I/O (Databricks principal resolution, GitHub PR creation) that
+        # can take a few seconds, so give the same "working on it" feedback as the agent loop
+        # below rather than leaving the reviewer staring at silence.
+        thinking_ts = slack.post_message(channel, ":pepe-pray:", thread_ts, token=bot.bot_token)
+        stop_animation = threading.Event()
+        animation_thread = threading.Thread(
+            target=_animate_thinking,
+            args=(channel, thinking_ts, bot.bot_token, stop_animation),
+            daemon=True,
+        )
+        animation_thread.start()
+
         try:
             result = review.handle_review_decision(bot, channel, thread_ts, user, decision, request_id)
         except Exception as exc:
             log.exception("Review decision error: %s", exc)
             result = "Sorry, something went wrong while processing that review decision."
-        return slack.post_message(channel, result, thread_ts, token=bot.bot_token)
+        finally:
+            stop_animation.set()
+            animation_thread.join()
+
+        slack.update_message(channel, thinking_ts, result, token=bot.bot_token)
+        return thinking_ts
 
     if not question:
         answer = (
