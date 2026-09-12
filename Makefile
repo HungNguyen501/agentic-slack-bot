@@ -1,7 +1,9 @@
 ProjectName := Agentic Slack Bot
 DOCKER_REPO := hungwnguyen
 IMAGE := agentic-slack-bot
-TAG ?= v2026.08.20
+TAG ?= v2026.09.11
+FLYWAY_IMAGE := flyway/flyway:11-alpine
+FLYWAY_URL = $(shell . ./.env && python3 -c "from urllib.parse import urlparse, unquote; u = urlparse('$${SUPABASE_DB_URL}'); print(f'jdbc:postgresql://{u.hostname}:{u.port or 5432}{u.path}?user={unquote(u.username)}&password={unquote(u.password)}')")
 
 install:
 	@uv sync --all-groups --active
@@ -20,6 +22,18 @@ compose-down:
 
 compose-down-clean:
 	@docker compose down --volumes --remove-orphans
+
+db-migrate:
+	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" migrate
+
+db-migrate-info:
+	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" info
+
+db-migrate-validate:
+	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" validate
+
+db-migrate-baseline:
+	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" -baselineVersion=$(or $(VERSION),4) baseline
 
 ecr-login:
 	@docker login -u hungwnguyen
@@ -56,6 +70,15 @@ help:
 	@echo "  make compose-up           docker compose up -d --build"
 	@echo "  make compose-down         docker compose down --remove-orphans"
 	@echo "  make compose-down-clean   docker compose down --volumes --remove-orphans"
+	@echo ""
+	@echo "Database migrations (Flyway, reads SUPABASE_DB_URL from .env):"
+	@echo "  make db-migrate              Apply pending migrations in src/migrations/"
+	@echo "  make db-migrate-info         Show applied/pending migration status"
+	@echo "  make db-migrate-validate     Validate applied migrations against local files"
+	@echo "  make db-migrate-baseline     Mark schema as already at VERSION (default 4)"
+	@echo "                                 without running its migration, for a DB whose"
+	@echo "                                 tables predate Flyway adoption"
+	@echo "                                 e.g. make db-migrate-baseline VERSION=4"
 	@echo ""
 	@echo "Image publishing:"
 	@echo "  make ecr-login            docker login -u hungwnguyen"

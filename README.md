@@ -52,7 +52,7 @@ Data window: **last 180 days** for all event and history tables.
 
 ### 1. Create the database tables
 
-Run [`src/migrations/001_multi_bot.sql`](src/migrations/001_multi_bot.sql) against your Supabase database to create the `bots` table and add `bot_id` to the `schedules` table.
+Run `make db-migrate` to apply the [Flyway migrations](src/migrations/) and create the `bots` table (plus `bot_id` on `schedules`).
 
 ### 2. Register your bot in Supabase
 

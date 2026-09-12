@@ -1,5 +1,4 @@
 -- Multi-bot support: bot registry + bot_id column on schedules
--- Run once against your Supabase database before deploying.
 
 create table if not exists public.bots (
     id         text        primary key,
