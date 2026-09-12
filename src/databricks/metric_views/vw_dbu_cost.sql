@@ -22,8 +22,8 @@ SELECT
   u.usage_metadata.app_id             AS app_id,
   u.usage_quantity,
   u.usage_quantity * p.pricing.default AS cost_usd
-FROM system.billing.usage u
-JOIN system.billing.list_prices p
+FROM system.billing.usage AS u
+INNER JOIN system.billing.list_prices AS p
   ON  u.sku_name          = p.sku_name
   AND u.cloud             = p.cloud
   AND u.usage_start_time >= p.price_start_time

@@ -1,0 +1,13 @@
+[sqlfluff]
+# Migrations (src/migrations/) are plain Postgres, run through Flyway against Supabase.
+# src/databricks/metric_views/ overrides this to the databricks dialect via its own .sqlfluff.
+dialect = postgres
+# capitalisation/layout are pure style and this repo mixes conventions (upper-case
+# metric views vs lower-case migrations) intentionally -- lint for correctness, not style.
+exclude_rules = capitalisation, layout, references.from, structure.using, references.special_chars, references.consistent, structure.column_order, convention.casting_style, aliasing.self_alias.column
+max_line_length = 0
+
+[sqlfluff:rules:references.keywords]
+# "groups" is a real, already-migrated column on access_requests (V4) -- Flyway
+# migrations are checksummed and must never be edited after they've run.
+ignore_words = groups
