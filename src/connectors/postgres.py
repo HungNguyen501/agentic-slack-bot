@@ -1,15 +1,13 @@
 """Supabase / PostgreSQL connector — schedule CRUD."""
-import os
-
 import psycopg
 from psycopg.rows import dict_row
 
-_DB_URL = os.environ["SUPABASE_DB_URL"]
+from common.configs import Configs
 
 
 def _connect() -> psycopg.Connection:
     """Open a psycopg3 connection to Supabase that returns rows as dicts."""
-    return psycopg.connect(_DB_URL, row_factory=dict_row)
+    return psycopg.connect(Configs.SUPABASE_DB_URL, row_factory=dict_row)
 
 
 def get_schedules(bot_id: str | None = None) -> list[dict]:

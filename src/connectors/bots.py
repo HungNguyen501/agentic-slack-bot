@@ -1,15 +1,14 @@
 """Bot registry — load BotConfig from the Supabase bots table."""
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
-log = logging.getLogger("connectors.bots")
+from common.configs import Configs
 
-_DB_URL = os.environ["SUPABASE_DB_URL"]
+log = logging.getLogger("connectors.bots")
 
 
 @dataclass
@@ -23,7 +22,7 @@ class BotConfig:
 
 
 def _connect():
-    return psycopg.connect(_DB_URL, row_factory=dict_row)
+    return psycopg.connect(Configs.SUPABASE_DB_URL, row_factory=dict_row)
 
 
 def _row_to_config(row: Any) -> BotConfig:

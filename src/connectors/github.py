@@ -1,24 +1,19 @@
 """GitHub REST API client for opening the data-platform access-control PR."""
 import base64
-import os
 import re
 
 import httpx
 
-_TOKEN = os.environ["GIT_REPO_PAT_DATA_PLATFORM"]
-_OWNER = "VireoAI"
-_REPO = "vireox-data-platform"
-_BASE_BRANCH = "main"
-_API = f"https://api.github.com/repos/{_OWNER}/{_REPO}"
+from common.configs import Configs, GithubConfigs
 
 
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {_TOKEN}", "Accept": "application/vnd.github+json"}
+    return {"Authorization": f"Bearer {Configs.GIT_REPO_PAT_DATA_PLATFORM}", "Accept": "application/vnd.github+json"}
 
 
 def _get_file(path: str, ref: str) -> tuple[str, str]:
     """Fetch a file's decoded content and blob sha at a given ref (branch, tag, or commit)."""
-    resp = httpx.get(f"{_API}/contents/{path}", headers=_headers(), params={"ref": ref}, timeout=30.0)
+    resp = httpx.get(f"{GithubConfigs.API}/contents/{path}", headers=_headers(), params={"ref": ref}, timeout=30.0)
     resp.raise_for_status()
     data = resp.json()
     return base64.b64decode(data["content"]).decode("utf-8"), data["sha"]
@@ -26,16 +21,16 @@ def _get_file(path: str, ref: str) -> tuple[str, str]:
 
 def _ensure_branch(branch: str) -> None:
     """Create `branch` off the base branch's current commit if it doesn't already exist."""
-    check = httpx.get(f"{_API}/git/ref/heads/{branch}", headers=_headers(), timeout=30.0)
+    check = httpx.get(f"{GithubConfigs.API}/git/ref/heads/{branch}", headers=_headers(), timeout=30.0)
     if check.status_code == 200:
         return
 
-    base = httpx.get(f"{_API}/git/ref/heads/{_BASE_BRANCH}", headers=_headers(), timeout=30.0)
+    base = httpx.get(f"{GithubConfigs.API}/git/ref/heads/{GithubConfigs.BASE_BRANCH}", headers=_headers(), timeout=30.0)
     base.raise_for_status()
     base_sha = base.json()["object"]["sha"]
 
     resp = httpx.post(
-        f"{_API}/git/refs",
+        f"{GithubConfigs.API}/git/refs",
         headers=_headers(),
         json={"ref": f"refs/heads/{branch}", "sha": base_sha},
         timeout=30.0,
@@ -60,7 +55,7 @@ def _update_file(path: str, branch: str, content: str, message: str) -> None:
     if sha:
         payload["sha"] = sha
 
-    resp = httpx.put(f"{_API}/contents/{path}", headers=_headers(), json=payload, timeout=30.0)
+    resp = httpx.put(f"{GithubConfigs.API}/contents/{path}", headers=_headers(), json=payload, timeout=30.0)
     resp.raise_for_status()
 
 
@@ -73,9 +68,9 @@ def _branch_name(ticket_id: str) -> str:
 def _find_open_pull_request(branch: str) -> str | None:
     """Return the html_url of an already-open PR for this branch, if one exists."""
     resp = httpx.get(
-        f"{_API}/pulls",
+        f"{GithubConfigs.API}/pulls",
         headers=_headers(),
-        params={"head": f"{_OWNER}:{branch}", "state": "open"},
+        params={"head": f"{GithubConfigs.OWNER}:{branch}", "state": "open"},
         timeout=30.0,
     )
     resp.raise_for_status()
@@ -142,9 +137,9 @@ def open_data_access_pr(
         return existing
 
     resp = httpx.post(
-        f"{_API}/pulls",
+        f"{GithubConfigs.API}/pulls",
         headers=_headers(),
-        json={"title": pr_title, "head": branch, "base": _BASE_BRANCH, "body": pr_body},
+        json={"title": pr_title, "head": branch, "base": GithubConfigs.BASE_BRANCH, "body": pr_body},
         timeout=30.0,
     )
     resp.raise_for_status()

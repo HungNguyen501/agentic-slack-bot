@@ -1,7 +1,6 @@
-"""Scheduler service — polls Supabase every CHECK_INTERVAL seconds and enqueues due jobs."""
+"""Scheduler service — polls Supabase every SCHEDULER_INTERVAL seconds and enqueues due jobs."""
 import hashlib
 import logging
-import os
 import time
 from datetime import datetime, UTC
 
@@ -9,13 +8,11 @@ import redis
 import rq
 from croniter import croniter
 
+from common.configs import Configs
 from connectors.postgres import get_schedules
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scheduler")
-
-CHECK_INTERVAL = int(os.environ.get("SCHEDULER_INTERVAL", "180"))
-REDIS_URL = os.environ["REDIS_URL"]
 
 
 def _schedule_key(entry: dict) -> str:
@@ -40,7 +37,7 @@ def _should_fire(entry: dict, now: datetime, redis_client: redis.Redis) -> bool:
         redis_client: Redis connection used to read the last-fired timestamp.
 
     Returns:
-        True if the entry's cron fired within the last CHECK_INTERVAL seconds and no
+        True if the entry's cron fired within the last SCHEDULER_INTERVAL seconds and no
         enqueue has been recorded for that firing; False otherwise.
     """
     try:
@@ -50,7 +47,7 @@ def _should_fire(entry: dict, now: datetime, redis_client: redis.Redis) -> bool:
         log.warning("Invalid cron expression %r: %s", entry.get("cron"), exc)
         return False
 
-    if (now - last_expected).total_seconds() > CHECK_INTERVAL:
+    if (now - last_expected).total_seconds() > Configs.SCHEDULER_INTERVAL:
         return False
 
     key = _schedule_key(entry)
@@ -69,12 +66,12 @@ def run() -> None:
     Reads all schedules from Supabase on every tick, evaluates each cron expression against
     the current time, and pushes a process_scheduled_question job onto the slack_events
     Redis queue for any entry that is due and has not already been enqueued this cycle.
-    Sleeps CHECK_INTERVAL seconds between ticks; continues on Supabase read errors.
+    Sleeps SCHEDULER_INTERVAL seconds between ticks; continues on Supabase read errors.
     """
-    redis_client = redis.from_url(REDIS_URL)
+    redis_client = redis.from_url(Configs.REDIS_URL)
     queue = rq.Queue("slack_events", connection=redis_client)
 
-    log.info("Scheduler started — interval=%ds", CHECK_INTERVAL)
+    log.info("Scheduler started — interval=%ds", Configs.SCHEDULER_INTERVAL)
 
     while True:
         now = datetime.now(UTC)
@@ -83,7 +80,7 @@ def run() -> None:
             schedules = get_schedules()
         except Exception as exc:
             log.error("Failed to load schedules from Supabase: %s", exc)
-            time.sleep(CHECK_INTERVAL)
+            time.sleep(Configs.SCHEDULER_INTERVAL)
             continue
         log.info("Scanning %d schedule(s) at %s", len(schedules), now.isoformat())
 
@@ -114,7 +111,7 @@ def run() -> None:
                     bot_id,
                 )
 
-        time.sleep(CHECK_INTERVAL)
+        time.sleep(Configs.SCHEDULER_INTERVAL)
 
 
 if __name__ == "__main__":

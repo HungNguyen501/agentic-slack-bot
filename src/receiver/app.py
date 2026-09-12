@@ -3,7 +3,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import time
 from urllib.parse import parse_qs
 
@@ -11,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from redis import Redis
 from rq import Queue, Retry
 
+from common.configs import Configs
 from connectors import slack
 from connectors.bots import BotConfig, get_by_app_id
 from models.access_request_view import build_access_request_view, validate_submission
@@ -18,9 +18,7 @@ from models.access_request_view import build_access_request_view, validate_submi
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-
-redis_conn = Redis.from_url(REDIS_URL)
+redis_conn = Redis.from_url(Configs.REDIS_URL)
 queue = Queue(name="slack_events", connection=redis_conn)
 
 app = FastAPI()

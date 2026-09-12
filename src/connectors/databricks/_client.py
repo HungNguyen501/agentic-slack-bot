@@ -1,14 +1,15 @@
 """Shared Databricks workspace host/token config and SCIM pagination helper."""
 import logging
-import os
 
 import httpx
 
+from common.configs import Configs
+
 log = logging.getLogger("connectors.databricks")
 
-HOST = os.environ["DATABRICKS_HOST"].rstrip("/")
-WAREHOUSE_ID = os.environ["DATABRICKS_WAREHOUSE_ID"]
-TOKEN = os.environ["DATABRICKS_ACCESS_TOKEN"]
+HOST = Configs.DATABRICKS_HOST.rstrip("/")
+WAREHOUSE_ID = Configs.DATABRICKS_WAREHOUSE_ID
+TOKEN = Configs.DATABRICKS_ACCESS_TOKEN
 
 _SCIM_PAGE_SIZE = 100
 _SCIM_MAX_PAGES = 20  # safety cap: up to ~2000 resources

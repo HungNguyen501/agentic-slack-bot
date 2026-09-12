@@ -9,28 +9,22 @@ from datetime import date, timedelta
 from openai import OpenAI
 from redis import Redis
 
+from common.configs import AgentConfigs, Configs
 from connectors import databricks, postgres, slack
 from connectors.bots import BotConfig
-from models.access_request_view import ACCESS_REQUEST_BUTTON_TTL_SECONDS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker.agent")
 
-GPT_MODEL = "gpt-5.5-2026-04-23"
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
-ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gpt-4o-mini")
-_SCHEDULE_TOOLS = {"list_schedules", "add_schedule", "update_schedule", "remove_schedule"}
-_DATA_ACCESS_TOOLS = {"request_data_access"}
 _ACCESS_REQUEST_POSTED_MESSAGE = (
     "Click below to fill out a data access request. "
-    f"This link expires in {int(ACCESS_REQUEST_BUTTON_TTL_SECONDS / 60)} minutes."
+    f"This link expires in {int(AgentConfigs.ACCESS_REQUEST_BUTTON_TTL_SECONDS / 60)} minutes."
 )
 
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-redis_client = Redis.from_url(REDIS_URL)
+openai_client = OpenAI(api_key=Configs.OPENAI_API_KEY)
+redis_client = Redis.from_url(Configs.REDIS_URL)
 
 
 def _parse_skill_file(filename: str) -> dict:
@@ -103,7 +97,7 @@ def _select_skills(question: str, selectable: list[dict], history: list[dict] | 
 
     try:
         response = openai_client.chat.completions.create(
-            model=ROUTER_MODEL,
+            model=Configs.ROUTER_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -411,7 +405,7 @@ def _dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, th
             "requester_id": user_id,
             "reviewers": category["reviewers"],
             "created_at": int(time.time()),
-            "expires_at": int(time.time()) + ACCESS_REQUEST_BUTTON_TTL_SECONDS,
+            "expires_at": int(time.time()) + AgentConfigs.ACCESS_REQUEST_BUTTON_TTL_SECONDS,
         }
     )
     try:
@@ -478,12 +472,12 @@ def _dispatch_tool(
         log.info("Fetching job run details for run_id=%s", run_id)
         return databricks.get_job_run(run_id)
 
-    if name in _SCHEDULE_TOOLS:
+    if name in AgentConfigs.SCHEDULE_TOOLS:
         if user_id not in admin_users:
             return "You are not authorized to manage schedules."
         return _dispatch_schedule_tool(name, args, bot.bot_id)
 
-    if name in _DATA_ACCESS_TOOLS:
+    if name in AgentConfigs.DATA_ACCESS_TOOLS:
         return _dispatch_data_access_tool(args, user_id, channel, thread_ts, bot)
 
     return f"Unknown tool: {name}"
@@ -501,7 +495,7 @@ def summarize_answer(question: str, answer: str) -> str:
     """
     try:
         response = openai_client.chat.completions.create(
-            model=ROUTER_MODEL,
+            model=Configs.ROUTER_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -575,7 +569,7 @@ def run_agent(
 
     for _ in range(10):
         response = openai_client.chat.completions.create(
-            model=GPT_MODEL,
+            model=AgentConfigs.GPT_MODEL,
             messages=messages,
             tools=_get_agent_tools(),
             tool_choice="auto",
@@ -596,7 +590,7 @@ def run_agent(
             result = _dispatch_tool(tool_call.function.name, args, user_id, admin_users, bot, channel, thread_ts)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
-            if tool_call.function.name in _DATA_ACCESS_TOOLS and result == _ACCESS_REQUEST_POSTED_MESSAGE:
+            if tool_call.function.name in AgentConfigs.DATA_ACCESS_TOOLS and result == _ACCESS_REQUEST_POSTED_MESSAGE:
                 history.append({"role": "user", "content": question})
                 history.append({"role": "assistant", "content": result})
                 _save_history(thread_ts, history)

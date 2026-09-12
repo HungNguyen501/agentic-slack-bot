@@ -4,11 +4,6 @@ from dataclasses import dataclass, field
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-# How long the "Open Form" button posted by _dispatch_data_access_tool stays clickable.
-# src/worker/agent.py uses this to stamp expires_at into the button's value when posting it;
-# src/receiver/app.py just compares expires_at against the current time, no TTL math of its own.
-ACCESS_REQUEST_BUTTON_TTL_SECONDS = 3600
-
 
 def parse_emails(raw: str) -> list[str]:
     """Split a free-text user_emails field into a deduped list of individual emails.
