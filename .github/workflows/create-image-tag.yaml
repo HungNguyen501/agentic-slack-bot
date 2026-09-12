@@ -1,0 +1,30 @@
+name: Create Image Tag
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    name: "Create and push tag"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enforce master branch
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/master" ]; then
+            echo "This workflow must be run from the master branch (got ${GITHUB_REF})." >&2
+            exit 1
+          fi
+
+      - name: Create and push tag
+        run: |
+          tag="agentic-slack-bot-v$(date +%Y.%m.%d).$(git rev-parse --short=6 HEAD)"
+          git tag "$tag"
+          git push origin "$tag"
+          echo "Created tag: $tag"
