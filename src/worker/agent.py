@@ -198,126 +198,13 @@ def _save_history(thread_ts: str, history: list[dict]) -> None:
 
 
 def _get_agent_tools() -> list[dict]:
-    """Return the OpenAI function-calling tool schema for all agent tools.
+    """Return the OpenAI function-calling tool schema for all agent tools."""
+    return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS]
 
-    Returns:
-        List of tool dicts in the OpenAI tools format, covering execute_query and all
-        schedule management tools (list, add, update, remove).
-    """
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "execute_query",
-                "description": (
-                    "Execute a SQL SELECT query against Databricks system tables. "
-                    "Use this to answer questions about catalogs, schemas, tables, columns, "
-                    "jobs, job run history, or data lineage."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "sql": {"type": "string", "description": "A SQL SELECT statement targeting Databricks system tables."},
-                    },
-                    "required": ["sql"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_job_run_details",
-                "description": (
-                    "Fetch the actual error message and per-task failure details for a specific "
-                    "Databricks job run via the Jobs REST API. Use this after identifying a failed "
-                    "run_id from execute_query to get the human-readable error text for investigation."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "run_id": {"type": "string", "description": "The job run ID from job_run_timeline.run_id"},
-                    },
-                    "required": ["run_id"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_schedules",
-                "description": "List all active scheduled questions.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "add_schedule",
-                "description": "Create a new scheduled question posted to a Slack channel on a cron.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "cron": {"type": "string", "description": "Cron expression (5 fields, UTC). E.g. '0 9 * * 1-5'"},
-                        "channel": {"type": "string", "description": "Slack channel ID, e.g. C1234567890"},
-                        "question": {"type": "string", "description": "The question text to send on schedule"},
-                    },
-                    "required": ["cron", "channel", "question"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "update_schedule",
-                "description": "Update one or more fields of an existing schedule by its UUID.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "description": "Schedule UUID"},
-                        "cron": {"type": "string"},
-                        "channel": {"type": "string"},
-                        "question": {"type": "string"},
-                    },
-                    "required": ["id"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "remove_schedule",
-                "description": "Permanently delete a scheduled question by its UUID.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "description": "Schedule UUID to remove"},
-                    },
-                    "required": ["id"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "request_data_access",
-                "description": (
-                    "Start a data access request for the current user. Use when the user asks to "
-                    "request, get, or apply for access to a dataset, table filter, or scoped permission. "
-                    "This checks eligibility and, if allowed, posts an interactive form for the user to fill in."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "request_type": {
-                            "type": "string",
-                            "description": "The access request category, e.g. 'table_row_filter_access'.",
-                        },
-                    },
-                    "required": ["request_type"],
-                },
-            },
-        },
-    ]
+
+def _tool_category(name: str) -> str | None:
+    """Look up the AgentTool.category for a tool by name, or None if it's not a known tool."""
+    return next((t.category for t in AgentConfigs.TOOLS if t.name == name), None)
 
 
 def _dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
@@ -474,12 +361,12 @@ def _dispatch_tool(
         log.info("Fetching job run details for run_id=%s", run_id)
         return databricks.get_job_run(run_id)
 
-    if name in AgentConfigs.SCHEDULE_TOOLS:
+    if _tool_category(name) == "schedule":
         if user_id not in admin_users:
             return "You are not authorized to manage schedules."
         return _dispatch_schedule_tool(name, args, bot.bot_id)
 
-    if name in AgentConfigs.DATA_ACCESS_TOOLS:
+    if _tool_category(name) == "data_access":
         return _dispatch_data_access_tool(args, user_id, channel, thread_ts, bot)
 
     return f"Unknown tool: {name}"
@@ -592,7 +479,7 @@ def run_agent(
             result = _dispatch_tool(tool_call.function.name, args, user_id, admin_users, bot, channel, thread_ts)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
-            if tool_call.function.name in AgentConfigs.DATA_ACCESS_TOOLS and result == _ACCESS_REQUEST_POSTED_MESSAGE:
+            if _tool_category(tool_call.function.name) == "data_access" and result == _ACCESS_REQUEST_POSTED_MESSAGE:
                 history.append({"role": "user", "content": question})
                 history.append({"role": "assistant", "content": result})
                 _save_history(thread_ts, history)

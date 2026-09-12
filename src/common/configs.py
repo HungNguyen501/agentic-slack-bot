@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,26 @@ class GithubConfigs:
 
 
 @dataclass(frozen=True)
+class AgentTool:
+    """One OpenAI function-calling tool definition for the agent loop (`worker/agent.py`)."""
+
+    name: str
+    description: str
+    parameters: dict
+    category: Literal["core", "schedule", "data_access"] = "core"
+
+    def to_openai_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+@dataclass(frozen=True)
 class AgentConfigs:
     """Agent loop constants (`worker/agent.py`)."""
 
@@ -52,5 +73,101 @@ class AgentConfigs:
     # compares expires_at against the current time, no TTL math of its own.
     ACCESS_REQUEST_BUTTON_TTL_SECONDS: int = 3600
 
-    SCHEDULE_TOOLS: frozenset[str] = frozenset({"list_schedules", "add_schedule", "update_schedule", "remove_schedule"})
-    DATA_ACCESS_TOOLS: frozenset[str] = frozenset({"request_data_access"})
+    TOOLS: tuple[AgentTool, ...] = (
+        AgentTool(
+            name="execute_query",
+            description=(
+                "Execute a SQL SELECT query against Databricks system tables. "
+                "Use this to answer questions about catalogs, schemas, tables, columns, "
+                "jobs, job run history, or data lineage."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "A SQL SELECT statement targeting Databricks system tables."},
+                },
+                "required": ["sql"],
+            },
+        ),
+        AgentTool(
+            name="get_job_run_details",
+            description=(
+                "Fetch the actual error message and per-task failure details for a specific "
+                "Databricks job run via the Jobs REST API. Use this after identifying a failed "
+                "run_id from execute_query to get the human-readable error text for investigation."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "description": "The job run ID from job_run_timeline.run_id"},
+                },
+                "required": ["run_id"],
+            },
+        ),
+        AgentTool(
+            name="list_schedules",
+            description="List all active scheduled questions.",
+            parameters={"type": "object", "properties": {}},
+            category="schedule",
+        ),
+        AgentTool(
+            name="add_schedule",
+            description="Create a new scheduled question posted to a Slack channel on a cron.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "cron": {"type": "string", "description": "Cron expression (5 fields, UTC). E.g. '0 9 * * 1-5'"},
+                    "channel": {"type": "string", "description": "Slack channel ID, e.g. C1234567890"},
+                    "question": {"type": "string", "description": "The question text to send on schedule"},
+                },
+                "required": ["cron", "channel", "question"],
+            },
+            category="schedule",
+        ),
+        AgentTool(
+            name="update_schedule",
+            description="Update one or more fields of an existing schedule by its UUID.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Schedule UUID"},
+                    "cron": {"type": "string"},
+                    "channel": {"type": "string"},
+                    "question": {"type": "string"},
+                },
+                "required": ["id"],
+            },
+            category="schedule",
+        ),
+        AgentTool(
+            name="remove_schedule",
+            description="Permanently delete a scheduled question by its UUID.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Schedule UUID to remove"},
+                },
+                "required": ["id"],
+            },
+            category="schedule",
+        ),
+        AgentTool(
+            name="request_data_access",
+            description=(
+                "Start a data access request for the current user. Use when the user asks to "
+                "request, get, or apply for access to a dataset, table filter, or scoped permission. "
+                "This checks eligibility and, if allowed, posts an interactive form for the user to fill in."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "request_type": {
+                        "type": "string",
+                        "description": "The access request category, e.g. 'table_row_filter_access'.",
+                    },
+                },
+                "required": ["request_type"],
+            },
+            category="data_access",
+        ),
+    )

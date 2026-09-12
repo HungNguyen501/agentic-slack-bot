@@ -33,8 +33,8 @@ Scaffold a new skill file for the agent.
 To add a skill for Unity Catalog tag management:
 
 ```bash
-# next number after 10_semantic.md is 11
-touch src/worker/skills/11_tags.md
+# next number after 11_data_access_requests.md is 12
+touch src/worker/skills/12_tags.md
 ```
 
 ```markdown

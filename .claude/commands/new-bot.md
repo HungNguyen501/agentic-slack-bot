@@ -52,3 +52,4 @@ docker compose logs -f worker
 - `enabled_skills = '{}'` enables all skills; pass a subset to restrict
 - Multiple bots can run against the same receiver/worker/scheduler deployment
 - Admin users listed in `admin_users` can manage schedules via the bot
+- To let this bot handle data access requests (the `request_data_access` tool / `11_data_access_requests.md` skill), also insert a row per request type into `access_request_categories` (`bot_id`, `request_type`, `channel_ids`, `reviewers`) — see `src/migrations/V2__access_request_categories.sql`. Without a matching row, the tool always refuses.

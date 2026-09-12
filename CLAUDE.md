@@ -29,21 +29,36 @@ scheduler (croniter eval, Redis last-fired dedup)
   → enqueue process_scheduled_question → worker (post question + answer)
 ```
 
+**Data access request:**
+```
+user asks agent for access → request_data_access tool checks eligibility
+  → posts "Open Form" button → receiver block_actions opens Slack modal
+  → receiver view_submission validates fields, enqueues process_data_access_submission
+  → worker inserts a pending access_requests row (24h expiry)
+reviewer replies "approve <id>" / "reject <id>" in the thread
+  → worker/review.py (bypasses the agent loop) resolves the principal via Databricks,
+    opens a PR on VireoAI/vireox-data-platform via connectors/github.py, updates status
+```
+
 **Agent loop** (`src/worker/agent.py`):
 1. Router model (gpt-4o-mini) picks skills from `src/worker/skills/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date
-3. OpenAI tool calls → execute_query / get_job_run_details / schedule CRUD
+3. OpenAI tool calls → execute_query / get_job_run_details / schedule CRUD / request_data_access (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
 4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
 
 ## Quick Commands
 
 ```bash
-make install          # uv sync --all-groups
+make install          # uv sync --all-groups + pre-commit install
 make lint             # ruff + flake8
+make lint-sql         # sqlfluff against migrations + metric views
 make build-image      # docker buildx build
 make compose-up       # docker compose up -d --build
 make compose-down     # docker compose down --remove-orphans
 make compose-down-clean  # + remove volumes
+
+make db-migrate       # apply pending Flyway migrations in src/migrations/ (reads SUPABASE_DB_URL)
+make db-migrate-info  # show applied/pending migration status
 
 docker compose logs -f receiver   # tail service logs
 docker compose logs -f worker
@@ -52,10 +67,12 @@ docker compose logs -f scheduler
 WORKER_COUNT=5 docker compose up -d  # scale workers
 ```
 
+`make help` lists every target, including remote deployment (`make ansible-*`) and image publishing (`make docker-build-push`).
+
 ## Environment Variables
 
 See `.env.example`. Required:
-- `SUPABASE_DB_URL` — PostgreSQL connection (bots + schedules tables)
+- `SUPABASE_DB_URL` — PostgreSQL connection (bots, schedules, access_request_categories, access_requests tables)
 - `OPENAI_API_KEY`
 - `DATABRICKS_HOST` — workspace URL
 - `DATABRICKS_WAREHOUSE_ID`
@@ -72,6 +89,12 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-4o-mini), `SCH
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
+
+**Supabase `access_request_categories` table** — gates the `request_data_access` tool per bot/channel:
+- `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject)
+
+**Supabase `access_requests` table** — submitted requests + review state:
+- `id uuid`, `bot_id`, `request_type`, `channel`, `thread_ts`, `requester_id`, `reviewers text[]`, `status` (`pending`/`approved`/`rejected`), `ticket_id`, `user_email`, `principal_type`, `display_name`, `principal`, `filter_column`, `allowed_value`, `scope_column`, `scope_value`, `groups text[]`, `tags text[]`, `service_principal_id`, `pr_url`, `expires_at` (24h from creation)
 
 Bot is resolved at runtime: receiver uses `api_app_id` → `get_by_app_id()`; worker uses stored `bot_id` → `get_by_id()`.
 
@@ -97,17 +120,35 @@ See `.claude/rules/skills.md` for authoring guidelines.
 
 ```
 src/
-  receiver/app.py          # Webhook handler (124 lines)
+  receiver/app.py            # Webhook + interactivity handler (block_actions, view_submission)
   worker/
-    agent.py               # Agent loop + tool dispatch (444 lines)
-    tasks.py               # RQ task definitions (185 lines)
-    skills/                # Markdown skill files (01–10)
+    agent.py                 # Agent loop + tool dispatch
+    tasks.py                 # RQ task definitions (mentions, schedules, access request submission)
+    review.py                # Deterministic approve/reject handling for access requests (no LLM)
+    skills/                  # Markdown skill files (01–11)
+  scheduler/app.py           # Cron polling loop
+  common/configs.py          # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas)
+  models/                    # Pure data/rendering helpers, no I/O
+    access_request_view.py       # Slack modal view + submission validation
+    access_request_submission.py # VerifiedAccessRequest dataclass
+    access_control_rules.py      # Renders rules_v2.yaml / service_principals.yaml entries
+    access_request_pr.py         # Fills the data-platform repo's PR template
   connectors/
-    bots.py                # Bot registry (Supabase)
-    databricks.py          # Statement API + Jobs API client
-    postgres.py            # Supabase schedule CRUD
-  databricks/metric_views/ # SQL views for semantic layer
-  migrations/              # DB schema SQL
+    db/                     # Supabase (Postgres) access — sync, psycopg
+      bots.py                    # Bot registry
+      schedules.py                # Schedule CRUD
+      access_request_categories.py # Per-bot/channel request eligibility
+      access_requests.py          # Submitted request CRUD
+      connection.py                # psycopg connection helper
+    databricks/              # Statement API, Jobs API, principal lookups
+      sql.py                      # SELECT-only Statement API client
+      jobs.py                     # Job run details
+      principals.py                # User lookup
+      service_principals.py        # Service principal find-or-create
+    github.py                # GitHub REST client — opens access-control PRs on VireoAI/vireox-data-platform
+    slack.py                 # Slack Web API — message posting + modal views
+  databricks/metric_views/   # SQL views for semantic layer
+  migrations/                # DB schema SQL (Flyway, applied via `make db-migrate`)
 ```
 
 ## Rules
