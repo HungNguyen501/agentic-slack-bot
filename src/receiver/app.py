@@ -12,7 +12,7 @@ from rq import Queue, Retry
 
 from common.configs import Configs
 from connectors import slack
-from connectors.bots import BotConfig, get_by_app_id
+from connectors.db.bots import BotConfig, get_by_app_id
 from models.access_request_view import build_access_request_view, validate_submission
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

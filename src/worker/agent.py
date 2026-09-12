@@ -10,8 +10,10 @@ from openai import OpenAI
 from redis import Redis
 
 from common.configs import AgentConfigs, Configs
-from connectors import databricks, postgres, slack
-from connectors.bots import BotConfig
+from connectors import databricks, slack
+from connectors.db.access_request_categories import channel_authorized, get_access_request_category
+from connectors.db.bots import BotConfig
+from connectors.db.schedules import add_schedule, get_schedules, remove_schedule, update_schedule
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker.agent")
@@ -331,23 +333,23 @@ def _dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
     """
     try:
         if name == "list_schedules":
-            schedules = postgres.get_schedules()
+            schedules = get_schedules()
             if not schedules:
                 return "No schedules configured."
             header = f"{'ID':<36}  {'Cron':<20}  {'Channel':<12}  Question"
             divider = "-" * len(header)
             rows = [header, divider] + [
-                f"{s['id']:<36}  {s['cron']:<20}  {s['channel']:<12}  {s['question']}"
+                f"{s.id:<36}  {s.cron:<20}  {s.channel:<12}  {s.question}"
                 for s in schedules
             ]
             return f"```\n{chr(10).join(rows)}\n```"
 
         if name == "add_schedule":
-            s = postgres.add_schedule(args["cron"], args["channel"], args["question"], bot_id=bot_id)
-            return f"Schedule created — id: `{s['id']}`"
+            s = add_schedule(args["cron"], args["channel"], args["question"], bot_id=bot_id)
+            return f"Schedule created — id: `{s.id}`"
 
         if name == "update_schedule":
-            s = postgres.update_schedule(
+            s = update_schedule(
                 args["id"],
                 cron=args.get("cron"),
                 channel=args.get("channel"),
@@ -355,10 +357,10 @@ def _dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
             )
             if not s:
                 return f"Schedule `{args['id']}` not found or no fields to update."
-            return f"Schedule `{s['id']}` updated."
+            return f"Schedule `{s.id}` updated."
 
         if name == "remove_schedule":
-            deleted = postgres.remove_schedule(args["id"])
+            deleted = remove_schedule(args["id"])
             if deleted:
                 return f"Schedule `{args['id']}` removed."
             return f"Schedule `{args['id']}` not found."
@@ -386,12 +388,12 @@ def _dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, th
     """
     request_type = args.get("request_type", "")
     try:
-        category = postgres.get_access_request_category(bot.bot_id, request_type)
+        category = get_access_request_category(bot.bot_id, request_type)
     except Exception as exc:
         log.exception("Access request category lookup failed")
         return f"Error checking access-request eligibility: {exc}"
 
-    if not postgres.channel_authorized(category, channel):
+    if not channel_authorized(category, channel):
         return (
             "Sorry, data access requests of this type aren't available in this channel. "
             "Please reach out to your data team directly."
@@ -403,7 +405,7 @@ def _dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, th
             "channel": channel,
             "thread_ts": thread_ts,
             "requester_id": user_id,
-            "reviewers": category["reviewers"],
+            "reviewers": category.reviewers,
             "created_at": int(time.time()),
             "expires_at": int(time.time()) + AgentConfigs.ACCESS_REQUEST_BUTTON_TTL_SECONDS,
         }

@@ -2,8 +2,10 @@
 import logging
 import re
 
-from connectors import databricks, postgres, slack
-from connectors.bots import get_by_id as get_bot
+from connectors import databricks, slack
+from connectors.db.access_request_categories import channel_authorized, get_access_request_category
+from connectors.db.access_requests import add_access_request
+from connectors.db.bots import get_by_id as get_bot
 from models.access_request_submission import VerifiedAccessRequest
 from models.access_request_view import parse_emails
 from worker import review
@@ -260,8 +262,8 @@ def process_data_access_submission(
     # baked-in snapshot from when the form was first offered — the category or this
     # channel's entry in it may have been revoked in the time since the button was clicked,
     # and this is the point where the request actually gets persisted and reviewer-visible.
-    category = postgres.get_access_request_category(bot_id, request_type)
-    if not postgres.channel_authorized(category, channel):
+    category = get_access_request_category(bot_id, request_type)
+    if not channel_authorized(category, channel):
         return slack.post_message(
             channel,
             "Sorry, data access requests of this type aren't available in this channel anymore. "
@@ -302,7 +304,7 @@ def process_data_access_submission(
             tags=fields.get("tags") or [],
         )
 
-        row = postgres.add_access_request(
+        row = add_access_request(
             bot_id=bot_id,
             request_type=request_type,
             channel=channel,
@@ -321,8 +323,8 @@ def process_data_access_submission(
             groups=fields.get("groups") or [],
             tags=fields.get("tags") or [],
         )
-        request_id = row["id"]
-        expires_line = f"expires_at: {row['expires_at'].strftime('%Y-%m-%d %H:%M UTC')}"
+        request_id = row.id
+        expires_line = f"expires_at: {row.expires_at.strftime('%Y-%m-%d %H:%M UTC')}"
 
         warning_line = (
             f":warning: The user `{user_email}` was not found in Databricks — please verify before approving.\n"

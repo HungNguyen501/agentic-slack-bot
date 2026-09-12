@@ -9,30 +9,30 @@ import rq
 from croniter import croniter
 
 from common.configs import Configs
-from connectors.postgres import get_schedules
+from connectors.db.schedules import Schedule, get_schedules
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scheduler")
 
 
-def _schedule_key(entry: dict) -> str:
+def _schedule_key(entry: Schedule) -> str:
     """Derive a stable Redis key from a schedule entry for deduplication tracking.
 
     Args:
-        entry: Schedule dict containing cron, channel, and question fields.
+        entry: Schedule record.
 
     Returns:
         A Redis key string in the form scheduler:last_fired:<16-char sha256 hex>.
     """
-    raw = f"{entry['cron']}:{entry['channel']}:{entry['question']}"
+    raw = f"{entry.cron}:{entry.channel}:{entry.question}"
     return f"scheduler:last_fired:{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
 
 
-def _should_fire(entry: dict, now: datetime, redis_client: redis.Redis) -> bool:
+def _should_fire(entry: Schedule, now: datetime, redis_client: redis.Redis) -> bool:
     """Decide whether a schedule entry is due and has not yet been enqueued for this firing.
 
     Args:
-        entry: Schedule dict with at least cron, channel, and question fields.
+        entry: Schedule record.
         now: Current UTC time as a naive datetime (timezone info stripped by the caller).
         redis_client: Redis connection used to read the last-fired timestamp.
 
@@ -41,10 +41,10 @@ def _should_fire(entry: dict, now: datetime, redis_client: redis.Redis) -> bool:
         enqueue has been recorded for that firing; False otherwise.
     """
     try:
-        cron = croniter(entry["cron"], now)
+        cron = croniter(entry.cron, now)
         last_expected: datetime = cron.get_prev(datetime)
     except Exception as exc:
-        log.warning("Invalid cron expression %r: %s", entry.get("cron"), exc)
+        log.warning("Invalid cron expression %r: %s", entry.cron, exc)
         return False
 
     if (now - last_expected).total_seconds() > Configs.SCHEDULER_INTERVAL:
@@ -85,29 +85,25 @@ def run() -> None:
         log.info("Scanning %d schedule(s) at %s", len(schedules), now.isoformat())
 
         for entry in schedules:
-            if not all(k in entry for k in ("cron", "channel", "question")):
-                log.warning("Skipping entry with missing keys: %r", entry)
-                continue
-
             if _should_fire(entry, now.replace(tzinfo=None), redis_client):
                 key = _schedule_key(entry)
                 redis_client.set(key, now.replace(tzinfo=None).isoformat(), ex=86400)
 
                 # Use the schedule's bot_id if set; fall back to "default" (env-var bot)
-                bot_id = entry.get("bot_id") or "default"
+                bot_id = entry.bot_id or "default"
 
                 queue.enqueue(
                     "worker.tasks.process_scheduled_question",
-                    channel=entry["channel"],
-                    question=entry["question"],
+                    channel=entry.channel,
+                    question=entry.question,
                     bot_id=bot_id,
                     job_timeout=120,
                     retry=rq.Retry(max=3, interval=[10, 30, 60]),
                 )
                 log.info(
                     "Enqueued scheduled question  channel=%s  cron=%r  bot_id=%s",
-                    entry["channel"],
-                    entry["cron"],
+                    entry.channel,
+                    entry.cron,
                     bot_id,
                 )
 

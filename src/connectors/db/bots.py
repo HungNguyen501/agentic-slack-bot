@@ -1,14 +1,8 @@
 """Bot registry — load BotConfig from the Supabase bots table."""
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-import psycopg
-from psycopg.rows import dict_row
-
-from common.configs import Configs
-
-log = logging.getLogger("connectors.bots")
+from connectors.db.connection import connect
 
 
 @dataclass
@@ -19,10 +13,6 @@ class BotConfig:
     enabled_skills: list[str] = field(default_factory=list)
     admin_users: frozenset[str] = field(default_factory=frozenset)
     app_id: str | None = None
-
-
-def _connect():
-    return psycopg.connect(Configs.SUPABASE_DB_URL, row_factory=dict_row)
 
 
 def _row_to_config(row: Any) -> BotConfig:
@@ -38,7 +28,7 @@ def _row_to_config(row: Any) -> BotConfig:
 
 def get_by_app_id(app_id: str) -> BotConfig | None:
     """Return the active bot for a Slack app ID, or None if not found."""
-    with _connect() as conn, conn.cursor() as cur:
+    with connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM bots WHERE app_id = %s AND active = TRUE LIMIT 1",
             (app_id,),
@@ -49,7 +39,7 @@ def get_by_app_id(app_id: str) -> BotConfig | None:
 
 def get_by_id(bot_id: str) -> BotConfig:
     """Load a bot config by id; raises ValueError if not found."""
-    with _connect() as conn, conn.cursor() as cur:
+    with connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM bots WHERE id = %s AND active = TRUE",
             (bot_id,),
