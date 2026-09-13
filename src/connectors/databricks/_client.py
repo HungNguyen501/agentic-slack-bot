@@ -20,6 +20,19 @@ def auth_headers() -> dict:
     return {"Authorization": f"Bearer {TOKEN}"}
 
 
+def raise_for_status_with_body(resp: httpx.Response) -> None:
+    """Like resp.raise_for_status(), but includes the response body in the error message.
+
+    Databricks' APIs return a JSON error `detail` explaining exactly what's wrong with a
+    request (e.g. an unsupported Patch shape) — httpx's default error message only shows the
+    status code and URL, which isn't enough to debug a 400 from the logs alone.
+    """
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise httpx.HTTPStatusError(f"{exc}: {resp.text}", request=exc.request, response=exc.response) from exc
+
+
 def list_scim_resources(resource_path: str) -> list[dict]:
     """Page through a workspace SCIM v2 collection and return all Resources.
 

@@ -7,23 +7,10 @@ import logging
 
 import httpx
 
-from ._client import HOST, auth_headers, list_scim_resources
+from ._client import HOST, auth_headers, list_scim_resources, raise_for_status_with_body
 from .principals import find_service_principal_by_email
 
 log = logging.getLogger("connectors.databricks.service_principals")
-
-
-def _raise_for_status_with_body(resp: httpx.Response) -> None:
-    """Like resp.raise_for_status(), but includes the response body in the error message.
-
-    Databricks' SCIM API returns a JSON error `detail` explaining exactly what's wrong with a
-    request (e.g. an unsupported Patch shape) — httpx's default error message only shows the
-    status code and URL, which isn't enough to debug a 400 from the logs alone.
-    """
-    try:
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise httpx.HTTPStatusError(f"{exc}: {resp.text}", request=exc.request, response=exc.response) from exc
 
 
 def list_service_principals() -> list[dict]:
@@ -74,7 +61,7 @@ def _add_member_to_group(group_id: str, member_id: str) -> None:
         },
         timeout=30.0,
     )
-    _raise_for_status_with_body(resp)
+    raise_for_status_with_body(resp)
 
 
 def _create_service_principal(display_name: str) -> dict:
@@ -89,7 +76,7 @@ def _create_service_principal(display_name: str) -> dict:
         },
         timeout=30.0,
     )
-    _raise_for_status_with_body(resp)
+    raise_for_status_with_body(resp)
     return resp.json()
 
 

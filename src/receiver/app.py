@@ -7,6 +7,7 @@ import time
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from redis import Redis
 from rq import Queue, Retry
 
@@ -212,6 +213,25 @@ async def slack_interactivity(request: Request) -> dict:
         return {}
 
     return {}
+
+
+@app.get("/secrets/{token}")
+def view_secret(token: str) -> PlainTextResponse:
+    """Render a cached service-principal secret exactly once, then discard it.
+
+    Redis GETDEL is atomic, so a reload of the same link, a second person with the
+    link, or two requests racing each other all find nothing the second time — the
+    one-time-view guarantee the whole feature is built around. Third documented
+    exception to "receiver does exactly two things" (see architecture.md): this route
+    is opened directly in a browser by a human, not called by Slack's servers, so
+    there's no Slack signature to verify here.
+    """
+    raw = redis_conn.getdel(f"secret_link:{token}")
+    if raw is None:
+        return PlainTextResponse("This link has already been used or has expired.", status_code=404)
+    text = raw.decode() if isinstance(raw, bytes) else raw
+    payload = json.loads(text)
+    return PlainTextResponse(json.dumps(payload, indent=2))
 
 
 @app.get("/healthz")

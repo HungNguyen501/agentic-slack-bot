@@ -40,10 +40,21 @@ reviewer replies "approve <id>" / "reject <id>" in the thread
     opens a PR on VireoAI/vireox-data-platform via connectors/github.py, updates status
 ```
 
+**Service principal secret generation** (synchronous, no separate approval step):
+```
+reviewer asks agent for a secret → generate_service_principal_secret tool checks
+  channel + reviewer eligibility (access_request_categories) → verifies the service
+  principal exists in Databricks → reuses a still-valid cached secret from Supabase
+  (service_principal_secrets, encrypted) or mints a new one via Databricks
+  → drops the plaintext into Redis (secret_link:{token}, short TTL) → posts a link
+reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETDEL
+  → secret renders once, then is gone
+```
+
 **Agent loop** (`src/worker/agent.py`):
 1. Router model (gpt-4o-mini) picks skills from `src/worker/skills/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date
-3. OpenAI tool calls → execute_query / get_job_run_details / schedule CRUD / request_data_access (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
+3. OpenAI tool calls → execute_query / get_job_run_details / schedule CRUD / request_data_access / generate_service_principal_secret (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
 4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
 
 ## Quick Commands
@@ -72,12 +83,14 @@ WORKER_COUNT=5 docker compose up -d  # scale workers
 ## Environment Variables
 
 See `.env.example`. Required:
-- `SUPABASE_DB_URL` — PostgreSQL connection (bots, schedules, access_request_categories, access_requests tables)
+- `SUPABASE_DB_URL` — PostgreSQL connection (bots, schedules, access_request_categories, access_requests, service_principal_secrets tables)
 - `OPENAI_API_KEY`
 - `DATABRICKS_HOST` — workspace URL
 - `DATABRICKS_WAREHOUSE_ID`
 - `DATABRICKS_ACCESS_TOKEN`
 - `GIT_REPO_PAT_DATA_PLATFORM` — GitHub PAT for opening access-control PRs on `VireoAI/vireox-data-platform`
+- `SECRET_ENCRYPTION_KEY` — Fernet key encrypting cached service-principal secrets at rest
+- `SECRET_LINK_BASE_URL` — public base URL of the receiver, used to build one-time secret-view links
 - `NGROK_AUTHTOKEN` — local dev only
 
 Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-4o-mini), `SCHEDULER_INTERVAL` (default 180 s)
@@ -90,11 +103,14 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-4o-mini), `SCH
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
 
-**Supabase `access_request_categories` table** — gates the `request_data_access` tool per bot/channel:
-- `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject)
+**Supabase `access_request_categories` table** — gates the `request_data_access` and `generate_service_principal_secret` tools per bot/channel/request_type:
+- `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject, or — for `service_principal_secret` — allowed to call the tool at all)
 
 **Supabase `access_requests` table** — submitted requests + review state:
 - `id uuid`, `bot_id`, `request_type`, `channel`, `thread_ts`, `requester_id`, `reviewers text[]`, `status` (`pending`/`approved`/`rejected`), `ticket_id`, `user_email`, `principal_type`, `display_name`, `principal`, `filter_column`, `allowed_value`, `scope_column`, `scope_value`, `groups text[]`, `tags text[]`, `service_principal_id`, `pr_url`, `expires_at` (24h from creation)
+
+**Supabase `service_principal_secrets` table** — cached Databricks service-principal OAuth secrets (one row per `bot_id` + `email`, replaced on rotation):
+- `id uuid`, `bot_id`, `service_account` (svc-prefixed display name), `client_id`, `email` (bare address, the lookup key), `dbx_secret_id`, `secret_hash`, `secret_encrypted bytea` (Fernet-encrypted), `status`, `dbx_create_time`, `dbx_update_time`, `dbx_expire_time`, `requested_by`
 
 Bot is resolved at runtime: receiver uses `api_app_id` → `get_by_app_id()`; worker uses stored `bot_id` → `get_by_id()`.
 
@@ -125,9 +141,11 @@ src/
     agent.py                 # Agent loop + tool dispatch
     tasks.py                 # RQ task definitions (mentions, schedules, access request submission)
     review.py                # Deterministic approve/reject handling for access requests (no LLM)
-    skills/                  # Markdown skill files (01–11)
+    skills/                  # Markdown skill files (01–12)
   scheduler/app.py           # Cron polling loop
-  common/configs.py          # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas)
+  common/
+    configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas)
+    crypto.py                # Fernet encrypt/decrypt for secrets cached at rest (service_principal_secrets)
   models/                    # Pure data/rendering helpers, no I/O
     access_request_view.py       # Slack modal view + submission validation
     access_request_submission.py # VerifiedAccessRequest dataclass
@@ -139,12 +157,14 @@ src/
       schedules.py                # Schedule CRUD
       access_request_categories.py # Per-bot/channel request eligibility
       access_requests.py          # Submitted request CRUD
+      service_principal_secrets.py # Cached (encrypted) service-principal secret CRUD
       connection.py                # psycopg connection helper
     databricks/              # Statement API, Jobs API, principal lookups
       sql.py                      # SELECT-only Statement API client
       jobs.py                     # Job run details
       principals.py                # User lookup
       service_principals.py        # Service principal find-or-create
+      service_principal_secrets.py # OAuth client secret generation
     github.py                # GitHub REST client — opens access-control PRs on VireoAI/vireox-data-platform
     slack.py                 # Slack Web API — message posting + modal views
   databricks/metric_views/   # SQL views for semantic layer

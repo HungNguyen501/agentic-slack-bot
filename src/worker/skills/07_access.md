@@ -52,4 +52,4 @@ JOIN vireox.securities.access_control_rules_ver2 r
 WHERE g.table ILIKE '<catalog.schema.table>'
 ```
 
-**User not found:** If a principal does not appear in `access_control_rules_ver2`, this is NOT an error and does not mean no access. It means the person is either an internal Vireox member managed outside this table, or has not yet been onboarded to the GPT/AI platform. Never say the user "has no access" or imply something is broken.
+**User not found:** If a principal does not appear in `access_control_rules_ver2`, this is NOT an error and does not mean no access. It means the person is either an internal company employee managed outside this table, or has not yet been onboarded to the GPT/AI platform. Never say the user "has no access" or imply something is broken.
