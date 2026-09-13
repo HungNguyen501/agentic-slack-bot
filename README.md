@@ -161,6 +161,7 @@ Instructions live in [`src/worker/skills/`](src/worker/skills/) as individual Ma
 | `09_schedules.md` | Scheduled report management (admin) | Routed |
 | `10_semantic.md` | Semantic views for aggregated metrics | Routed |
 | `11_data_access_requests.md` | Starting a data access request | Routed |
+| `12_service_principal_secrets.md` | Generating a service-principal secret (reviewers only) | Routed |
 
 **Always-loaded** skills are included in every system prompt. **Routed** skills are selected per-request by a fast router model (`gpt-4o-mini` by default) based on the user's question and recent conversation history.
 
@@ -195,6 +196,17 @@ A user can ask the bot to request row-filter (or tag-scoped) access to a table d
 
 New request categories are added by inserting a row into `access_request_categories` — no code changes needed. See [`docs/data_access_request_form.md`](docs/data_access_request_form.md) for the full design (sequence diagram, schema, and field reference).
 
+## Service principal secrets
+
+A configured reviewer can ask the bot to generate a Databricks service-principal OAuth secret — synchronously, with no separate approval step:
+
+1. The agent's `generate_service_principal_secret` tool checks the `access_request_categories` table (`request_type="service_principal_secret"`) for **both** channel eligibility and that the requester is on that category's `reviewers` list.
+2. It verifies the service principal exists in Databricks, then reuses a still-valid cached secret from `service_principal_secrets` (encrypted at rest) or mints a new one and caches it.
+3. The full record is dropped into Redis under a fresh, single-use token, and a plain link is posted to Slack — never the secret itself.
+4. `GET /secrets/{token}` on the receiver serves it exactly once via an atomic Redis `GETDEL`, then it's gone.
+
+See [`docs/service_principal_secrets.md`](docs/service_principal_secrets.md) for the full design (sequence diagram, schema, and known gaps).
+
 ## Environment variables
 
 | Variable | Required | Description |
@@ -205,6 +217,8 @@ New request categories are added by inserting a row into `access_request_categor
 | `DATABRICKS_WAREHOUSE_ID` | Yes | SQL warehouse ID for statement execution |
 | `DATABRICKS_ACCESS_TOKEN` | Yes | Databricks personal access token |
 | `GIT_REPO_PAT_DATA_PLATFORM` | Yes | GitHub PAT (fine-grained, contents + pull_requests write) scoped to `VireoAI/vireox-data-platform`, used to open access-control PRs when a data access request is approved |
+| `SECRET_ENCRYPTION_KEY` | Yes | Fernet key encrypting cached service-principal secrets at rest |
+| `SECRET_LINK_BASE_URL` | Yes | Public base URL of the receiver, used to build one-time secret-view links |
 | `NGROK_AUTHTOKEN` | Yes | ngrok auth token (local dev only) |
 | `WORKER_COUNT` | No | Number of concurrent worker containers (default: `2`) |
 | `ROUTER_MODEL` | No | Model used for skill routing (default: `gpt-4o-mini`) |

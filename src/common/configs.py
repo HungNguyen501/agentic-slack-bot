@@ -26,6 +26,13 @@ class Configs:
 
     GIT_REPO_PAT_DATA_PLATFORM: str | None = os.getenv("GIT_REPO_PAT_DATA_PLATFORM", None)
 
+    # Fernet key (Fernet.generate_key()) used to encrypt cached service-principal secrets
+    # at rest in Supabase — see common/crypto.py.
+    SECRET_ENCRYPTION_KEY: str | None = os.getenv("SECRET_ENCRYPTION_KEY", None)
+    # Public base URL of the receiver (e.g. the ngrok/prod domain) used to build the
+    # one-time secret-view link posted to Slack — see receiver/app.py's /secrets/{token}.
+    SECRET_LINK_BASE_URL: str | None = os.getenv("SECRET_LINK_BASE_URL", None)
+
     WORKER_COUNT: int = int(os.getenv("WORKER_COUNT", "2"))
     SCHEDULER_INTERVAL: int = int(os.getenv("SCHEDULER_INTERVAL", "180"))
 
@@ -49,7 +56,7 @@ class AgentTool:
     name: str
     description: str
     parameters: dict
-    category: Literal["core", "schedule", "data_access"] = "core"
+    category: Literal["core", "schedule", "data_access", "secrets"] = "core"
 
     def to_openai_schema(self) -> dict:
         return {
@@ -72,6 +79,10 @@ class AgentConfigs:
     # worker/agent.py stamps this into the button's value as expires_at; receiver/app.py just
     # compares expires_at against the current time, no TTL math of its own.
     ACCESS_REQUEST_BUTTON_TTL_SECONDS: int = 3600
+
+    # How long a one-time service-principal-secret view link stays valid in Redis before
+    # it's treated as expired (see worker/agent.py's secret_link:{token} key).
+    SECRET_LINK_TTL_SECONDS: int = 600
 
     TOOLS: tuple[AgentTool, ...] = (
         AgentTool(
@@ -169,5 +180,25 @@ class AgentConfigs:
                 "required": ["request_type"],
             },
             category="data_access",
+        ),
+        AgentTool(
+            name="generate_service_principal_secret",
+            description=(
+                "Generate (or return a still-valid cached) Databricks service-principal OAuth "
+                "client secret. Only callable by users listed as reviewers for this request type "
+                "in this channel. Use when a reviewer asks to generate, rotate, or get a secret "
+                "for a service principal / service account."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "service_account": {
+                        "type": "string",
+                        "description": "Email address identifying the service principal, e.g. 'braiden.haas@wholesome.co'.",
+                    },
+                },
+                "required": ["service_account"],
+            },
+            category="secrets",
         ),
     )

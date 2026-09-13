@@ -16,6 +16,7 @@ Current skills:
 - `09_schedules.md` — schedule CRUD + admin checks
 - `10_semantic.md` — semantic metric views
 - `11_data_access_requests.md` — `request_data_access` tool usage (submitting a new request; not the reviewer approve/reject flow, which bypasses skills/routing entirely — see architecture.md "Data Access Requests")
+- `12_service_principal_secrets.md` — `generate_service_principal_secret` tool usage (see architecture.md "Service Principal Secrets")
 
 ## Required Frontmatter
 
