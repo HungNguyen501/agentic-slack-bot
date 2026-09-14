@@ -42,9 +42,10 @@ reviewer replies "approve <id>" / "reject <id>" in the thread
 
 **Service principal secret generation** (synchronous, no separate approval step):
 ```
-reviewer asks agent for a secret → generate_service_principal_secret tool checks
-  channel + reviewer eligibility (access_request_categories) → verifies the service
-  principal exists in Databricks → reuses a still-valid cached secret from Supabase
+reviewer asks agent for a secret → generate_service_principal_secret tool validates
+  the service_account is a well-formed email → checks channel + reviewer eligibility
+  (access_request_categories) → verifies the service principal exists in Databricks
+  → reuses a still-valid cached secret from Supabase
   (service_principal_secrets, encrypted) or mints a new one via Databricks
   → drops the plaintext into Redis (secret_link:{token}, short TTL) → posts a link
 reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETDEL
@@ -109,8 +110,8 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-4o-mini), `SCH
 **Supabase `access_requests` table** — submitted requests + review state:
 - `id uuid`, `bot_id`, `request_type`, `channel`, `thread_ts`, `requester_id`, `reviewers text[]`, `status` (`pending`/`approved`/`rejected`), `ticket_id`, `user_email`, `principal_type`, `display_name`, `principal`, `filter_column`, `allowed_value`, `scope_column`, `scope_value`, `groups text[]`, `tags text[]`, `service_principal_id`, `pr_url`, `expires_at` (24h from creation)
 
-**Supabase `service_principal_secrets` table** — cached Databricks service-principal OAuth secrets (one row per `bot_id` + `email`, replaced on rotation):
-- `id uuid`, `bot_id`, `service_account` (svc-prefixed display name), `client_id`, `email` (bare address, the lookup key), `dbx_secret_id`, `secret_hash`, `secret_encrypted bytea` (Fernet-encrypted), `status`, `dbx_create_time`, `dbx_update_time`, `dbx_expire_time`, `requested_by`
+**Supabase `service_principal_secrets` table** — cached Databricks service-principal OAuth secrets, shared across all bots in the workspace (one row per `email`, replaced on rotation — including when the service principal itself is deleted and recreated with a new `client_id`):
+- `id uuid`, `service_account` (svc-prefixed display name), `client_id`, `email` (bare address, unique, the lookup key), `dbx_secret_id`, `secret_hash`, `secret_encrypted bytea` (Fernet-encrypted), `status`, `dbx_create_time`, `dbx_update_time`, `dbx_expire_time`, `requested_by`
 
 Bot is resolved at runtime: receiver uses `api_app_id` → `get_by_app_id()`; worker uses stored `bot_id` → `get_by_id()`.
 
