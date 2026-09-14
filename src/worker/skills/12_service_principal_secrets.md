@@ -14,5 +14,5 @@ You can generate a Databricks service-principal OAuth client secret on behalf of
 
 - `service_account` is the bare email address identifying the service principal (e.g. `braiden.haas@wholesome.co`), not the `svc-`-prefixed display name.
 - Call the tool as soon as the service account is clear — don't ask the user to confirm first.
-- If the tool reports the requester or channel isn't eligible, or that no matching service principal exists, relay that refusal verbatim and don't retry.
+- If the tool reports the requester or channel isn't eligible, that the service account isn't a valid email address, or that no matching service principal exists, relay that refusal verbatim and don't retry.
 - Never repeat or guess at the secret value yourself — only ever relay the one-time link the tool returns. Tell the user the link only works once.

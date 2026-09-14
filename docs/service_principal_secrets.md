@@ -30,6 +30,7 @@ This document describes the current implementation: the eligibility check, why t
 
 # **Requirements**
 
+- The service account must be a well-formed email address — checked first, before any database or Databricks call, so malformed input is rejected with zero side effects.
 - The requester must already be listed as a reviewer for this request type in the channel they asked in — checked before any Databricks or database call, so an ineligible request has no side effects at all.
 - Databricks only ever returns a secret's plaintext once, at the moment it's created — never again on any later lookup. Honoring "return it if still valid" is only possible by caching that plaintext ourselves, encrypted at rest.
 - The hand-off link must work exactly once: a reload, a second person with the link, or two requests racing each other must never both see the secret.
@@ -74,7 +75,8 @@ sequenceDiagram
 ## Entry Point — Requesting a Secret
 
 - A reviewer asks the bot for a secret in a Slack thread; the bot recognizes this as a secret-generation request and resolves the service account from the message.
-- Eligibility is checked in one step, before anything else: the channel must be authorized for this request type, and the requester must be on that request type's reviewer list. Either failure produces a plain refusal with no Databricks or database access at all.
+- The service account is validated as a well-formed email address before anything else; a malformed value produces a plain refusal with no database or Databricks access at all.
+- Eligibility is checked next: the channel must be authorized for this request type, and the requester must be on that request type's reviewer list. Either failure produces a plain refusal with no Databricks or database access at all.
 - This deliberately has no second, separate-approver step — unlike a data access request, the requester's own reviewer status is the entire authorization; there's no form and nothing pending afterward.
 
 ## Service Principal Lookup
@@ -85,7 +87,7 @@ sequenceDiagram
 
 - Because Databricks only ever returns a secret's plaintext value once — at creation — there is no way to ask it for the value again later. Returning an existing, still-valid secret is only possible because the bot cached that plaintext itself, encrypted, the first time it was generated.
 - A cached secret is considered valid only if its recorded status is active and its expiry is still in the future; anything else results in a new secret being requested from Databricks and the cache entry being replaced in place — there is no history kept of secrets that were rotated away.
-- The cache is keyed by the owning bot and the service account's bare email, one row per pair.
+- The cache is keyed by the service account's bare email alone, one row per email, shared across all bots in the workspace — not by `client_id`, since a service principal can be deleted and recreated (getting a new `client_id`) for the same email.
 
 ## One-Time Hand-off
 
@@ -99,15 +101,13 @@ sequenceDiagram
 ```mermaid
 erDiagram
     bots ||--o{ access_request_categories : "owns"
-    bots ||--o{ service_principal_secrets : "owns"
     access_request_categories }o..o{ service_principal_secrets : "matched at request time by bot + type — no stored link"
 
     service_principal_secrets {
         uuid id PK
-        text bot_id FK
         text service_account "svc-prefixed display name"
         text client_id
-        text email "bare address — the lookup key, unique per bot"
+        text email "bare address — the unique lookup key"
         text dbx_secret_id
         text secret_hash
         bytea secret_encrypted "Fernet-encrypted plaintext"
@@ -124,10 +124,9 @@ erDiagram
 | Field | Description |
 | --- | --- |
 | id | Unique identifier |
-| bot_id | Owning bot |
 | service_account | Databricks' svc-prefixed display name for the service principal |
-| client_id | The service principal's Databricks application/client ID |
-| email | The bare address identifying the service principal — the actual lookup key, unique per bot |
+| client_id | The service principal's Databricks application/client ID — not unique: a service principal can be deleted and recreated for the same email, getting a new client_id |
+| email | The bare address identifying the service principal — the actual lookup key, unique across the table |
 | dbx_secret_id | Databricks' own identifier for this secret |
 | secret_hash | Databricks' hash of the secret, kept alongside the encrypted value for reference |
 | secret_encrypted | The secret's plaintext value, encrypted at rest — never stored or logged unencrypted |
@@ -136,7 +135,7 @@ erDiagram
 | requested_by | Slack user who triggered the generation that produced the currently cached secret |
 | created_at / updated_at | Standard record timestamps |
 
-Eligibility reuses the existing `access_request_categories` table (a new request type value, not a new table) — the same bot/channel/reviewer mapping that gates data access requests also gates this capability, matched fresh at request time rather than through any stored reference.
+The table has no `bot_id` — it's shared across every bot in the workspace, since the same service principal can be requested through more than one of them. Eligibility instead reuses the existing `access_request_categories` table (a new request type value, not a new table) — the same bot/channel/reviewer mapping that gates data access requests also gates this capability, matched fresh at request time rather than through any stored reference.
 
 # **External Systems Touched**
 
@@ -155,3 +154,4 @@ Shipped in code, but adopted closed: the seeded eligibility record for this requ
 - If the encryption key used to protect cached secrets is ever rotated, every previously cached (and otherwise still-valid) secret becomes permanently undecryptable — there's no re-encryption or fallback path today; the request simply fails rather than transparently minting a fresh one.
 - No history is kept of secrets that were rotated away — the cache is a single current row per service account, overwritten in place, so there's no way to look back at what a service account's secret used to be.
 - This is the second capability layered onto the `access_request_categories` table, which was originally built for a single purpose (data access requests). Worth revisiting if a third, differently-shaped capability wants to reuse it.
+- The cache was originally scoped by `bot_id` + `email`; both were dropped in favor of `email` alone once it became clear the same service principal is requested across multiple bots in the workspace, and that `client_id` isn't stable (a service principal can be deleted and recreated for the same email).

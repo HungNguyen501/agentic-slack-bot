@@ -14,7 +14,6 @@ from connectors.db.connection import connect
 @dataclass
 class ServicePrincipalSecret:
     id: str
-    bot_id: str
     service_account: str
     client_id: str
     email: str
@@ -33,7 +32,6 @@ class ServicePrincipalSecret:
 def _row_to_secret(row: Any) -> ServicePrincipalSecret:
     return ServicePrincipalSecret(
         id=str(row["id"]),
-        bot_id=row["bot_id"],
         service_account=row["service_account"],
         client_id=row["client_id"],
         email=row["email"],
@@ -50,23 +48,25 @@ def _row_to_secret(row: Any) -> ServicePrincipalSecret:
     )
 
 
-def get(bot_id: str, email: str) -> ServicePrincipalSecret | None:
-    """Fetch the cached secret record for a bot+email, if one exists.
+def get(email: str) -> ServicePrincipalSecret | None:
+    """Fetch the cached secret record for an email, if one exists.
 
-    `email` (the bare address) is the lookup key, matching find_service_principal_by_email —
-    not `service_account`, which stores Databricks' svc-prefixed display name.
+    `email` (the bare address) is the unique lookup key, matching find_service_principal_by_email —
+    not `service_account`, which stores Databricks' svc-prefixed display name. Secrets are shared
+    across all bots in the workspace, so this isn't scoped by bot_id. Keyed by email rather than
+    client_id because a service principal can be deleted and recreated (a new client_id) for the
+    same user.
     """
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM service_principal_secrets WHERE bot_id = %s AND email = %s",
-            (bot_id, email),
+            "SELECT * FROM service_principal_secrets WHERE email = %s",
+            (email,),
         )
         row = cur.fetchone()
         return _row_to_secret(row) if row else None
 
 
 def upsert(
-    bot_id: str,
     service_account: str,
     client_id: str,
     email: str,
@@ -79,14 +79,14 @@ def upsert(
     dbx_expire_time: datetime,
     requested_by: str,
 ) -> ServicePrincipalSecret:
-    """Insert or replace the cached secret for a bot+email (rotated in place)."""
+    """Insert or replace the cached secret for an email (rotated in place)."""
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             "INSERT INTO service_principal_secrets ("
-            "bot_id, service_account, client_id, email, dbx_secret_id, secret_hash, secret_encrypted, "
+            "service_account, client_id, email, dbx_secret_id, secret_hash, secret_encrypted, "
             "status, dbx_create_time, dbx_update_time, dbx_expire_time, requested_by"
-            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-            "ON CONFLICT (bot_id, email) DO UPDATE SET "
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (email) DO UPDATE SET "
             "service_account = EXCLUDED.service_account, client_id = EXCLUDED.client_id, "
             "dbx_secret_id = EXCLUDED.dbx_secret_id, "
             "secret_hash = EXCLUDED.secret_hash, secret_encrypted = EXCLUDED.secret_encrypted, "
@@ -95,7 +95,6 @@ def upsert(
             "requested_by = EXCLUDED.requested_by "
             "RETURNING *",
             (
-                bot_id,
                 service_account,
                 client_id,
                 email,
