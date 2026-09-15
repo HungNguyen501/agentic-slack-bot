@@ -370,7 +370,14 @@ def _dispatch_secret_generation_tool(args: dict, user_id: str | None, channel: s
         return f"Error looking up service principal: {exc}"
 
     if sp is None:
-        return f"No service principal found for `{email}`. Please double-check the address."
+        return (
+            f"No service principal found for `{email}`. This tool only mints secrets for service principals "
+            "that already exist under the `svc-<email>` naming convention created by an approved data access "
+            "request — it can't create a new one. If this address needs a service principal, submit a data "
+            "access request with principal type \"Service principals\" for it and get it approved first, then "
+            "ask again here. If this is an existing Databricks service account for a scheduled job/pipeline "
+            "rather than a GPT-user service principal, this tool doesn't apply — reach out to the data team directly."
+        )
 
     cached = get_cached_secret(email)
     now = datetime.now(UTC)

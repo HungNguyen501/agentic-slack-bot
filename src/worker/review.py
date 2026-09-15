@@ -133,4 +133,9 @@ def _approve(bot: BotConfig, row: AccessRequest, channel: str, approver_id: str)
         display_name=display_name,
     )
     log.info("Access request %s approved by %s; PR: %s", row.id, approver_id, pr_url)
-    return f"Request `{row.id}` approved by <@{approver_id}>. PR opened: {pr_url}"
+    return (
+        f"Request `{row.id}` approved by <@{approver_id}>. PR opened: {pr_url}\n"
+        "Merging this PR on GitHub applies the change — merging to the base branch triggers "
+        "vireox-data-platform's CI/CD, which deploys it to production (GA) automatically. No separate "
+        "deploy step is needed; just approve and merge the PR itself once it looks right."
+    )
