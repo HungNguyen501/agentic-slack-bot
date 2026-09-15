@@ -39,6 +39,7 @@ def format_service_principals_snapshot(service_principals: list[dict]) -> str:
             "active": sp.get("active", True),
             "applicationId": sp.get("applicationId"),
             "displayName": sp.get("displayName"),
+            **({"entitlements": sp["entitlements"]} if sp.get("entitlements") else {}),
             "groups": sorted(
                 [
                     {"$ref": g.get("$ref"), "display": g.get("display"), "type": g.get("type"), "value": g.get("value")}
