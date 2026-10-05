@@ -228,6 +228,8 @@ class FormField:
         text_input: Render as a free-text plain_text_input instead of a select.
         multiline: For a text_input field, render a taller box that accepts newlines
             (used by user_emails, which requires exactly one email per line).
+        default: Values pre-selected when the modal opens; must be a subset of options.
+            Ignored when text_input is True or groups is set.
     """
 
     block_id: str
@@ -237,6 +239,7 @@ class FormField:
     multi: bool = False
     text_input: bool = False
     multiline: bool = False
+    default: list[str] = field(default_factory=list)
 
     def to_block(self) -> dict:
         """Render this field as a Slack Block Kit input block."""
@@ -253,6 +256,12 @@ class FormField:
                 ]
             else:
                 element["options"] = [{"text": {"type": "plain_text", "text": o}, "value": o} for o in self.options]
+                initial = [{"text": {"type": "plain_text", "text": o}, "value": o} for o in self.default]
+                if initial:
+                    if self.multi:
+                        element["initial_options"] = initial
+                    else:
+                        element["initial_option"] = initial[0]
         return {"type": "input", "block_id": self.block_id, "label": {"type": "plain_text", "text": self.label}, "element": element}
 
 
@@ -334,7 +343,13 @@ ACCESS_REQUEST_FORM_FIELDS: list[FormField] = [
         ],
     ),
     FormField(block_id="principal_type", label="Principal type", options=["Service principals"]),
-    FormField(block_id="groups", label="Groups (Rocky Mountain gpt users? Also select gpt-schwazze-users)", options=["gpt-schwazze-users", "gpt-users"], multi=True),
+    FormField(
+        block_id="groups",
+        label="Groups (Rocky Mountain gpt users? Also select gpt-schwazze-users)",
+        options=["gpt-schwazze-users", "gpt-users"],
+        multi=True,
+        default=["gpt-users"],
+    ),
     FormField(
         block_id="tags",
         label="Tags",

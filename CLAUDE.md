@@ -37,7 +37,7 @@ user asks agent for access → request_data_access tool checks eligibility
   → worker inserts a pending access_requests row (24h expiry)
 reviewer replies "approve <id>" / "reject <id>" in the thread
   → worker/review.py (bypasses the agent loop) resolves the principal via Databricks,
-    opens a PR on VireoAI/vireox-data-platform via connectors/github.py, updates status
+    opens a PR on 100xteam-ai/vireox-data-platform via connectors/github.py, updates status
 ```
 
 **Service principal secret generation** (synchronous, no separate approval step):
@@ -89,7 +89,7 @@ See `.env.example`. Required:
 - `DATABRICKS_HOST` — workspace URL
 - `DATABRICKS_WAREHOUSE_ID`
 - `DATABRICKS_ACCESS_TOKEN`
-- `GIT_REPO_PAT_DATA_PLATFORM` — GitHub PAT for opening access-control PRs on `VireoAI/vireox-data-platform`
+- `GIT_REPO_PAT_DATA_PLATFORM` — GitHub PAT for opening access-control PRs on `100xteam-ai/vireox-data-platform` (or `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` [+ `GITHUB_APP_INSTALLATION_ID`] for GitHub App auth, which takes precedence)
 - `SECRET_ENCRYPTION_KEY` — Fernet key encrypting cached service-principal secrets at rest
 - `SECRET_LINK_BASE_URL` — public base URL of the receiver, used to build one-time secret-view links
 - `NGROK_AUTHTOKEN` — local dev only
@@ -166,7 +166,7 @@ src/
       principals.py                # User lookup
       service_principals.py        # Service principal find-or-create
       service_principal_secrets.py # OAuth client secret generation
-    github.py                # GitHub REST client — opens access-control PRs on VireoAI/vireox-data-platform
+    github.py                # GitHub REST client — opens access-control PRs on 100xteam-ai/vireox-data-platform
     slack.py                 # Slack Web API — message posting + modal views
   databricks/metric_views/   # SQL views for semantic layer
   migrations/                # DB schema SQL (Flyway, applied via `make db-migrate`)

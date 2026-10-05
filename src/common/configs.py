@@ -25,6 +25,11 @@ class Configs:
     DATABRICKS_ACCESS_TOKEN: str | None = os.getenv("DATABRICKS_ACCESS_TOKEN", None)
 
     GIT_REPO_PAT_DATA_PLATFORM: str | None = os.getenv("GIT_REPO_PAT_DATA_PLATFORM", None)
+    # GitHub App auth (preferred over the PAT when GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are both set).
+    # The private key is the PEM contents; literal "\n" sequences are accepted so it fits on one env line.
+    GITHUB_APP_ID: str | None = os.getenv("GITHUB_APP_ID", None)
+    GITHUB_APP_PRIVATE_KEY: str | None = os.getenv("GITHUB_APP_PRIVATE_KEY", None)
+    GITHUB_APP_INSTALLATION_ID: str | None = os.getenv("GITHUB_APP_INSTALLATION_ID", None)
 
     # Fernet key (Fernet.generate_key()) used to encrypt cached service-principal secrets
     # at rest in Supabase — see common/crypto.py.
@@ -43,7 +48,7 @@ class Configs:
 class GithubConfigs:
     """GitHub repo constants for the data-platform access-control PR flow (`connectors/github.py`)."""
 
-    OWNER: str = "VireoAI"
+    OWNER: str = "100xteam-ai"
     REPO: str = "vireox-data-platform"
     BASE_BRANCH: str = "main"
     API: str = f"https://api.github.com/repos/{OWNER}/{REPO}"

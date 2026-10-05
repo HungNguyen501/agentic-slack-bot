@@ -1,14 +1,62 @@
 """GitHub REST API client for opening the data-platform access-control PR."""
 import base64
+import json
 import re
+import time
 
 import httpx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from common.configs import Configs, GithubConfigs
 
 
+_TOKEN_REFRESH_MARGIN_SECONDS = 60
+_installation_token: tuple[str, float] | None = None
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _app_jwt() -> str:
+    """Sign a short-lived RS256 JWT identifying the GitHub App (used only to mint installation tokens)."""
+    now = int(time.time())
+    # iat is backdated 60 s to tolerate clock drift, per GitHub's docs.
+    claims = {"iat": now - 60, "exp": now + 9 * 60, "iss": Configs.GITHUB_APP_ID}
+    signing_input = f"{_b64url(json.dumps({'alg': 'RS256', 'typ': 'JWT'}).encode())}.{_b64url(json.dumps(claims).encode())}"
+    key = serialization.load_pem_private_key(Configs.GITHUB_APP_PRIVATE_KEY.replace("\\n", "\n").encode("utf-8"), password=None)
+    signature = key.sign(signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256())
+    return f"{signing_input}.{_b64url(signature)}"
+
+
+def _app_installation_token() -> str:
+    """Return a cached GitHub App installation access token, minting a new one shortly before expiry."""
+    global _installation_token
+    if _installation_token and _installation_token[1] - time.time() > _TOKEN_REFRESH_MARGIN_SECONDS:
+        return _installation_token[0]
+
+    app_headers = {"Authorization": f"Bearer {_app_jwt()}", "Accept": "application/vnd.github+json"}
+    installation_id = Configs.GITHUB_APP_INSTALLATION_ID
+    if not installation_id:
+        lookup = httpx.get(f"{GithubConfigs.API}/installation", headers=app_headers, timeout=30.0)
+        lookup.raise_for_status()
+        installation_id = str(lookup.json()["id"])
+
+    resp = httpx.post(f"https://api.github.com/app/installations/{installation_id}/access_tokens", headers=app_headers, timeout=30.0)
+    resp.raise_for_status()
+    data = resp.json()
+    expires_at = time.mktime(time.strptime(data["expires_at"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+    _installation_token = (data["token"], expires_at)
+    return data["token"]
+
+
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {Configs.GIT_REPO_PAT_DATA_PLATFORM}", "Accept": "application/vnd.github+json"}
+    if Configs.GITHUB_APP_ID and Configs.GITHUB_APP_PRIVATE_KEY:
+        token = _app_installation_token()
+    else:
+        token = Configs.GIT_REPO_PAT_DATA_PLATFORM
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
 
 def _get_file(path: str, ref: str) -> tuple[str, str]:

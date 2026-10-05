@@ -32,7 +32,7 @@ Multiple independent bots (one per Slack workspace or use-case) are supported. A
 | `src/models/` | Pure data/rendering helpers with no I/O — the Slack modal view + validation, the verified-request dataclass, and the `rules_v2.yaml`/PR template renderers for data access requests. |
 | `src/connectors/db/` | Supabase (Postgres) clients — bot registry, schedule CRUD, and data-access-request category/submission CRUD. |
 | `src/connectors/databricks/` | Databricks clients — Statement API (SQL queries), Jobs REST API (run details), and SCIM user/service-principal lookups. |
-| `src/connectors/github.py` | GitHub REST client — opens the access-control PR on `VireoAI/vireox-data-platform` when a data access request is approved. |
+| `src/connectors/github.py` | GitHub REST client — opens the access-control PR on `100xteam-ai/vireox-data-platform` when a data access request is approved. |
 | `src/connectors/slack.py` | Slack Web API client — message posting and modal views. |
 | `src/worker/skills/` | Markdown skill files loaded into the agent system prompt. The router selects which skills to include based on the user's question. |
 | `src/databricks/metric_views/` | SQL view definitions for the semantic layer (`vw_dbu_cost`, `vw_job_run_stats`, `vw_query_perf`) deployed to `vireox_infra.semantic` in Databricks. |
@@ -192,7 +192,7 @@ A user can ask the bot to request row-filter (or tag-scoped) access to a table d
 1. The agent's `request_data_access` tool checks the `access_request_categories` table for the bot/channel/request type, then posts an "Open Form" button.
 2. Clicking the button opens a Slack modal (handled synchronously by the receiver — see `.claude/rules/architecture.md`); submitting it creates one `pending` row per requested email in `access_requests` (24h expiry).
 3. A reviewer (from that category's `reviewers` list) replies `approve <id>` or `reject <id>` in the thread. This bypasses the LLM agent loop entirely — it's deterministic control flow in `src/worker/review.py`.
-4. On approval, the bot resolves the Databricks principal (user or service principal), and opens a PR against `VireoAI/vireox-data-platform` appending the new rule to `rules_v2.yaml`.
+4. On approval, the bot resolves the Databricks principal (user or service principal), and opens a PR against `100xteam-ai/vireox-data-platform` appending the new rule to `rules_v2.yaml`.
 
 New request categories are added by inserting a row into `access_request_categories` — no code changes needed. See [`docs/data_access_request_form.md`](docs/data_access_request_form.md) for the full design (sequence diagram, schema, and field reference).
 
@@ -216,7 +216,9 @@ See [`docs/service_principal_secrets.md`](docs/service_principal_secrets.md) for
 | `DATABRICKS_HOST` | Yes | Databricks workspace URL |
 | `DATABRICKS_WAREHOUSE_ID` | Yes | SQL warehouse ID for statement execution |
 | `DATABRICKS_ACCESS_TOKEN` | Yes | Databricks personal access token |
-| `GIT_REPO_PAT_DATA_PLATFORM` | Yes | GitHub PAT (fine-grained, contents + pull_requests write) scoped to `VireoAI/vireox-data-platform`, used to open access-control PRs when a data access request is approved |
+| `GIT_REPO_PAT_DATA_PLATFORM` | If no GitHub App | GitHub PAT (fine-grained, contents + pull_requests write) scoped to `100xteam-ai/vireox-data-platform`, used to open access-control PRs when a data access request is approved |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | No | GitHub App credentials (PEM key, `\n` escapes allowed; app needs contents + pull_requests write). When both are set they take precedence over the PAT |
+| `GITHUB_APP_INSTALLATION_ID` | No | App installation id; looked up from the repo if omitted |
 | `SECRET_ENCRYPTION_KEY` | Yes | Fernet key encrypting cached service-principal secrets at rest |
 | `SECRET_LINK_BASE_URL` | Yes | Public base URL of the receiver, used to build one-time secret-view links |
 | `NGROK_AUTHTOKEN` | Yes | ngrok auth token (local dev only) |
