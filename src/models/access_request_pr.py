@@ -103,6 +103,8 @@ def build_pr(ticket_id: str, entries: list[PrEntry]) -> tuple[str, str]:
     """
     title = f"govern: {ticket_id} Add/ update GPT user(s)"
 
+    # One line per user: a later request for the same email on this ticket replaces the earlier one.
+    entries = list({e.request.user_email: e for e in entries}.values())
     new_count = sum(e.is_new for e in entries)
     existing_count = len(entries) - new_count
     summary = " and ".join(
