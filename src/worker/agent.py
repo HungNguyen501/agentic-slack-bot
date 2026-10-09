@@ -201,6 +201,21 @@ def _save_history(thread_ts: str, history: list[dict]) -> None:
     redis_client.set(f"chat_history:{thread_ts}", json.dumps(history), ex=history_ttl)
 
 
+def record_thread_messages(thread_ts: str, *messages: dict) -> None:
+    """Append messages posted outside the agent loop (access request review, approve/reject outcomes) to the thread's history.
+
+    Lets a later mention in the same thread see what happened to the thread's data access
+    requests, since those flows bypass run_agent and would otherwise leave no trace in history.
+
+    Args:
+        thread_ts: Slack thread timestamp used as the Redis cache key.
+        *messages: Message dicts in OpenAI chat format (role + content), appended in order.
+    """
+    history = _load_history(thread_ts)
+    history.extend(messages)
+    _save_history(thread_ts, history)
+
+
 def _get_agent_tools() -> list[dict]:
     """Return the OpenAI function-calling tool schema for all agent tools."""
     return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS]

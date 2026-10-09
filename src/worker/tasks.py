@@ -13,7 +13,7 @@ from connectors.db.bots import get_by_id as get_bot
 from models.access_request_submission import VerifiedAccessRequest
 from models.access_request_view import parse_emails
 from worker import review
-from worker.agent import run_agent, summarize_answer
+from worker.agent import record_thread_messages, run_agent, summarize_answer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
@@ -211,6 +211,11 @@ def reply_to_mention(
             animation_thread.join()
 
         slack.update_message(channel, thinking_ts, result, token=bot.bot_token)
+        record_thread_messages(
+            thread_ts,
+            {"role": "user", "content": f"<@{user}> said: {question}"},
+            {"role": "assistant", "content": result},
+        )
         return thinking_ts
 
     if not question:
@@ -449,6 +454,7 @@ def process_data_access_submission(
     ts = thread_ts
     for chunk in _split_message(message):
         ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
+    record_thread_messages(thread_ts, {"role": "assistant", "content": message})
     return ts
 
 
