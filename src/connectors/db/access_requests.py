@@ -152,6 +152,20 @@ def get_access_request(bot_id: str, request_id: str, thread_ts: str) -> AccessRe
         return _row_to_access_request(row) if row else None
 
 
+def list_approved_access_requests(ticket_id: str) -> list[AccessRequest]:
+    """Fetch every approved request for a ticket, oldest first — they all share one branch/PR.
+
+    Args:
+        ticket_id: The governance ticket id.
+
+    Returns:
+        Approved AccessRequest records for the ticket, across bots and threads.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM access_requests WHERE ticket_id = %s AND status = 'approved' ORDER BY created_at", (ticket_id,))
+        return [_row_to_access_request(row) for row in cur.fetchall()]
+
+
 def update_access_request_status(
     id: str,
     status: str,

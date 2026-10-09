@@ -113,8 +113,17 @@ def _branch_name(ticket_id: str) -> str:
     return f"govern/{safe}"
 
 
-def _find_open_pull_request(branch: str) -> str | None:
-    """Return the html_url of an already-open PR for this branch, if one exists."""
+_RULES_PATH = "core/platform/configs/prod/access_control/rules_v2.yaml"
+
+
+def base_rule_emails() -> set[str]:
+    """Return every user_email already present in rules_v2.yaml on the base branch (i.e. existing users)."""
+    content, _ = _get_file(_RULES_PATH, GithubConfigs.BASE_BRANCH)
+    return set(re.findall(r"^\s*(?:-\s+)?user_email:\s*(\S+)", content, flags=re.MULTILINE))
+
+
+def _find_open_pull_request(branch: str) -> tuple[str, int] | None:
+    """Return the (html_url, number) of an already-open PR for this branch, if one exists."""
     resp = httpx.get(
         f"{GithubConfigs.API}/pulls",
         headers=_headers(),
@@ -123,11 +132,12 @@ def _find_open_pull_request(branch: str) -> str | None:
     )
     resp.raise_for_status()
     prs = resp.json()
-    return prs[0]["html_url"] if prs else None
+    return (prs[0]["html_url"], prs[0]["number"]) if prs else None
 
 
 def open_data_access_pr(
     ticket_id: str,
+    user_email: str,
     rules_entry_text: str,
     service_principals_yaml: str | None,
     pr_title: str,
@@ -136,7 +146,8 @@ def open_data_access_pr(
     """Append a row-filter rule (and optionally replace the SP audit snapshot) and open a PR.
 
     Multiple approved requests can share a ticket_id (hence the same branch/PR) — e.g. one
-    ticket covering access for two different users — so the base content to append onto is
+    ticket covering access for two different users — each lands as its own commit (tagged with
+    its user_email) and the PR's title/body are refreshed to cover all of them. So the base content to append onto is
     always read from the *branch* (which already reflects any earlier requests' appends),
     never from `main`. A freshly created branch is itself an exact copy of main, so this is
     never missing the file. Retry-safety for re-approving the *same* request comes from
@@ -146,13 +157,15 @@ def open_data_access_pr(
 
     Args:
         ticket_id: The governance ticket id — determines the branch name
-            ("govern/<ticket_id>", sanitized for git ref safety) and each commit message
-            ("govern: <ticket_id> <content of changes>").
+            ("govern/<ticket_id>", sanitized for git ref safety).
+        user_email: The user this call's commits are for; included in each commit message
+            ("govern: <ticket_id> <content of changes> <user_email>") to identify the update.
         rules_entry_text: The new rules_v2.yaml entry, as a fully-formed text block to append.
         service_principals_yaml: Full replacement content for service_principals.yaml, or None
             to leave that file untouched (the "Users" principal_type path never touches it).
         pr_title: Pull request title.
-        pr_body: Pull request body (already filled from the PR template).
+        pr_body: Pull request body (already filled from the PR template, consolidated across
+            every approved request on the ticket). Overwrites an already-open PR's body.
 
     Returns:
         The opened (or already-open) pull request's html_url.
@@ -160,16 +173,15 @@ def open_data_access_pr(
     branch = _branch_name(ticket_id)
     _ensure_branch(branch)
 
-    rules_path = "core/platform/configs/prod/access_control/rules_v2.yaml"
-    current_rules_content, _ = _get_file(rules_path, branch)
+    current_rules_content, _ = _get_file(_RULES_PATH, branch)
     if rules_entry_text not in current_rules_content:
         if not current_rules_content.endswith("\n"):
             current_rules_content += "\n"
         _update_file(
-            rules_path,
+            _RULES_PATH,
             branch,
             current_rules_content + rules_entry_text,
-            f"govern: {ticket_id} Add row filter access rule",
+            f"govern: {ticket_id} Add/ update row filter access rule for {user_email}",
         )
 
     if service_principals_yaml is not None:
@@ -177,12 +189,15 @@ def open_data_access_pr(
             "core/platform/configs/prod/access_control/service_principals.yaml",
             branch,
             service_principals_yaml,
-            f"govern: {ticket_id} Update service principals audit snapshot",
+            f"govern: {ticket_id} Update service principals audit snapshot for {user_email}",
         )
 
     existing = _find_open_pull_request(branch)
     if existing:
-        return existing
+        url, number = existing
+        resp = httpx.patch(f"{GithubConfigs.API}/pulls/{number}", headers=_headers(), json={"title": pr_title, "body": pr_body}, timeout=30.0)
+        resp.raise_for_status()
+        return url
 
     resp = httpx.post(
         f"{GithubConfigs.API}/pulls",

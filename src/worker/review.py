@@ -9,10 +9,10 @@ from datetime import UTC, datetime
 
 from connectors import databricks, github
 from connectors.db.access_request_categories import channel_authorized, get_access_request_category
-from connectors.db.access_requests import AccessRequest, get_access_request, update_access_request_status
+from connectors.db.access_requests import AccessRequest, get_access_request, list_approved_access_requests, update_access_request_status
 from connectors.db.bots import BotConfig
 from models.access_control_rules import format_rules_entry, format_service_principals_snapshot
-from models.access_request_pr import build_pr
+from models.access_request_pr import PrEntry, build_pr
 from models.access_request_submission import VerifiedAccessRequest
 
 log = logging.getLogger("worker.review")
@@ -100,19 +100,7 @@ def _approve(bot: BotConfig, row: AccessRequest, channel: str, approver_id: str)
             )
         display_name, principal = record.get("userName", row.user_email), row.user_email
 
-    verified = VerifiedAccessRequest(
-        ticket_id=row.ticket_id,
-        display_name=display_name,
-        user_email=row.user_email,
-        principal=principal,
-        filter_column=row.filter_column,
-        allowed_value=row.allowed_value,
-        scope_column=row.scope_column,
-        scope_value=row.scope_value,
-        principal_type=row.principal_type,
-        groups=row.groups,
-        tags=row.tags,
-    )
+    verified = _to_verified(row, display_name, principal)
 
     rules_entry = format_rules_entry(verified)
     sp_snapshot = (
@@ -120,9 +108,17 @@ def _approve(bot: BotConfig, row: AccessRequest, channel: str, approver_id: str)
         if row.principal_type == "Service principals"
         else None
     )
-    pr_title, pr_body = build_pr(verified, requester_id=row.requester_id, approver_id=approver_id)
 
-    pr_url = github.open_data_access_pr(row.ticket_id, rules_entry, sp_snapshot, pr_title, pr_body)
+    # One ticket = one branch/PR, so the PR text covers every request already approved on it plus
+    # this one (not yet marked approved, hence added explicitly). "Existing" means already in the
+    # base branch's rules, so earlier entries on this PR stay classified the same on each refresh.
+    existing_emails = github.base_rule_emails()
+    earlier = [r for r in list_approved_access_requests(row.ticket_id) if r.id != row.id]
+    entries = [PrEntry(_to_verified(r, r.display_name, r.principal), r.requester_id, r.user_email not in existing_emails) for r in earlier]
+    entries.append(PrEntry(verified, row.requester_id, row.user_email not in existing_emails))
+    pr_title, pr_body = build_pr(row.ticket_id, entries)
+
+    pr_url = github.open_data_access_pr(row.ticket_id, row.user_email, rules_entry, sp_snapshot, pr_title, pr_body)
 
     update_access_request_status(
         row.id,
@@ -138,4 +134,20 @@ def _approve(bot: BotConfig, row: AccessRequest, channel: str, approver_id: str)
         "Merging this PR on GitHub applies the change — merging to the base branch triggers "
         "vireox-data-platform's CI/CD, which deploys it to production (GA) automatically. No separate "
         "deploy step is needed; just approve and merge the PR itself once it looks right."
+    )
+
+
+def _to_verified(row: AccessRequest, display_name: str, principal: str) -> VerifiedAccessRequest:
+    return VerifiedAccessRequest(
+        ticket_id=row.ticket_id,
+        display_name=display_name,
+        user_email=row.user_email,
+        principal=principal,
+        filter_column=row.filter_column,
+        allowed_value=row.allowed_value,
+        scope_column=row.scope_column,
+        scope_value=row.scope_value,
+        principal_type=row.principal_type,
+        groups=row.groups,
+        tags=row.tags,
     )
