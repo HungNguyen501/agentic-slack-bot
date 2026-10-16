@@ -1,0 +1,24 @@
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  code-review:
+    if: github.event.pull_request.draft == false
+    uses: HungNguyen501/ci-workflows/.github/workflows/code-review.yaml@86977c3fbc5f1954a9b286980ce470f6a0115967
+    with:
+      exclude: "dist/**,**/*.lock"
+      fail_on_severity: medium # fails on medium, high or critical; or: none | low | high | critical | low
+    secrets:
+      CI_OPEN_AI_KEY: ${{ secrets.CI_OPEN_AI_KEY }}
+      GHCI_APP_ID: ${{ secrets.GHCI_APP_ID }}
+      GHCI_APP_PRIVATE_KEY: ${{ secrets.GHCI_APP_PRIVATE_KEY }}
+    permissions:
+      contents: read
+      pull-requests: write
