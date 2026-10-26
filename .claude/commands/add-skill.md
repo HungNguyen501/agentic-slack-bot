@@ -1,6 +1,6 @@
 # /add-skill
 
-Scaffold a new skill file for the agent.
+Scaffold a new **agent** skill file in `src/worker/skills/` (not a Claude Code skill in `.claude/skills/`).
 
 ## Steps
 

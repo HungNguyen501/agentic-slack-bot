@@ -146,7 +146,7 @@ src/
     agent.py                 # Agent loop + tool dispatch
     tasks.py                 # RQ task definitions (mentions, schedules, access request submission)
     review.py                # Deterministic approve/reject handling for access requests (no LLM)
-    skills/                  # Markdown skill files (01–12)
+    skills/                  # Agent (runtime) skill files (01–12) — NOT Claude Code skills
   scheduler/app.py           # Cron polling loop
   common/
     configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas)
@@ -174,6 +174,11 @@ src/
     slack.py                 # Slack Web API — message posting + modal views
   databricks/metric_views/   # SQL views for semantic layer
   migrations/                # DB schema SQL (Flyway, applied via `make db-migrate`)
+.claude/
+  rules/                     # Project rules (see below)
+  commands/                  # /add-skill, /new-bot
+  skills/                    # Claude Code dev skills (hub-managed): code-review, python-code-style, python-docstrings, python-unit-tests
+  settings.example.json      # Template for the git-ignored .claude/settings.local.json
 ```
 
 ## Rules
@@ -181,7 +186,13 @@ src/
 Detailed guidelines in `.claude/rules/`:
 - [architecture.md](.claude/rules/architecture.md) — service boundaries and invariants
 - [code-style.md](.claude/rules/code-style.md) — Python style, linting, dependencies
-- [skills.md](.claude/rules/skills.md) — skill file authoring
+- [skills.md](.claude/rules/skills.md) — agent skill file authoring (`src/worker/skills/`)
+
+## Development Skills
+
+Two unrelated things are called "skills" here:
+- **Agent skills** — `src/worker/skills/*.md`, loaded into the Slack bot's system prompt at runtime.
+- **Claude Code skills** — `.claude/skills/`, used by you while developing. Invoke `python-code-style` / `python-unit-tests` / `python-docstrings` when writing Python, and run `/code-review` on your changes before opening a PR. Details and precedence over the skills' defaults: [code-style.md](.claude/rules/code-style.md).
 
 ## Custom Commands
 

@@ -1,5 +1,7 @@
 # Skill Authoring Rules
 
+These rules cover the **agent** skills in `src/worker/skills/` only. The Claude Code dev skills in `.claude/skills/` are hub-managed and follow their own format.
+
 ## File Naming
 
 Skills live in `src/worker/skills/` and are named `NN_name.md` where `NN` is a zero-padded two-digit sequence number. The number controls load order. Pick the next available number.
