@@ -79,7 +79,11 @@ docker compose logs -f scheduler
 WORKER_COUNT=5 docker compose up -d  # scale workers
 ```
 
-`make help` lists every target, including remote deployment (`make ansible-*`) and image publishing (`make docker-build-push`).
+`make help` lists every target, including image publishing (`make docker-build-push`).
+
+## Deployment
+
+Remote deployment is not in this repo. Pushing a tag matching `agentic-slack-bot-vYYYY.MM.DD.<sha>` runs `.github/workflows/image-deploy.yaml`, which builds and pushes the image to Docker Hub. The image is then rolled out by the `slack_bot_deploy` role in the separate `ansible-infra` repo (`make check` / `make deploy ENV=staging IMAGE_TAG=<tag>`; also restart and stop playbooks). That repo owns the production compose file (a copy of `docker-compose.yml` with the pre-built image) and the `.env` handling — keep it in sync when `docker-compose.yml` or required env vars change. Skills are baked into the image in deployed environments, so a skill edit reaches them only through a new image tag and redeploy.
 
 ## Environment Variables
 

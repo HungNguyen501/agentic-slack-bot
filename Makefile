@@ -45,24 +45,6 @@ docker-build-push:
 	@if [ -z "$(TAG)" ]; then echo "TAG is required, e.g. make docker-build-push TAG=v2026.07.31.a1b2c3" >&2; exit 1; fi
 	@docker buildx build --platform linux/amd64 -t $(DOCKER_REPO)/$(IMAGE):$(TAG) --push .
 
-ansible-deploy:
-	@cd ansible && ansible-playbook playbooks/deploy.yml -i inventory/hosts.ini -vv
-
-ansible-deploy-check:
-	@cd ansible && ansible-playbook playbooks/deploy.yml -i inventory/hosts.ini --check -vv
-
-ansible-restart:
-	@cd ansible && ansible-playbook playbooks/deploy.yml -i inventory/hosts.ini --tags deploy_restart -vv
-
-ansible-stop:
-	@cd ansible && ansible-playbook playbooks/stop.yml -i inventory/hosts.ini -vv
-
-ansible-sync-skills:
-	@cd ansible && ansible-playbook playbooks/sync-skills.yml -i inventory/hosts.ini -vv
-
-ansible-logs:
-	@cd ansible && ansible-playbook playbooks/logs.yml -i inventory/hosts.ini -e log_service=$(SVC) -e log_tail=$(or $(TAIL),50)
-
 help:
 	@echo "$(ProjectName)"
 	@echo ""
@@ -89,15 +71,4 @@ help:
 	@echo "  make docker-build-push    Build (linux/amd64) and push \$$(TAG) to Docker Hub"
 	@echo "                              e.g. make docker-build-push TAG=v2026.07.31.a1b2c3"
 	@echo ""
-	@echo "Remote deployment (ansible, targets vm-ai-job-2):"
-	@echo "  make ansible-deploy         Full deploy: copy files, render compose, pull image,"
-	@echo "                              start services, remove remote .env when done"
-	@echo "  make ansible-deploy-check   Dry-run of ansible-deploy (--check, no changes made)"
-	@echo "  make ansible-restart        Restart services on the remote host without re-pulling"
-	@echo "                              (--tags deploy_restart, does not touch .env)"
-	@echo "  make ansible-stop           Stop all remote services (docker compose down)"
-	@echo "  make ansible-sync-skills    Copy src/worker/skills/ to the remote host only"
-	@echo ""
-	@echo "  make ansible-logs           Fetch remote logs (last 50 lines, all services)"
-	@echo "  make ansible-logs SVC=worker              Fetch logs for one service"
-	@echo "  make ansible-logs SVC=worker TAIL=200      Fetch last 200 lines for one service"
+	@echo "Remote deployment lives in the ansible-infra repo (make deploy ENV=<env> IMAGE_TAG=<tag>)."
