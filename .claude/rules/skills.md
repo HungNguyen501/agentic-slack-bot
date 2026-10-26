@@ -51,3 +51,5 @@ description: <one sentence starting with "Use when...">
 ## Updating Skills
 
 Skills are mounted as a volume in docker-compose (`./src/worker/skills:/app/src/worker/skills`). Editing a skill file takes effect on the next request without rebuilding the image.
+
+That applies to local `docker compose` only. Deployed environments run the published image with the skills baked in (no volume mount), so a skill edit reaches them only via a new image tag and a redeploy from the `ansible-infra` repo.
