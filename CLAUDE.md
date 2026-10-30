@@ -1,6 +1,6 @@
 # Agentic Slack Bot
 
-Multi-bot, agent-driven Slack application that answers questions about Databricks data infrastructure using OpenAI's function-calling API and a skill-routing system.
+Multi-bot, agent-driven Slack application that answers questions about Databricks data infrastructure using OpenAI's Responses API (function calling) and a skill-routing system.
 
 ## Architecture
 
@@ -53,9 +53,9 @@ reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETD
 ```
 
 **Agent loop** (`src/worker/agent.py`):
-1. Router model (gpt-4o-mini) picks skills from `src/worker/skills/*.md`
+1. Router model (gpt-6.1-sol) picks skills from `src/worker/skills/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date
-3. OpenAI tool calls → execute_query / get_job_run_details / schedule CRUD / request_data_access / generate_service_principal_secret (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
+3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / request_data_access / generate_service_principal_secret (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
 4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
 
 ## Quick Commands
@@ -98,7 +98,7 @@ See `.env.example`. Required:
 - `SECRET_LINK_BASE_URL` — public base URL of the receiver, used to build one-time secret-view links
 - `NGROK_AUTHTOKEN` — local dev only
 
-Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-4o-mini), `SCHEDULER_INTERVAL` (default 180 s)
+Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCHEDULER_INTERVAL` (default 180 s)
 
 ## Data Models
 

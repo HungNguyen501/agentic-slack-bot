@@ -45,7 +45,7 @@ description: <one sentence starting with "Use when...">
 
 ## Routing Behavior
 
-- Router model is `gpt-4o-mini` by default (`ROUTER_MODEL` env var)
+- Router model is `gpt-6.1-sol` by default (`ROUTER_MODEL` env var)
 - Router receives: skill descriptions + the user's question + last few conversation turns
 - If the router errors, all enabled skills are loaded (fail-open)
 - Per-bot `enabled_skills` array in Supabase gates which skills are available; empty array = all skills enabled

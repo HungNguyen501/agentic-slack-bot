@@ -118,7 +118,9 @@ def _select_skills(question: str, selectable: list[dict], history: list[dict] | 
                 {"role": "user", "content": question},
             ],
             response_format={"type": "json_object"},
-            max_tokens=100,
+            # Reasoning tokens count against max_completion_tokens, so the cap must leave room for them.
+            max_completion_tokens=1000,
+            reasoning_effort="low",
         )
         result = json.loads(response.choices[0].message.content)
         selected = {s.strip().lower() for s in result.get("skills", []) if isinstance(s, str)}
@@ -535,7 +537,8 @@ def summarize_answer(question: str, answer: str) -> str:
                 },
                 {"role": "user", "content": f"Question: {question}\n\nAnswer:\n{answer}"},
             ],
-            max_tokens=80,
+            max_completion_tokens=1000,
+            reasoning_effort="low",
         )
         return response.choices[0].message.content.strip()
     except Exception:
@@ -572,10 +575,8 @@ def run_agent(
     history = _load_history(thread_ts)
     log.info("Loaded %d history messages for thread %s", len(history), thread_ts)
 
-    messages: list[dict] = [
-        {"role": "system", "content": _load_system_prompt(question, history, enabled_skills)}
-    ]
-    messages.extend(history)
+    instructions = _load_system_prompt(question, history, enabled_skills)
+    messages: list[dict] = list(history)
 
     # Prepend the current user's authorization status so the LLM re-evaluates
     # permissions for this request rather than echoing a prior refusal from history.
@@ -587,29 +588,32 @@ def run_agent(
     messages.append({"role": "user", "content": f"{auth_note}\n{question}"})
 
     for _ in range(10):
-        response = openai_client.chat.completions.create(
+        response = openai_client.responses.create(
             model=AgentConfigs.GPT_MODEL,
-            messages=messages,
+            instructions=instructions,
+            input=messages,
             tools=_get_agent_tools(),
             tool_choice="auto",
+            reasoning={"effort": AgentConfigs.REASONING_EFFORT},
         )
-        msg = response.choices[0].message
+        tool_calls = [item for item in response.output if item.type == "function_call"]
 
-        if not msg.tool_calls:
-            answer = msg.content or "I wasn't able to generate a response."
+        if not tool_calls:
+            answer = response.output_text or "I wasn't able to generate a response."
             history.append({"role": "user", "content": question})  # store clean question, not the auth-annotated one
             history.append({"role": "assistant", "content": answer})
             _save_history(thread_ts, history)
             return answer
 
-        messages.append(msg.model_dump())
+        # Reasoning items must be echoed back alongside their function_call items on the next turn.
+        messages.extend(item.model_dump(exclude_none=True) for item in response.output)
 
-        for tool_call in msg.tool_calls:
-            args = json.loads(tool_call.function.arguments)
-            result = _dispatch_tool(tool_call.function.name, args, user_id, admin_users, bot, channel, thread_ts)
-            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+        for tool_call in tool_calls:
+            args = json.loads(tool_call.arguments)
+            result = _dispatch_tool(tool_call.name, args, user_id, admin_users, bot, channel, thread_ts)
+            messages.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})
 
-            if _tool_category(tool_call.function.name) == "data_access" and result == _ACCESS_REQUEST_POSTED_MESSAGE:
+            if _tool_category(tool_call.name) == "data_access" and result == _ACCESS_REQUEST_POSTED_MESSAGE:
                 history.append({"role": "user", "content": question})
                 history.append({"role": "assistant", "content": result})
                 _save_history(thread_ts, history)
