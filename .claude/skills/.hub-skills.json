@@ -1,0 +1,15 @@
+{
+  "skills": [
+    "code-review",
+    "python-code-style",
+    "python-docstrings",
+    "python-unit-tests"
+  ],
+  "revisions": {
+    "code-review": "4a85a8160d5ab0ee4b30f2abf9eca14843570833",
+    "python-code-style": "4a85a8160d5ab0ee4b30f2abf9eca14843570833",
+    "python-docstrings": "4a85a8160d5ab0ee4b30f2abf9eca14843570833",
+    "python-unit-tests": "4a85a8160d5ab0ee4b30f2abf9eca14843570833"
+  },
+  "hub_revision": "4a85a8160d5ab0ee4b30f2abf9eca14843570833"
+}
