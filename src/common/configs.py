@@ -64,13 +64,14 @@ class AgentTool:
     category: Literal["core", "schedule", "data_access", "secrets"] = "core"
 
     def to_openai_schema(self) -> dict:
+        # Responses API tools are flat (no nested "function" key) and default to strict=True,
+        # which would reject these schemas (optional properties, no additionalProperties: false).
         return {
             "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+            "strict": False,
         }
 
 
@@ -79,6 +80,7 @@ class AgentConfigs:
     """Agent loop constants (`worker/agent.py`)."""
 
     GPT_MODEL: str = "gpt-6.1-sol"
+    REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = "medium"
 
     # How long the "Open Form" button posted by _dispatch_data_access_tool stays clickable.
     # worker/agent.py stamps this into the button's value as expires_at; receiver/app.py just
