@@ -18,7 +18,7 @@ class Configs:
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
     OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY", None)
-    ROUTER_MODEL: str = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
+    ROUTER_MODEL: str = os.getenv("ROUTER_MODEL", "gpt-6.1-sol")
 
     DATABRICKS_HOST: str | None = os.getenv("DATABRICKS_HOST", None)
     DATABRICKS_WAREHOUSE_ID: str | None = os.getenv("DATABRICKS_WAREHOUSE_ID", None)
@@ -78,7 +78,7 @@ class AgentTool:
 class AgentConfigs:
     """Agent loop constants (`worker/agent.py`)."""
 
-    GPT_MODEL: str = "gpt-5.5-2026-04-23"
+    GPT_MODEL: str = "gpt-6.1-sol"
 
     # How long the "Open Form" button posted by _dispatch_data_access_tool stays clickable.
     # worker/agent.py stamps this into the button's value as expires_at; receiver/app.py just
