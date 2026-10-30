@@ -25,7 +25,7 @@ Multiple independent bots (one per Slack workspace or use-case) are supported. A
 | Module | Responsibility |
 |---|---|
 | `src/receiver/` | Slack webhook handler — per-bot signature verification, URL challenge, event deduplication, RQ enqueue, and the two synchronous interactivity exceptions (modal open, form validation) documented in `.claude/rules/architecture.md`. |
-| `src/worker/agent.py` | Agent core — OpenAI function-calling loop, skill loading and routing, tool dispatch (SQL, job details, schedule CRUD, data access requests), and thread history management. |
+| `src/worker/agent.py` | Agent core — OpenAI Responses API function-calling loop, skill loading and routing, tool dispatch (SQL, job details, schedule CRUD, data access requests), and thread history management. |
 | `src/worker/review.py` | Deterministic (non-LLM) handling of reviewer `approve`/`reject` replies on data access requests. |
 | `src/scheduler/` | Cron scheduler — reads schedules from Supabase, evaluates firing windows, and enqueues periodic questions per bot. |
 | `src/common/configs.py` | Env-backed config classes shared across services — `Configs`, `GithubConfigs`, and `AgentConfigs` (including the agent's OpenAI tool schemas). |
@@ -163,7 +163,7 @@ Instructions live in [`src/worker/skills/`](src/worker/skills/) as individual Ma
 | `11_data_access_requests.md` | Starting a data access request | Routed |
 | `12_service_principal_secrets.md` | Generating a service-principal secret (reviewers only) | Routed |
 
-**Always-loaded** skills are included in every system prompt. **Routed** skills are selected per-request by a fast router model (`gpt-4o-mini` by default) based on the user's question and recent conversation history.
+**Always-loaded** skills are included in every system prompt. **Routed** skills are selected per-request by a fast router model (`gpt-6.1-sol` by default) based on the user's question and recent conversation history.
 
 ### Adding a new skill
 
@@ -223,5 +223,5 @@ See [`docs/service_principal_secrets.md`](docs/service_principal_secrets.md) for
 | `SECRET_LINK_BASE_URL` | Yes | Public base URL of the receiver, used to build one-time secret-view links |
 | `NGROK_AUTHTOKEN` | Yes | ngrok auth token (local dev only) |
 | `WORKER_COUNT` | No | Number of concurrent worker containers (default: `2`) |
-| `ROUTER_MODEL` | No | Model used for skill routing (default: `gpt-4o-mini`) |
+| `ROUTER_MODEL` | No | Model used for skill routing (default: `gpt-6.1-sol`) |
 | `SCHEDULER_INTERVAL` | No | Seconds between scheduler polling ticks (default: `180`) |
