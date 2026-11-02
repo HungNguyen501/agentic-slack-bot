@@ -13,18 +13,24 @@ Register a new Slack bot in Supabase and wire it into the stack.
 
 ### 2. Insert Bot into Supabase
 
+The token and signing secret go into Supabase Vault (encrypted at rest); the `bots` row stores only their ids. Vault secret names must be unique, hence the `<bot-id>` in them.
+
 ```sql
-INSERT INTO bots (id, bot_token, signing_secret, enabled_skills, admin_users, app_id, active)
-VALUES (
+WITH token AS (SELECT vault.create_secret('xoxb-...', 'bot-<bot-id>-bot-token') AS id),       -- Bot User OAuth Token
+     signing AS (SELECT vault.create_secret('<signing-secret>', 'bot-<bot-id>-signing-secret') AS id)  -- from Slack App → Basic Information
+INSERT INTO bots (id, bot_token_secret_id, signing_secret_secret_id, enabled_skills, admin_users, app_id, active)
+SELECT
   '<bot-id>',                          -- short human-readable slug, e.g. 'data-team'
-  'xoxb-...',                          -- Bot User OAuth Token
-  '<signing-secret>',                  -- from Slack App → Basic Information
+  token.id,
+  signing.id,
   '{}',                                -- empty = all skills enabled; or ARRAY['metadata','jobs']
   ARRAY['<slack-user-id>'],            -- admin Slack user IDs (e.g. 'U08UQ1FG39S')
   '<app-id>',                          -- from Slack App → Basic Information (e.g. 'A08XXXXXX')
   true
-);
+FROM token, signing;
 ```
+
+To rotate later: `SELECT vault.update_secret(bot_token_secret_id, '<new>') FROM bots WHERE id = '<bot-id>';` (same for `signing_secret_secret_id`). No redeploy needed.
 
 ### 3. Set Slack Event Subscription URL
 

@@ -63,21 +63,31 @@ Run `make db-migrate` to apply the [Flyway migrations](src/migrations/) and crea
 
 Insert one row per Slack app into the `bots` table:
 
+The bot token and signing secret are stored encrypted in [Supabase Vault](https://supabase.com/docs/guides/database/vault); the `bots` row only holds their Vault ids.
+
 ```sql
-INSERT INTO bots (id, bot_token, signing_secret, enabled_skills, admin_users, app_id, active)
-VALUES (
+WITH token AS (SELECT vault.create_secret('xoxb-...', 'bot-my-bot-bot-token') AS id),
+     signing AS (SELECT vault.create_secret('your_signing_secret', 'bot-my-bot-signing-secret') AS id)
+INSERT INTO bots (id, bot_token_secret_id, signing_secret_secret_id, enabled_skills, admin_users, app_id, active)
+SELECT
   'my-bot',                          -- unique slug
-  'xoxb-...',                        -- OAuth bot token from Slack app config
-  'your_signing_secret',             -- signing secret from Slack app config
+  token.id,                          -- OAuth bot token from Slack app config
+  signing.id,                        -- signing secret from Slack app config
   '{}',                              -- empty = all skills; or e.g. '{"jobs","billing"}'
   ARRAY['U08UQ1FG39S'],              -- Slack user IDs allowed to manage schedules
   'A08XXXXXX',                       -- Slack App ID
   true
-);
+FROM token, signing;
 ```
 
 - **Bot token** and **signing secret**: Slack app config → Basic Information / OAuth & Permissions
 - **App ID**: shown as `api_app_id` in any Slack event payload, or on the Slack app's Basic Information page
+- **Rotating a secret** (no redeploy needed — the next request picks it up):
+
+  ```sql
+  SELECT vault.update_secret(bot_token_secret_id, 'xoxb-new...') FROM bots WHERE id = 'my-bot';
+  SELECT vault.update_secret(signing_secret_secret_id, 'new_signing_secret') FROM bots WHERE id = 'my-bot';
+  ```
 
 See [`/new-bot`](.claude/commands/new-bot.md) for the full checklist, including the optional `access_request_categories` row needed to let a bot handle data access requests.
 
