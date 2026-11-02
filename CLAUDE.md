@@ -103,7 +103,8 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 ## Data Models
 
 **Supabase `bots` table** — bot registry (no per-bot env vars):
-- `id`, `bot_token`, `signing_secret`, `enabled_skills text[]`, `admin_users text[]`, `app_id`, `active`
+- `id`, `bot_token_secret_id uuid`, `signing_secret_secret_id uuid`, `enabled_skills text[]`, `admin_users text[]`, `app_id`, `active`
+- The token and signing secret are stored in Supabase Vault; `connectors/db/bots.py` resolves them by joining `vault.decrypted_secrets`. Admins rotate them with `vault.update_secret()` — no redeploy. The plaintext `bot_token` / `signing_secret` columns from V1 were dropped in V8.
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
