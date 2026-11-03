@@ -1,4 +1,4 @@
-name: Image Deploy
+name: Agentic Slack Bot Image Deploy
 
 on:
   push:

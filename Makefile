@@ -2,7 +2,7 @@ ProjectName := Agentic Slack Bot
 DOCKER_REPO := hungwnguyen
 IMAGE := agentic-slack-bot
 FLYWAY_IMAGE := flyway/flyway:11-alpine
-FLYWAY_URL = $(shell . ./.env && python3 -c "from urllib.parse import urlparse, unquote; u = urlparse('$${SUPABASE_DB_URL}'); print(f'jdbc:postgresql://{u.hostname}:{u.port or 5432}{u.path}?user={unquote(u.username)}&password={unquote(u.password)}')")
+FLYWAY_URL = $(shell [ -f ./.env ] && . ./.env; python3 -c "from urllib.parse import urlparse, unquote; u = urlparse('$${SUPABASE_DB_URL}'); print(f'jdbc:postgresql://{u.hostname}:{u.port or 5432}{u.path}?user={unquote(u.username)}&password={unquote(u.password)}')")
 
 install:
 	@uv sync --all-groups --active \
@@ -27,7 +27,7 @@ compose-down-clean:
 	@docker compose down --volumes --remove-orphans
 
 db-migrate:
-	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" migrate
+	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" -baselineOnMigrate=true -baselineVersion=0 migrate
 
 db-migrate-info:
 	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" info

@@ -1,0 +1,49 @@
+name: DB Migrate
+
+on:
+  push:
+    tags:
+      - 'db-dev-v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+      - 'db-staging-v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+
+permissions:
+  contents: read
+
+jobs:
+  db-migrate:
+    name: "Flyway migrate (${{ startsWith(github.ref_name, 'db-staging-') && 'staging' || 'development' }})"
+    runs-on: ubuntu-latest
+    environment: ${{ startsWith(github.ref_name, 'db-staging-') && 'staging' || 'development' }}
+    concurrency:
+      group: db-migrate-${{ startsWith(github.ref_name, 'db-staging-') && 'staging' || 'development' }}
+      cancel-in-progress: false
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on master
+        run: |
+          git fetch origin master
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/master; then
+            echo "Tag ${GITHUB_REF_NAME} (commit ${GITHUB_SHA}) is not on master. Refusing to run migrations." >&2
+            exit 1
+          fi
+
+      # make db-migrate* passes the URL-decoded password to Flyway, which GitHub's exact-match secret masking doesn't cover
+      - name: Mask decoded database password
+        run: |
+          python3 -c "import os; from urllib.parse import urlparse, unquote; print('::add-mask::' + unquote(urlparse(os.environ['SUPABASE_DB_URL']).password))"
+
+      - name: Show migration status (before)
+        run: make db-migrate-info
+
+      - name: Run Flyway migrate
+        run: make db-migrate
+
+      - name: Show migration status (after)
+        run: make db-migrate-info

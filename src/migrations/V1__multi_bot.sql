@@ -1,5 +1,16 @@
 -- Multi-bot support: bot registry + bot_id column on schedules
 
+-- Shared by every updated_at trigger in later migrations.
+create or replace function public._set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+    new.updated_at = now();
+    return new;
+end;
+$$;
+
 create table if not exists public.bots (
     id         text        primary key,
     bot_token      text        not null,
