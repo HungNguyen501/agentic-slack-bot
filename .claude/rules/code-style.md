@@ -31,10 +31,10 @@ Use `httpx` for all outbound HTTP. Never add `requests` as a dependency.
 
 - `src/receiver/app.py` — async (FastAPI)
 - `src/scheduler/app.py` — async (asyncio)
-- `src/worker/` — sync (RQ workers run in threads; OpenAI client is sync)
+- `src/worker/`, `src/agent/` — sync (RQ workers run in threads; OpenAI client is sync)
 - `src/connectors/` — sync
 
-Do not mix async into worker/connectors without a clear reason.
+Do not mix async into worker/agent/connectors without a clear reason.
 
 ## Error Handling
 
@@ -44,7 +44,7 @@ Handle only errors that can actually occur at the boundary (Slack API, Databrick
 
 No comments that describe what the code does. Add a comment only when the WHY is non-obvious: a hidden constraint, a Slack API quirk, a workaround for a specific API behavior.
 
-Docstrings follow the style already in the file (mostly short Google-style summaries; see `src/worker/review.py`). Document public functions with non-obvious behavior; don't add boilerplate `Args:`/`Returns:` that only restate type hints, and never add docstrings to code you aren't otherwise changing.
+Docstrings follow the style already in the file (mostly short Google-style summaries; see `src/agent/access_control/review.py`). Document public functions with non-obvious behavior; don't add boilerplate `Args:`/`Returns:` that only restate type hints, and never add docstrings to code you aren't otherwise changing.
 
 ## Development Skills
 
@@ -57,14 +57,14 @@ Project-local Claude Code skills in `.claude/skills/` apply to Python work here.
 | `python-unit-tests` | Writing or reviewing pytest tests (see Testing below) |
 | `code-review` | `/code-review` on your diff before opening a PR; CI also runs a remote review (`.github/workflows/code-review.yaml`) that fails on medium+ severity |
 
-These are managed by the skills hub (`.claude/skills/.hub-skills.json`) — don't hand-edit them; changes are overwritten on the next sync. They are unrelated to the agent skills in `src/worker/skills/`.
+These are managed by the skills hub (`.claude/skills/.hub-skills.json`) — don't hand-edit them; changes are overwritten on the next sync. They are unrelated to the agent skills in `src/agent/skills/files/`.
 
 ## Testing
 
 There is no test suite or pytest dependency yet (`make lint` is the only CI gate). When adding tests, follow `python-unit-tests`:
 - Add pytest via `uv add --group dev pytest`; set `pythonpath = ["src"]` and `addopts = ["--import-mode=importlib"]` under `[tool.pytest.ini_options]` (imports are `connectors...`/`worker...`, rooted at `src/`).
-- Mirror the source tree: `src/models/access_request_view.py` → `tests/models/test_access_request_view.py`.
-- Start with the pure modules (`src/models/`, `validate_submission`, `common/crypto.py`); mock Slack/Databricks/GitHub/Supabase/Redis at the boundary (patch where the name is looked up), never hit real services.
+- Mirror the source tree: `src/agent/forms/access_request_view.py` → `tests/agent/forms/test_access_request_view.py`.
+- Start with the pure modules (`src/agent/forms/`, `src/agent/pr/`, `validate_submission`, `common/crypto.py`); mock Slack/Databricks/GitHub/Supabase/Redis at the boundary (patch where the name is looked up), never hit real services.
 - Add a `pytest` step to `.github/workflows/ci.yaml` once tests exist.
 
 ## Dependencies

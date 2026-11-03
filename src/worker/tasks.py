@@ -6,25 +6,17 @@ import time
 
 from slack_sdk.errors import SlackApiError
 
-from connectors import databricks, slack
-from connectors.db.access_request_categories import channel_authorized, get_access_request_category
-from connectors.db.access_requests import add_access_request
+from agent.access_control import review, submission
+from agent.agent import run_agent, summarize_answer
+from agent.history import record_thread_messages
+from connectors import slack
 from connectors.db.bots import get_by_id as get_bot
-from models.access_request_submission import VerifiedAccessRequest
-from models.access_request_view import parse_emails
-from worker import review
-from worker.agent import record_thread_messages, run_agent, summarize_answer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
 
 # Strip all Slack user/bot mention tokens like <@U12345> wherever they appear
 _MENTION_RE = re.compile(r"<@[^>]+>\s*", re.UNICODE)
-
-# Matches a UUID anywhere after the leading approve/reject keyword, so phrasing like
-# "approve data access request ID=<uuid>" or "approve: <uuid>" works, not just the exact
-# `approve <uuid>` form we ask for in the review message.
-_REQUEST_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 
 _THINKING_INTERVAL_SECONDS = 1.0
 
@@ -84,64 +76,6 @@ def _animate_thinking(channel: str, ts: str, token: str, stop_event: threading.E
             return
 
 
-def _split_message(text: str, max_len: int = 3000) -> list[str]:
-    """Split text into Slack-safe chunks that never exceed max_len characters.
-
-    Code blocks are closed with a closing fence before a chunk boundary and
-    reopened with the same fence (including any language specifier) at the start
-    of the next chunk, so every chunk is valid Slack mrkdwn on its own.
-
-    Args:
-        text: The full message text to split, in Slack mrkdwn format.
-        max_len: Maximum character length per chunk; defaults to 3 000 (Slack's safe limit).
-
-    Returns:
-        List of text chunks, each within max_len characters and properly fenced if split
-        mid-code-block. Returns a single-element list when the text fits in one chunk.
-    """
-    if len(text) <= max_len:
-        return [text]
-
-    chunks: list[str] = []
-    current_lines: list[str] = []
-    current_len = 0
-    in_code_block = False
-    code_fence = ""  # e.g. "```" or "```sql"
-
-    for line in text.splitlines():
-        line_len = len(line) + 1  # +1 for the joining newline
-
-        if current_len + line_len > max_len and current_lines:
-            if in_code_block:
-                # Close the fence, flush, then reopen in the next chunk
-                current_lines.append("```")
-                chunks.append("\n".join(current_lines))
-                current_lines = [code_fence]
-                current_len = len(code_fence) + 1
-            else:
-                chunks.append("\n".join(current_lines))
-                current_lines = []
-                current_len = 0
-
-        # Update fence state AFTER the split decision so the fence line itself
-        # lands in the correct chunk
-        if line.startswith("```"):
-            if not in_code_block:
-                in_code_block = True
-                code_fence = line  # preserve language specifier e.g. "```sql"
-            else:
-                in_code_block = False
-                code_fence = ""
-
-        current_lines.append(line)
-        current_len += line_len
-
-    if current_lines:
-        chunks.append("\n".join(current_lines))
-
-    return chunks
-
-
 def reply_to_mention(
     channel: str,
     thread_ts: str,
@@ -165,23 +99,9 @@ def reply_to_mention(
     bot = get_bot(bot_id)
     question = _MENTION_RE.sub("", text).strip()
 
-    # Reviewers often copy-paste the exact reply we suggest, backticks and all (e.g.
-    # "`approve <id>`") — strip surrounding backticks/punctuation before parsing.
-    review_parts = question.split(maxsplit=1)
-    first_word = review_parts[0].strip("`:,.").lower() if review_parts else ""
-    if first_word in ("approve", "reject"):
-        decision = first_word
-        rest = review_parts[1] if len(review_parts) > 1 else ""
-
-        # Dedupe case-insensitively so the same id repeated (copy-paste accidents) doesn't
-        # trip this, but two genuinely different ids does — acting on just the first one
-        # silently would be surprising if someone meant to reference two different requests.
-        seen = set()
-        distinct_ids = []
-        for m in _REQUEST_ID_RE.findall(rest):
-            if m.lower() not in seen:
-                seen.add(m.lower())
-                distinct_ids.append(m)
+    review_command = review.parse_review_command(question)
+    if review_command:
+        decision, distinct_ids = review_command
 
         if len(distinct_ids) > 1:
             result = "I found multiple request ids in that message — please approve or reject one at a time."
@@ -255,7 +175,7 @@ def reply_to_mention(
         slack.delete_message(channel, thinking_ts, token=bot.bot_token)
         return thread_ts
 
-    chunks = _split_message(answer)
+    chunks = slack.split_message(answer)
     slack.update_message(channel, thinking_ts, chunks[0], token=bot.bot_token)
     ts = thinking_ts
     for chunk in chunks[1:]:
@@ -301,7 +221,7 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
         token=bot.bot_token,
     )
 
-    chunks = _split_message(answer)
+    chunks = slack.split_message(answer)
     ts = header_ts
     for chunk in chunks:
         ts = slack.post_message(channel, chunk, header_ts, token=bot.bot_token)
@@ -335,150 +255,12 @@ def process_data_access_submission(
     reviewers: list[str],
     fields: dict,
 ) -> str:
-    """Log a submitted data access request form and post it back into the requesting thread for review.
+    """Load the bot and hand a submitted data access request form to the access-control flow.
 
-    The form's user_emails field can hold multiple comma/newline-separated addresses; this
-    fans out into one independent access_requests row per email (sharing the rest of the
-    form's fields), each with its own id — reviewers approve/reject them individually via the
-    same "approve <id>" mechanism used for any single request.
-
-    Args:
-        bot_id: Bot identifier used to load per-bot config (token).
-        channel: Slack channel ID the original request thread lives in.
-        thread_ts: Timestamp of the thread to post the review request into.
-        requester_id: Slack user ID who submitted the form.
-        request_type: The access request category that was submitted.
-        reviewers: Slack user IDs to notify for review.
-        fields: Flattened {block_id: value} dict extracted from the modal's view.state.values.
+    See agent.access_control.submission.submit_data_access_request for what this does.
 
     Returns:
         The Slack message timestamp (ts) of the last posted review-request chunk.
     """
     bot = get_bot(bot_id)
-    log.info(
-        "Data access request submitted: request_type=%s requester_id=%s fields=%s",
-        request_type,
-        requester_id,
-        fields,
-    )
-
-    # Re-validate against access_request_categories rather than trusting the button's
-    # baked-in snapshot from when the form was first offered — the category or this
-    # channel's entry in it may have been revoked in the time since the button was clicked,
-    # and this is the point where the request actually gets persisted and reviewer-visible.
-    category = get_access_request_category(bot_id, request_type)
-    if not channel_authorized(category, channel):
-        return slack.post_message(
-            channel,
-            "Sorry, data access requests of this type aren't available in this channel anymore. "
-            "Please reach out to your data team directly.",
-            thread_ts,
-            token=bot.bot_token,
-        )
-
-    ticket_id = (fields.get("ticket_id") or "").strip()
-    principal_type = fields.get("principal_type", "")
-    emails = parse_emails(fields.get("user_emails") or "")
-
-    # One batch lookup for the whole submission rather than one full SCIM listing per email —
-    # each listing paginates the entire workspace, so doing it per-email is what made
-    # multi-email submissions time out (RQ's 30s job_timeout) once there was more than one.
-    if principal_type == "Service principals":
-        lookup = databricks.find_service_principals_by_emails(emails)
-    else:
-        lookup = databricks.find_users_by_emails(emails)
-
-    reviewer_mentions = ", ".join(f"<@{r}>" for r in reviewers) or "the data team"
-    sections = []
-
-    for index, user_email in enumerate(emails, start=1):
-        display_name, principal, principal_missing = _resolve_principal(user_email, principal_type, lookup.get(user_email))
-
-        verified = VerifiedAccessRequest(
-            ticket_id=ticket_id,
-            display_name=display_name,
-            user_email=user_email,
-            principal=principal,
-            filter_column=fields.get("filter_column", ""),
-            allowed_value=fields.get("allowed_value", ""),
-            scope_column=fields.get("scope_column", ""),
-            scope_value=fields.get("scope_value", ""),
-            principal_type=principal_type,
-            groups=fields.get("groups") or [],
-            tags=fields.get("tags") or [],
-        )
-
-        row = add_access_request(
-            bot_id=bot_id,
-            request_type=request_type,
-            channel=channel,
-            thread_ts=thread_ts,
-            requester_id=requester_id,
-            reviewers=reviewers,
-            ticket_id=ticket_id,
-            user_email=user_email,
-            principal_type=principal_type,
-            display_name=display_name,
-            principal=principal,
-            filter_column=fields.get("filter_column", ""),
-            allowed_value=fields.get("allowed_value", ""),
-            scope_column=fields.get("scope_column", ""),
-            scope_value=fields.get("scope_value", ""),
-            groups=fields.get("groups") or [],
-            tags=fields.get("tags") or [],
-        )
-        request_id = row.id
-        expires_line = f"expires_at: {row.expires_at.strftime('%Y-%m-%d %H:%M UTC')}"
-
-        warning_line = (
-            f":warning: The user `{user_email}` was not found in Databricks — please verify before approving.\n"
-            if principal_missing
-            else ""
-        )
-        sections.append(
-            f"*Request {index} of {len(emails)}* (id: `{request_id}`)\n"
-            f"{verified.to_mrkdwn(extra_lines=[expires_line])}\n"
-            f"{warning_line}"
-            f"Reply `@{bot.bot_id} approve data access request {request_id}` to approve, or "
-            f"`@{bot.bot_id} reject data access request {request_id}` to reject."
-        )
-
-    header = (
-        f"*Data Access Request* — {len(emails)} sub-request(s) for ticket `{ticket_id}`\n"
-        f"User <@{requester_id}> requests adding data access for the following:\n\n"
-    )
-    footer = f"\nPlease help review: {reviewer_mentions}"
-    divider = "\n" + "─" * 24 + "\n\n"
-    message = header + divider.join(sections) + footer
-
-    ts = thread_ts
-    for chunk in _split_message(message):
-        ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
-    record_thread_messages(thread_ts, {"role": "assistant", "content": message})
-    return ts
-
-
-def _resolve_principal(user_email: str, principal_type: str, record: dict | None) -> tuple[str, str, bool]:
-    """Soft-resolve a submitted email to its Databricks display_name/principal.
-
-    Args:
-        user_email: The submitted email.
-        principal_type: "Service principals" or "Users", from the form.
-        record: This email's pre-fetched SCIM match (from a batch lookup covering every
-            email in the submission), or None if no match was found.
-
-    Returns:
-        (display_name, principal, principal_missing) — principal_missing is True only for
-        the "Users" path (users aren't created by this bot, so a missing one is flagged as a
-        warning rather than a hard refusal; approval re-verifies for real — see review.py).
-        The "Service principals" path is never "missing": this workflow is what creates the
-        principal on approval, so not finding one yet is expected, not a warning.
-    """
-    if principal_type == "Service principals":
-        if record:
-            return record["displayName"], record["applicationId"], False
-        return f"svc-{user_email}", "(created on approval)", False
-
-    if record:
-        return record.get("userName", user_email), user_email, False
-    return user_email, "(does not exist)", True
+    return submission.submit_data_access_request(bot, channel, thread_ts, requester_id, request_type, reviewers, fields)

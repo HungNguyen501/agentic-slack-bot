@@ -56,7 +56,7 @@ class GithubConfigs:
 
 @dataclass(frozen=True)
 class AgentTool:
-    """One OpenAI function-calling tool definition for the agent loop (`worker/agent.py`)."""
+    """One OpenAI function-calling tool definition for the agent loop (`agent/agent.py`)."""
 
     name: str
     description: str
@@ -77,18 +77,18 @@ class AgentTool:
 
 @dataclass(frozen=True)
 class AgentConfigs:
-    """Agent loop constants (`worker/agent.py`)."""
+    """Agent loop constants (`agent/agent.py`)."""
 
     GPT_MODEL: str = "gpt-6.1-sol"
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = "medium"
 
-    # How long the "Open Form" button posted by _dispatch_data_access_tool stays clickable.
-    # worker/agent.py stamps this into the button's value as expires_at; receiver/app.py just
+    # How long the "Open Form" button posted by dispatch_data_access_tool stays clickable.
+    # agent/access_control/tools.py stamps this into the button's value as expires_at; receiver/app.py just
     # compares expires_at against the current time, no TTL math of its own.
     ACCESS_REQUEST_BUTTON_TTL_SECONDS: int = 3600
 
     # How long a one-time service-principal-secret view link stays valid in Redis before
-    # it's treated as expired (see worker/agent.py's secret_link:{token} key).
+    # it's treated as expired (see agent/service_principal_secrets/tools.py's secret_link:{token} key).
     SECRET_LINK_TTL_SECONDS: int = 600
 
     TOOLS: tuple[AgentTool, ...] = (

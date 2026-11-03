@@ -25,16 +25,12 @@ Multiple independent bots (one per Slack workspace or use-case) are supported. A
 | Module | Responsibility |
 |---|---|
 | `src/receiver/` | Slack webhook handler — per-bot signature verification, URL challenge, event deduplication, RQ enqueue, and the two synchronous interactivity exceptions (modal open, form validation) documented in `.claude/rules/architecture.md`. |
-| `src/worker/agent.py` | Agent core — OpenAI Responses API function-calling loop, skill loading and routing, tool dispatch (SQL, job details, schedule CRUD, data access requests), and thread history management. |
-| `src/worker/review.py` | Deterministic (non-LLM) handling of reviewer `approve`/`reject` replies on data access requests. |
+| `src/worker/` | Thin RQ shell — `tasks.py` job handlers (mention replies, scheduled questions, form submissions) that load the bot config and call into `src/agent/`. |
+| `src/agent/` | Everything the agent does — `agent.py` (OpenAI Responses API function-calling loop), `dispatch.py` (tool routing), `history.py` (thread history), plus task sub-modules: `skills/` (loader, router, skill files), `forms/` (Slack modal + validation), `pr/` (access-control rules, PR template, data-platform repo edits), `access_control/` (requests, categories, principal lookups, submission, review, tool), `service_principal_secrets/` (cache + tool), and `schedules.py` (tool). |
 | `src/scheduler/` | Cron scheduler — reads schedules from Supabase, evaluates firing windows, and enqueues periodic questions per bot. |
 | `src/common/configs.py` | Env-backed config classes shared across services — `Configs`, `GithubConfigs`, and `AgentConfigs` (including the agent's OpenAI tool schemas). |
-| `src/models/` | Pure data/rendering helpers with no I/O — the Slack modal view + validation, the verified-request dataclass, and the `rules_v2.yaml`/PR template renderers for data access requests. |
-| `src/connectors/db/` | Supabase (Postgres) clients — bot registry, schedule CRUD, and data-access-request category/submission CRUD. |
-| `src/connectors/databricks/` | Databricks clients — Statement API (SQL queries), Jobs REST API (run details), and SCIM user/service-principal lookups. |
-| `src/connectors/github.py` | GitHub REST client — opens the access-control PR on `100xteam-ai/vireox-data-platform` when a data access request is approved. |
-| `src/connectors/slack.py` | Slack Web API client — message posting and modal views. |
-| `src/worker/skills/` | Markdown skill files loaded into the agent system prompt. The router selects which skills to include based on the user's question. |
+| `src/connectors/` | Generic clients for external tools, with no task-specific logic — `db/` (Supabase connection, bot registry, schedules), `databricks/` (Statement API, Jobs API, SCIM, service-principal OAuth secrets), `github.py` (branch/file/PR primitives on `100xteam-ai/vireox-data-platform`), `slack.py` (messages, modals, mrkdwn chunking), `openai_client.py` (shared client + Chat Completions / Responses wrappers) and `redis_client.py`. |
+| `src/agent/skills/` | Skill loader and router. The Markdown skill files live in `files/` and are loaded into the agent system prompt; the router selects which ones to include based on the user's question. |
 | `src/databricks/metric_views/` | SQL view definitions for the semantic layer (`vw_dbu_cost`, `vw_job_run_stats`, `vw_query_perf`) deployed to `vireox_infra.semantic` in Databricks. |
 
 ## What it can answer
@@ -156,7 +152,7 @@ Each worker container handles one question at a time. Redis distributes jobs to 
 
 ## Updating agent instructions
 
-Instructions live in [`src/worker/skills/`](src/worker/skills/) as individual Markdown files — no code changes or image rebuild needed for edits in most cases.
+Instructions live in [`src/agent/skills/files/`](src/agent/skills/files/) as individual Markdown files — no code changes or image rebuild needed for edits in most cases.
 
 | File | Purpose | Always loaded |
 |---|---|---|
@@ -177,7 +173,7 @@ Instructions live in [`src/worker/skills/`](src/worker/skills/) as individual Ma
 
 ### Adding a new skill
 
-Create a numbered `.md` file in `src/worker/skills/` with this frontmatter:
+Create a numbered `.md` file in `src/agent/skills/files/` with this frontmatter:
 
 ```markdown
 ---
@@ -201,7 +197,7 @@ A user can ask the bot to request row-filter (or tag-scoped) access to a table d
 
 1. The agent's `request_data_access` tool checks the `access_request_categories` table for the bot/channel/request type, then posts an "Open Form" button.
 2. Clicking the button opens a Slack modal (handled synchronously by the receiver — see `.claude/rules/architecture.md`); submitting it creates one `pending` row per requested email in `access_requests` (24h expiry).
-3. A reviewer (from that category's `reviewers` list) replies `approve <id>` or `reject <id>` in the thread. This bypasses the LLM agent loop entirely — it's deterministic control flow in `src/worker/review.py`.
+3. A reviewer (from that category's `reviewers` list) replies `approve <id>` or `reject <id>` in the thread. This bypasses the LLM agent loop entirely — it's deterministic control flow in `src/agent/access_control/review.py`.
 4. On approval, the bot resolves the Databricks principal (user or service principal), and opens a PR against `100xteam-ai/vireox-data-platform` appending the new rule to `rules_v2.yaml`.
 
 New request categories are added by inserting a row into `access_request_categories` — no code changes needed. See [`docs/data_access_request_form.md`](docs/data_access_request_form.md) for the full design (sequence diagram, schema, and field reference).

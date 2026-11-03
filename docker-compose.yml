@@ -35,7 +35,7 @@ services:
   worker:
     build: .
     volumes:
-      - ./src/worker/skills:/app/worker/skills
+      - ./src/agent/skills/files:/app/agent/skills/files
     environment:
       SERVICE: worker
       SUPABASE_DB_URL: ${SUPABASE_DB_URL}

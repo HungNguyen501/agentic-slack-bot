@@ -1,15 +1,15 @@
 # /add-skill
 
-Scaffold a new **agent** skill file in `src/worker/skills/` (not a Claude Code skill in `.claude/skills/`).
+Scaffold a new **agent** skill file in `src/agent/skills/files/` (not a Claude Code skill in `.claude/skills/`).
 
 ## Steps
 
 1. List existing skills to find the next sequence number:
    ```bash
-   ls src/worker/skills/
+   ls src/agent/skills/files/
    ```
 
-2. Create `src/worker/skills/NN_<name>.md` with this template:
+2. Create `src/agent/skills/files/NN_<name>.md` with this template:
    ```markdown
    ---
    name: <name>
@@ -34,7 +34,7 @@ To add a skill for Unity Catalog tag management:
 
 ```bash
 # next number after 11_data_access_requests.md is 12
-touch src/worker/skills/12_tags.md
+touch src/agent/skills/files/12_tags.md
 ```
 
 ```markdown

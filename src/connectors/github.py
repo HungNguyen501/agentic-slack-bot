@@ -1,7 +1,6 @@
-"""GitHub REST API client for opening the data-platform access-control PR."""
+"""GitHub REST API client for the data-platform repo — auth, file/branch/PR primitives, no business logic."""
 import base64
 import json
-import re
 import time
 
 import httpx
@@ -59,7 +58,7 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
 
-def _get_file(path: str, ref: str) -> tuple[str, str]:
+def get_file(path: str, ref: str) -> tuple[str, str]:
     """Fetch a file's decoded content and blob sha at a given ref (branch, tag, or commit)."""
     resp = httpx.get(f"{GithubConfigs.API}/contents/{path}", headers=_headers(), params={"ref": ref}, timeout=30.0)
     resp.raise_for_status()
@@ -67,7 +66,7 @@ def _get_file(path: str, ref: str) -> tuple[str, str]:
     return base64.b64decode(data["content"]).decode("utf-8"), data["sha"]
 
 
-def _ensure_branch(branch: str) -> None:
+def ensure_branch(branch: str) -> None:
     """Create `branch` off the base branch's current commit if it doesn't already exist."""
     check = httpx.get(f"{GithubConfigs.API}/git/ref/heads/{branch}", headers=_headers(), timeout=30.0)
     if check.status_code == 200:
@@ -86,10 +85,10 @@ def _ensure_branch(branch: str) -> None:
     resp.raise_for_status()
 
 
-def _update_file(path: str, branch: str, content: str, message: str) -> None:
+def update_file(path: str, branch: str, content: str, message: str) -> None:
     """Create or overwrite a file on `branch` with `content` (a single commit on that branch)."""
     try:
-        _, sha = _get_file(path, branch)
+        _, sha = get_file(path, branch)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 404:
             raise
@@ -107,22 +106,7 @@ def _update_file(path: str, branch: str, content: str, message: str) -> None:
     resp.raise_for_status()
 
 
-def _branch_name(ticket_id: str) -> str:
-    """Build a git-ref-safe branch name from a free-text ticket id."""
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", ticket_id.strip()).strip("-.") or "unspecified"
-    return f"govern/{safe}"
-
-
-_RULES_PATH = "core/platform/configs/prod/access_control/rules_v2.yaml"
-
-
-def base_rule_emails() -> set[str]:
-    """Return every user_email already present in rules_v2.yaml on the base branch (i.e. existing users)."""
-    content, _ = _get_file(_RULES_PATH, GithubConfigs.BASE_BRANCH)
-    return set(re.findall(r"^\s*(?:-\s+)?user_email:\s*(\S+)", content, flags=re.MULTILINE))
-
-
-def _find_open_pull_request(branch: str) -> tuple[str, int] | None:
+def find_open_pull_request(branch: str) -> tuple[str, int] | None:
     """Return the (html_url, number) of an already-open PR for this branch, if one exists."""
     resp = httpx.get(
         f"{GithubConfigs.API}/pulls",
@@ -135,75 +119,19 @@ def _find_open_pull_request(branch: str) -> tuple[str, int] | None:
     return (prs[0]["html_url"], prs[0]["number"]) if prs else None
 
 
-def open_data_access_pr(
-    ticket_id: str,
-    user_email: str,
-    rules_entry_text: str,
-    service_principals_yaml: str | None,
-    pr_title: str,
-    pr_body: str,
-) -> str:
-    """Append a row-filter rule (and optionally replace the SP audit snapshot) and open a PR.
-
-    Multiple approved requests can share a ticket_id (hence the same branch/PR) — e.g. one
-    ticket covering access for two different users — each lands as its own commit (tagged with
-    its user_email) and the PR's title/body are refreshed to cover all of them. So the base content to append onto is
-    always read from the *branch* (which already reflects any earlier requests' appends),
-    never from `main`. A freshly created branch is itself an exact copy of main, so this is
-    never missing the file. Retry-safety for re-approving the *same* request comes from
-    checking whether its exact entry text is already present before appending again — RQ
-    retrying this call, or a reviewer re-sending "approve", can't produce a duplicate line.
-    Branch creation and PR creation are both check-then-create.
-
-    Args:
-        ticket_id: The governance ticket id — determines the branch name
-            ("govern/<ticket_id>", sanitized for git ref safety).
-        user_email: The user this call's commits are for; included in each commit message
-            ("govern: <ticket_id> <content of changes> <user_email>") to identify the update.
-        rules_entry_text: The new rules_v2.yaml entry, as a fully-formed text block to append.
-        service_principals_yaml: Full replacement content for service_principals.yaml, or None
-            to leave that file untouched (the "Users" principal_type path never touches it).
-        pr_title: Pull request title.
-        pr_body: Pull request body (already filled from the PR template, consolidated across
-            every approved request on the ticket). Overwrites an already-open PR's body.
-
-    Returns:
-        The opened (or already-open) pull request's html_url.
-    """
-    branch = _branch_name(ticket_id)
-    _ensure_branch(branch)
-
-    current_rules_content, _ = _get_file(_RULES_PATH, branch)
-    if rules_entry_text not in current_rules_content:
-        if not current_rules_content.endswith("\n"):
-            current_rules_content += "\n"
-        _update_file(
-            _RULES_PATH,
-            branch,
-            current_rules_content + rules_entry_text,
-            f"govern: {ticket_id} Add/ update row filter access rule for {user_email}",
-        )
-
-    if service_principals_yaml is not None:
-        _update_file(
-            "core/platform/configs/prod/access_control/service_principals.yaml",
-            branch,
-            service_principals_yaml,
-            f"govern: {ticket_id} Update service principals audit snapshot for {user_email}",
-        )
-
-    existing = _find_open_pull_request(branch)
-    if existing:
-        url, number = existing
-        resp = httpx.patch(f"{GithubConfigs.API}/pulls/{number}", headers=_headers(), json={"title": pr_title, "body": pr_body}, timeout=30.0)
-        resp.raise_for_status()
-        return url
-
+def create_pull_request(title: str, head: str, body: str) -> str:
+    """Open a PR from `head` into the base branch and return its html_url."""
     resp = httpx.post(
         f"{GithubConfigs.API}/pulls",
         headers=_headers(),
-        json={"title": pr_title, "head": branch, "base": GithubConfigs.BASE_BRANCH, "body": pr_body},
+        json={"title": title, "head": head, "base": GithubConfigs.BASE_BRANCH, "body": body},
         timeout=30.0,
     )
     resp.raise_for_status()
     return resp.json()["html_url"]
+
+
+def update_pull_request(number: int, title: str, body: str) -> None:
+    """Overwrite an open PR's title and body."""
+    resp = httpx.patch(f"{GithubConfigs.API}/pulls/{number}", headers=_headers(), json={"title": title, "body": body}, timeout=30.0)
+    resp.raise_for_status()

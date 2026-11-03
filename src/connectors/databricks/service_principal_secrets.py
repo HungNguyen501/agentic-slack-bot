@@ -9,7 +9,7 @@ credentials are needed.
 """
 import httpx
 
-from ._client import HOST, auth_headers, raise_for_status_with_body
+from .client import HOST, auth_headers, raise_for_status_with_body
 
 
 def create_secret(service_principal_id: str) -> dict:
