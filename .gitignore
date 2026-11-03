@@ -1,3 +1,4 @@
+.env.production
 .ansible
 
 # Byte-compiled / optimized / DLL files
