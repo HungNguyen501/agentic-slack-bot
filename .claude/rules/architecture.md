@@ -60,7 +60,7 @@ Note: the data access request button's TTL (`AgentConfigs.ACCESS_REQUEST_BUTTON_
 
 - Max 10 tool-call iterations per request
 - Conversation history trimmed to last 20 user/assistant pairs before saving
-- Schedule-management tools (`category="schedule"`) are admin-only; check `bot.admin_users` before execution
+- Schedule-management tools (`category="schedule"`) are admin-only; check `bot.admin_users` before execution. They are also scoped to the calling bot: list/update/remove only see that bot's schedules plus legacy rows with `bot_id IS NULL` (which run under the `default` bot), so one bot's admin can't touch another bot's schedules
 - The `request_data_access` tool (`category="data_access"`) is channel-gated instead — it checks the Supabase `access_request_categories` table (`bot_id` + `request_type` + channel membership), not `admin_users`
 - The `generate_service_principal_secret` tool (`category="secrets"`) is gated by **both** channel and reviewer membership from `access_request_categories` (`request_type="service_principal_secret"`) — unlike `data_access`, the requester themselves must be a listed reviewer; there's no separate approval step
 - Authorization status (is_admin) is prepended to the question text, not stored in history

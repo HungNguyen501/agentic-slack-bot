@@ -19,7 +19,7 @@ def dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
     """
     try:
         if name == "list_schedules":
-            schedules = get_schedules()
+            schedules = get_schedules(bot_id)
             if not schedules:
                 return "No schedules configured."
             header = f"{'ID':<36}  {'Cron':<20}  {'Channel':<12}  Question"
@@ -40,13 +40,14 @@ def dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
                 cron=args.get("cron"),
                 channel=args.get("channel"),
                 question=args.get("question"),
+                bot_id=bot_id,
             )
             if not s:
                 return f"Schedule `{args['id']}` not found or no fields to update."
             return f"Schedule `{s.id}` updated."
 
         if name == "remove_schedule":
-            deleted = remove_schedule(args["id"])
+            deleted = remove_schedule(args["id"], bot_id=bot_id)
             if deleted:
                 return f"Schedule `{args['id']}` removed."
             return f"Schedule `{args['id']}` not found."
