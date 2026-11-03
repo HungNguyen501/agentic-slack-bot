@@ -1,14 +1,23 @@
-name: Create Image Tag
+name: Create Tag
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      type:
+        description: 'Tag type: agentic-slack-bot (build + push image), db-dev / db-staging (run DB migrations)'
+        type: choice
+        options:
+          - agentic-slack-bot
+          - db-dev
+          - db-staging
+        default: agentic-slack-bot
 
 permissions:
   contents: write
 
 jobs:
   create-tag:
-    name: "Create and push tag"
+    name: "Create and push ${{ inputs.type }} tag"
     runs-on: ubuntu-latest
 
     steps:
@@ -25,8 +34,10 @@ jobs:
           fi
 
       - name: Create and push tag
+        env:
+          TAG_TYPE: ${{ inputs.type }}
         run: |
-          tag="agentic-slack-bot-v$(date +%Y.%m.%d).$(git rev-parse --short=6 HEAD)"
+          tag="${TAG_TYPE}-v$(date +%Y.%m.%d).$(git rev-parse --short=6 HEAD)"
           git tag "$tag"
           git push origin "$tag"
           echo "Created tag: $tag"
