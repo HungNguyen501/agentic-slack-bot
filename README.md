@@ -232,6 +232,7 @@ See [`docs/service_principal_secrets.md`](docs/service_principal_secrets.md) for
 | `SECRET_ENCRYPTION_KEY` | Yes | Fernet key encrypting cached service-principal secrets at rest |
 | `SECRET_LINK_BASE_URL` | Yes | Public base URL of the receiver, used to build one-time secret-view links |
 | `NGROK_AUTHTOKEN` | Yes | ngrok auth token (local dev only) |
+| `NGROK_DOMAIN` | No | Reserved ngrok domain for the dev tunnel (hostname only). Random URL on each start if empty (local dev only) |
 | `WORKER_COUNT` | No | Number of concurrent worker containers (default: `2`) |
 | `ROUTER_MODEL` | No | Model used for skill routing (default: `gpt-6.1-sol`) |
 | `SCHEDULER_INTERVAL` | No | Seconds between scheduler polling ticks (default: `180`) |

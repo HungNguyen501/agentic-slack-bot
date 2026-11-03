@@ -82,14 +82,15 @@ async def slack_events(request: Request) -> dict:
 
     # Parse first to resolve which bot (and therefore which signing secret) owns this event.
     payload = json.loads(body)
+
+    if payload.get("type") == "url_verification":
+        return {"challenge": payload["challenge"]}
+
     bot = _resolve_bot(payload)
 
     if not verify_slack_signature(bot.signing_secret, timestamp, signature, body):
         log.warning("Invalid Slack signature for bot_id=%s", bot.bot_id)
         raise HTTPException(status_code=401, detail="Invalid signature")
-
-    if payload.get("type") == "url_verification":
-        return {"challenge": payload["challenge"]}
 
     if payload.get("type") == "event_callback":
         event_id = payload.get("event_id")

@@ -27,7 +27,7 @@ compose-down-clean:
 	@docker compose down --volumes --remove-orphans
 
 db-migrate:
-	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" migrate
+	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" -baselineOnMigrate=true -baselineVersion=0 migrate
 
 db-migrate-info:
 	@docker run --rm -v $(PWD)/src/migrations:/flyway/sql $(FLYWAY_IMAGE) -url="$(FLYWAY_URL)" info
