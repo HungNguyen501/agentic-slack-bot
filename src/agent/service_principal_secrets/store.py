@@ -1,7 +1,7 @@
 """Supabase service_principal_secrets table — cached Databricks SP secret CRUD.
 
 Secrets are stored encrypted (common/crypto.py) and only ever decrypted in-memory by
-the caller (worker/agent.py) right before handing them off via a one-time Redis link —
+the caller (service_principal_secrets/tools.py) right before handing them off via a one-time Redis link —
 never returned or logged in plaintext from this module.
 """
 from dataclasses import dataclass

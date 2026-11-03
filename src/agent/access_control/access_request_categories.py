@@ -49,7 +49,7 @@ def channel_authorized(category: AccessRequestCategory | None, channel: str) -> 
     """True if `category` (from get_access_request_category) permits requests in `channel`.
 
     Shared by the three places that must independently re-check this — asking for the form
-    (worker/agent.py), persisting a submission (worker/tasks.py), and approving (worker/review.py)
+    (access_control/tools.py), persisting a submission (access_control/submission.py), and approving (access_control/review.py)
     — since a category can be revoked at any point between those steps.
     """
     return bool(category) and channel in category.channel_ids

@@ -3,7 +3,7 @@ rules_v2.yaml (an appended row) and service_principals.yaml (a fully regenerated
 """
 import yaml
 
-from .access_request_submission import VerifiedAccessRequest
+from agent.forms.access_request_submission import VerifiedAccessRequest
 
 
 def format_rules_entry(v: VerifiedAccessRequest) -> str:
@@ -28,7 +28,7 @@ def format_service_principals_snapshot(service_principals: list[dict]) -> str:
 
     Args:
         service_principals: Raw SCIM ServicePrincipal resources, as returned by
-            connectors.databricks.list_service_principals().
+            agent.access_control.service_principals.list_service_principals().
 
     Returns:
         The complete new file content (alphabetical keys, groups sorted by display name),

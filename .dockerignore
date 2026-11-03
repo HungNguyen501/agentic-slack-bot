@@ -3,3 +3,5 @@
 .venv
 CLAUDE.md
 README.md
+.env.staging
+.env.example

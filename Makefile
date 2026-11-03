@@ -11,6 +11,9 @@ install:
 lint:
 	@ruff check . && flake8 --show-source --statistics .
 
+test:
+	@pytest --disable-warnings -vv --cov src --cov-report term-missing --cov-fail-under=0
+
 lint-sql:
 	@sqlfluff lint src/migrations/ src/databricks/metric_views/
 
@@ -52,6 +55,7 @@ help:
 	@echo "  make install              Install dependencies + pre-commit hooks (make lint, make lint-sql)"
 	@echo "  make lint                 Run ruff + flake8"
 	@echo "  make lint-sql             Run sqlfluff against migrations + metric views"
+	@echo "  make test                 Run the pytest suite with coverage (threshold 0%)"
 	@echo "  make build-image          Build local image, tagged latest"
 	@echo "  make compose-up           docker compose up -d --build"
 	@echo "  make compose-down         docker compose down --remove-orphans"

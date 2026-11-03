@@ -9,7 +9,7 @@ Four containerized services sharing a Redis queue:
 | Service | Entry point | Role |
 |---|---|---|
 | **receiver** | `src/receiver/app.py` | FastAPI webhook — verifies Slack HMAC-SHA256, deduplicates events in Redis, enqueues to `slack_events` RQ queue |
-| **worker** | `src/worker/tasks.py` | RQ consumer — loads per-bot config from Supabase, runs the agent loop, posts reply chunks to Slack |
+| **worker** | `src/worker/tasks.py` | RQ consumer — loads per-bot config from Supabase, calls into `src/agent/` to run the agent loop, posts reply chunks to Slack |
 | **scheduler** | `src/scheduler/app.py` | asyncio polling loop — evaluates cron schedules every 180 s, enqueues `process_scheduled_question` jobs |
 | **redis** | — | Message broker, event dedup store (600 s TTL), conversation history cache (24 h TTL) |
 
@@ -36,8 +36,8 @@ user asks agent for access → request_data_access tool checks eligibility
   → receiver view_submission validates fields, enqueues process_data_access_submission
   → worker inserts a pending access_requests row (24h expiry)
 reviewer replies "approve <id>" / "reject <id>" in the thread
-  → worker/review.py (bypasses the agent loop) resolves the principal via Databricks,
-    opens a PR on 100xteam-ai/vireox-data-platform via connectors/github.py, updates status
+  → agent/access_control/review.py (bypasses the agent loop) resolves the principal via Databricks,
+    opens a PR on 100xteam-ai/vireox-data-platform via agent/pr/data_platform_repo.py, updates status
 ```
 
 **Service principal secret generation** (synchronous, no separate approval step):
@@ -52,8 +52,8 @@ reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETD
   → secret renders once, then is gone
 ```
 
-**Agent loop** (`src/worker/agent.py`):
-1. Router model (gpt-6.1-sol) picks skills from `src/worker/skills/*.md`
+**Agent loop** (`src/agent/agent.py`):
+1. Router model (gpt-6.1-sol) picks skills from `src/agent/skills/files/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date
 3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / request_data_access / generate_service_principal_secret (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
 4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
@@ -64,6 +64,7 @@ reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETD
 make install          # uv sync --all-groups + pre-commit install
 make lint             # ruff + flake8
 make lint-sql         # sqlfluff against migrations + metric views
+make test             # pytest (tests/ mirrors src/)
 make build-image      # docker buildx build
 make compose-up       # docker compose up -d --build
 make compose-down     # docker compose down --remove-orphans
@@ -126,7 +127,7 @@ Bot is resolved at runtime: receiver uses `api_app_id` → `get_by_app_id()`; wo
 
 ## Skill System
 
-Skills live in `src/worker/skills/NN_name.md` with YAML frontmatter:
+Skills live in `src/agent/skills/files/NN_name.md` with YAML frontmatter:
 
 ```yaml
 ---
@@ -148,35 +149,50 @@ See `.claude/rules/skills.md` for authoring guidelines.
 src/
   receiver/app.py            # Webhook + interactivity handler (block_actions, view_submission)
   worker/
-    agent.py                 # Agent loop + tool dispatch
-    tasks.py                 # RQ task definitions (mentions, schedules, access request submission)
-    review.py                # Deterministic approve/reject handling for access requests (no LLM)
-    skills/                  # Agent (runtime) skill files (01–12) — NOT Claude Code skills
+    tasks.py                 # RQ task definitions (mentions, schedules, access request submission) — thin shell over agent/
+  agent/                     # Everything the agent does, by task
+    agent.py                 # Agent loop (OpenAI Responses API) + summarize_answer
+    dispatch.py              # Tool schema exposure + per-call routing
+    history.py               # Per-thread conversation history (Redis)
+    schedules.py             # Schedule-CRUD tool handlers
+    skills/                  # loader.py / router.py; files/ holds the agent (runtime) skill files (01–12) — NOT Claude Code skills
+    forms/                   # Pure, no I/O — the receiver may import this
+      access_request_view.py       # Slack modal view + submission validation
+      access_request_submission.py # VerifiedAccessRequest dataclass
+    pr/
+      access_control_rules.py      # Renders rules_v2.yaml / service_principals.yaml entries (pure)
+      access_request_pr.py         # Fills the data-platform repo's PR template (pure)
+      data_platform_repo.py        # Branch/commit/PR workflow on top of connectors/github.py
+    access_control/
+      access_request_categories.py # Per-bot/channel request eligibility (Supabase)
+      access_requests.py           # Submitted request CRUD (Supabase)
+      principals.py                # Databricks user / service-principal lookups
+      service_principals.py        # Service principal find-or-create + group membership
+      submission.py                # Persist a submitted form + post it for review
+      review.py                    # Deterministic approve/reject handling (no LLM)
+      tools.py                     # request_data_access tool handler
+    service_principal_secrets/
+      store.py                     # Cached (encrypted) service-principal secret CRUD (Supabase)
+      tools.py                     # generate_service_principal_secret tool handler
   scheduler/app.py           # Cron polling loop
   common/
     configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas)
     crypto.py                # Fernet encrypt/decrypt for secrets cached at rest (service_principal_secrets)
-  models/                    # Pure data/rendering helpers, no I/O
-    access_request_view.py       # Slack modal view + submission validation
-    access_request_submission.py # VerifiedAccessRequest dataclass
-    access_control_rules.py      # Renders rules_v2.yaml / service_principals.yaml entries
-    access_request_pr.py         # Fills the data-platform repo's PR template
-  connectors/
-    db/                     # Supabase (Postgres) access — sync, psycopg
+  connectors/                # Generic clients for external tools — no task-specific logic
+    db/                      # Supabase (Postgres) access — sync, psycopg
+      connection.py              # psycopg connection helper
       bots.py                    # Bot registry
-      schedules.py                # Schedule CRUD
-      access_request_categories.py # Per-bot/channel request eligibility
-      access_requests.py          # Submitted request CRUD
-      service_principal_secrets.py # Cached (encrypted) service-principal secret CRUD
-      connection.py                # psycopg connection helper
-    databricks/              # Statement API, Jobs API, principal lookups
-      sql.py                      # SELECT-only Statement API client
-      jobs.py                     # Job run details
-      principals.py                # User lookup
-      service_principals.py        # Service principal find-or-create
+      schedules.py               # Schedule CRUD (shared by the scheduler service and the agent's schedule tools)
+    databricks/              # Statement API, Jobs API, SCIM, OAuth secrets
+      client.py                  # Host/token/auth headers
+      sql.py                     # SELECT-only Statement API client
+      jobs.py                    # Job run details
+      scim.py                    # SCIM list / create service principal / add group member
       service_principal_secrets.py # OAuth client secret generation
-    github.py                # GitHub REST client — opens access-control PRs on 100xteam-ai/vireox-data-platform
-    slack.py                 # Slack Web API — message posting + modal views
+    github.py                # GitHub REST primitives (file, branch, PR) for 100xteam-ai/vireox-data-platform
+    slack.py                 # Slack Web API — message posting, modal views, mrkdwn chunking
+    openai_client.py         # Shared OpenAI client + Chat Completions / Responses wrappers
+    redis_client.py          # Shared Redis client
   databricks/metric_views/   # SQL views for semantic layer
   migrations/                # DB schema SQL (Flyway, applied via `make db-migrate`)
 .claude/
@@ -191,12 +207,12 @@ src/
 Detailed guidelines in `.claude/rules/`:
 - [architecture.md](.claude/rules/architecture.md) — service boundaries and invariants
 - [code-style.md](.claude/rules/code-style.md) — Python style, linting, dependencies
-- [skills.md](.claude/rules/skills.md) — agent skill file authoring (`src/worker/skills/`)
+- [skills.md](.claude/rules/skills.md) — agent skill file authoring (`src/agent/skills/files/`)
 
 ## Development Skills
 
 Two unrelated things are called "skills" here:
-- **Agent skills** — `src/worker/skills/*.md`, loaded into the Slack bot's system prompt at runtime.
+- **Agent skills** — `src/agent/skills/files/*.md`, loaded into the Slack bot's system prompt at runtime.
 - **Claude Code skills** — `.claude/skills/`, used by you while developing. Invoke `python-code-style` / `python-unit-tests` / `python-docstrings` when writing Python, and run `/code-review` on your changes before opening a PR. Details and precedence over the skills' defaults: [code-style.md](.claude/rules/code-style.md).
 
 ## Custom Commands

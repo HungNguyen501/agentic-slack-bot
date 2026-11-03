@@ -1,3 +1,4 @@
+.env.staging
 .ansible
 
 # Byte-compiled / optimized / DLL files

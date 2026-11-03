@@ -1,4 +1,4 @@
-"""Slack Web API client — message posting and modal views."""
+"""Slack Web API client — message posting, modal views, and mrkdwn chunking."""
 from slack_sdk import WebClient
 
 
@@ -47,7 +47,99 @@ def open_view(trigger_id: str, view: dict, *, token: str) -> None:
 
     Args:
         trigger_id: Trigger ID from the interaction (e.g. a button click) that authorizes the modal.
-        view: Slack view payload, e.g. as built by models.access_request_view.build_access_request_view.
+        view: Slack view payload, e.g. as built by agent.forms.access_request_view.build_access_request_view.
         token: Bot OAuth token (xoxb-...) to authenticate the request.
     """
     WebClient(token=token).views_open(trigger_id=trigger_id, view=view)
+
+
+_FENCE = "```"
+_CLOSE_COST = len("\n" + _FENCE)  # what closing an open code block adds to a chunk
+
+
+def _next_fence(line: str, fence: str | None) -> str | None:
+    """Code-block state after `line`: the opening fence (with any language tag) if inside one, else None.
+
+    Counts every ``` on the line, so a complete one-line block like ```x``` leaves the state unchanged.
+    """
+    if line.count(_FENCE) % 2 == 0:
+        return fence
+    if fence is not None:
+        return None
+    return _FENCE + line[line.rindex(_FENCE) + len(_FENCE):].strip() if line.startswith(_FENCE) else _FENCE
+
+
+class _Chunker:
+    """Accumulates lines into chunks of at most max_len characters, closing and reopening code fences at each boundary."""
+
+    def __init__(self, max_len: int) -> None:
+        self.max_len = max_len
+        self.chunks: list[str] = []
+        self.fence: str | None = None  # opening fence of the code block open at the end of the current chunk
+        self._lines: list[str] = []
+        self._length = 0
+        self._content = 0  # lines added since the last flush, not counting a reopened fence
+
+    def add(self, line: str, after: str | None) -> None:
+        """Append `line`, flushing first if it (plus a closing fence, if it leaves a block open) wouldn't fit."""
+        closing = _CLOSE_COST if after is not None else 0
+        if self._content and self._length + self._joined(line) + closing > self.max_len:
+            self._flush()
+        self._length += self._joined(line)
+        self._lines.append(line)
+        self._content += 1
+        self.fence = after
+
+    def finish(self) -> list[str]:
+        if self._content:
+            self.chunks.append("\n".join(self._lines))
+        return self.chunks
+
+    def _joined(self, line: str) -> int:
+        return len(line) + (1 if self._lines else 0)
+
+    def _flush(self) -> None:
+        if self.fence is not None:
+            self._lines.append(_FENCE)
+        self.chunks.append("\n".join(self._lines))
+        self._lines = [self.fence] if self.fence is not None else []
+        self._length = len(self.fence) if self.fence is not None else 0
+        self._content = 0
+
+
+def split_message(text: str, max_len: int = 3000) -> list[str]:
+    """Split text into Slack-safe chunks that never exceed max_len characters.
+
+    Code blocks are closed with a closing fence before a chunk boundary and
+    reopened with the same fence (including any language specifier) at the start
+    of the next chunk, so every chunk is valid Slack mrkdwn on its own. A single
+    line too long for one chunk is cut into fragments, each sized to leave room
+    for the fences.
+
+    Args:
+        text: The full message text to split, in Slack mrkdwn format.
+        max_len: Maximum character length per chunk; defaults to 3 000 (Slack's safe limit).
+            Must leave room for the fences, i.e. be comfortably larger than a few dozen characters.
+
+    Returns:
+        List of text chunks, each within max_len characters and properly fenced if split
+        mid-code-block. Returns a single-element list when the text fits in one chunk.
+    """
+    if len(text) <= max_len:
+        return [text]
+
+    chunker = _Chunker(max_len)
+    for line in text.splitlines():
+        after = _next_fence(line, chunker.fence)
+        reopen = len(chunker.fence) + 1 if chunker.fence is not None else 0
+        if reopen + len(line) + (_CLOSE_COST if after is not None else 0) <= max_len:
+            chunker.add(line, after)
+            continue
+
+        in_block = chunker.fence is not None or after is not None
+        size = max(1, max_len - reopen - (_CLOSE_COST if in_block else 0))
+        *head, last = (line[i:i + size] for i in range(0, len(line), size))
+        for fragment in head:
+            chunker.add(fragment, chunker.fence)
+        chunker.add(last, after)
+    return chunker.finish()

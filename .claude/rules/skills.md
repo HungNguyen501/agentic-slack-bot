@@ -1,10 +1,10 @@
 # Skill Authoring Rules
 
-These rules cover the **agent** skills in `src/worker/skills/` only. The Claude Code dev skills in `.claude/skills/` are hub-managed and follow their own format.
+These rules cover the **agent** skills in `src/agent/skills/files/` only. The Claude Code dev skills in `.claude/skills/` are hub-managed and follow their own format.
 
 ## File Naming
 
-Skills live in `src/worker/skills/` and are named `NN_name.md` where `NN` is a zero-padded two-digit sequence number. The number controls load order. Pick the next available number.
+Skills live in `src/agent/skills/files/` and are named `NN_name.md` where `NN` is a zero-padded two-digit sequence number. The number controls load order. Pick the next available number.
 
 Current skills:
 - `01_core.md` — identity, scope, query rules (always-loaded)
@@ -52,6 +52,6 @@ description: <one sentence starting with "Use when...">
 
 ## Updating Skills
 
-Skills are mounted as a volume in docker-compose (`./src/worker/skills:/app/src/worker/skills`). Editing a skill file takes effect on the next request without rebuilding the image.
+Skills are mounted as a volume in docker-compose (`./src/agent/skills/files:/app/agent/skills/files`). Editing a skill file takes effect on the next request without rebuilding the image.
 
 That applies to local `docker compose` only. Deployed environments run the published image with the skills baked in (no volume mount), so a skill edit reaches them only via a new image tag and a redeploy from the `ansible-infra` repo.

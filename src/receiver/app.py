@@ -11,10 +11,10 @@ from fastapi.responses import PlainTextResponse
 from redis import Redis
 from rq import Queue, Retry
 
+from agent.forms.access_request_view import build_access_request_view, validate_submission
 from common.configs import Configs
 from connectors import slack
 from connectors.db.bots import BotConfig, get_by_app_id
-from models.access_request_view import build_access_request_view, validate_submission
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")

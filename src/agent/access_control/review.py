@@ -1,21 +1,57 @@
 """Deterministic reviewer approve/reject handling for data access requests.
 
-This bypasses the LLM tool-calling loop entirely (see reply_to_mention in tasks.py) — the
+This bypasses the LLM tool-calling loop entirely (see reply_to_mention in worker/tasks.py) — the
 user chose exact-keyword detection over LLM-inferred intent, so this is plain, testable
 control flow rather than another agent tool.
 """
 import logging
+import re
 from datetime import UTC, datetime
 
-from connectors import databricks, github
-from connectors.db.access_request_categories import channel_authorized, get_access_request_category
-from connectors.db.access_requests import AccessRequest, get_access_request, list_approved_access_requests, update_access_request_status
+from agent.access_control import principals, service_principals
+from agent.access_control.access_request_categories import channel_authorized, get_access_request_category
+from agent.access_control.access_requests import AccessRequest, get_access_request, list_approved_access_requests, update_access_request_status
+from agent.forms.access_request_submission import VerifiedAccessRequest
+from agent.pr import data_platform_repo
+from agent.pr.access_control_rules import format_rules_entry, format_service_principals_snapshot
+from agent.pr.access_request_pr import PrEntry, build_pr
 from connectors.db.bots import BotConfig
-from models.access_control_rules import format_rules_entry, format_service_principals_snapshot
-from models.access_request_pr import PrEntry, build_pr
-from models.access_request_submission import VerifiedAccessRequest
 
-log = logging.getLogger("worker.review")
+log = logging.getLogger("agent.access_control.review")
+
+# Matches a UUID anywhere after the leading approve/reject keyword, so phrasing like
+# "approve data access request ID=<uuid>" or "approve: <uuid>" works, not just the exact
+# `approve <uuid>` form we ask for in the review message.
+_REQUEST_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+
+def parse_review_command(question: str) -> tuple[str, list[str]] | None:
+    """Detect an "approve ..."/"reject ..." message and pull out the request ids it references.
+
+    Args:
+        question: The message text with the @mention already stripped.
+
+    Returns:
+        (decision, distinct_request_ids) when the message starts with approve/reject, else None.
+        Ids are de-duplicated case-insensitively so a repeated id (copy-paste accident) counts
+        once, but two genuinely different ids are both returned — acting on just the first one
+        silently would be surprising if someone meant to reference two different requests.
+    """
+    # Reviewers often copy-paste the exact reply we suggest, backticks and all (e.g.
+    # "`approve <id>`") — strip surrounding backticks/punctuation before parsing.
+    parts = question.split(maxsplit=1)
+    first_word = parts[0].strip("`:,.").lower() if parts else ""
+    if first_word not in ("approve", "reject"):
+        return None
+
+    rest = parts[1] if len(parts) > 1 else ""
+    seen = set()
+    distinct_ids = []
+    for m in _REQUEST_ID_RE.findall(rest):
+        if m.lower() not in seen:
+            seen.add(m.lower())
+            distinct_ids.append(m)
+    return first_word, distinct_ids
 
 
 def handle_review_decision(
@@ -86,13 +122,13 @@ def _approve(bot: BotConfig, row: AccessRequest, channel: str, approver_id: str)
     service_principal_id = None
 
     if row.principal_type == "Service principals":
-        sp = databricks.find_or_create_service_principal(row.user_email, row.groups)
+        sp = service_principals.find_or_create_service_principal(row.user_email, row.groups)
         display_name, principal, service_principal_id = sp["displayName"], sp["applicationId"], sp["id"]
     else:
         # Submission only warned if the user wasn't found (so the request could still reach
         # review) — re-verify for real here, since approval is what actually writes the
         # principal into the data-platform repo. Never write a "does not exist" placeholder.
-        record = databricks.find_user_by_email(row.user_email)
+        record = principals.find_user_by_email(row.user_email)
         if not record:
             return (
                 f"Cannot approve `{row.id}` — user `{row.user_email}` still doesn't exist in Databricks. "
@@ -104,7 +140,7 @@ def _approve(bot: BotConfig, row: AccessRequest, channel: str, approver_id: str)
 
     rules_entry = format_rules_entry(verified)
     sp_snapshot = (
-        format_service_principals_snapshot(databricks.list_service_principals())
+        format_service_principals_snapshot(service_principals.list_service_principals())
         if row.principal_type == "Service principals"
         else None
     )
@@ -112,13 +148,13 @@ def _approve(bot: BotConfig, row: AccessRequest, channel: str, approver_id: str)
     # One ticket = one branch/PR, so the PR text covers every request already approved on it plus
     # this one (not yet marked approved, hence added explicitly). "Existing" means already in the
     # base branch's rules, so earlier entries on this PR stay classified the same on each refresh.
-    existing_emails = github.base_rule_emails()
+    existing_emails = data_platform_repo.base_rule_emails()
     earlier = [r for r in list_approved_access_requests(row.ticket_id) if r.id != row.id]
     entries = [PrEntry(_to_verified(r, r.display_name, r.principal), r.requester_id, r.user_email not in existing_emails) for r in earlier]
     entries.append(PrEntry(verified, row.requester_id, row.user_email not in existing_emails))
     pr_title, pr_body = build_pr(row.ticket_id, entries)
 
-    pr_url = github.open_data_access_pr(row.ticket_id, row.user_email, rules_entry, sp_snapshot, pr_title, pr_body)
+    pr_url = data_platform_repo.open_data_access_pr(row.ticket_id, row.user_email, rules_entry, sp_snapshot, pr_title, pr_body)
 
     update_access_request_status(
         row.id,

@@ -45,7 +45,21 @@ quote-style = "double"
 skip-magic-trailing-comma = true
 exclude = ["generated"]
 
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+exclude_also = ["def __repr__", "raise AssertionError", "raise NotImplementedError", "if __name__ == .__main__.:"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = ["--import-mode=importlib"]
+testpaths = ["tests"]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.2",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
 ]

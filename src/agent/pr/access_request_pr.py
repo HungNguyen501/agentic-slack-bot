@@ -6,7 +6,7 @@ checkbox are filled in; everything else is left exactly as the template provides
 """
 from dataclasses import dataclass
 
-from .access_request_submission import VerifiedAccessRequest
+from agent.forms.access_request_submission import VerifiedAccessRequest
 
 # Built as explicit lines (rather than one raw triple-quoted block) so the two lines that end
 # in a literal trailing space in the source template don't trip our own trailing-whitespace lint.

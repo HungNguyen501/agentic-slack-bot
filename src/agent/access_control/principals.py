@@ -1,10 +1,10 @@
 """Databricks workspace SCIM lookups for users and service principals.
 
-Unlike sql.py/jobs.py (which swallow errors into strings for the LLM tool-call layer), these
+Unlike connectors.databricks.sql/jobs (which swallow errors into strings for the LLM tool-call layer), these
 functions are called from worker business logic — so real HTTP/transport failures are left to
 propagate (RQ's retry/failure handling), and None is reserved strictly for "no match found".
 """
-from ._client import list_scim_resources
+from connectors.databricks import list_scim_resources
 
 
 def _match_user(email: str, users: list[dict]) -> dict | None:

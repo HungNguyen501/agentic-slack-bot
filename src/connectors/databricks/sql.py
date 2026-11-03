@@ -3,7 +3,7 @@ import traceback
 
 import httpx
 
-from ._client import HOST, WAREHOUSE_ID, TOKEN
+from .client import HOST, WAREHOUSE_ID, TOKEN
 
 _MAX_ROWS = 200
 

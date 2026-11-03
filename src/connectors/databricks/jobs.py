@@ -3,7 +3,7 @@ import traceback
 
 import httpx
 
-from ._client import HOST, TOKEN
+from .client import HOST, TOKEN
 
 
 def get_job_run(run_id: str | int) -> str:
