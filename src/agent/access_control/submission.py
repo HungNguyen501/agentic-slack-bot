@@ -1,9 +1,10 @@
 """Persisting a submitted data access request form and posting it back into the thread for review."""
 import logging
+from dataclasses import asdict
 
 from agent.access_control import principals
 from agent.access_control.access_request_categories import channel_authorized, get_access_request_category
-from agent.access_control.access_requests import add_access_request
+from agent.access_control.access_requests import AccessRequest, add_access_request
 from agent.forms.access_request_submission import VerifiedAccessRequest
 from agent.forms.access_request_view import parse_emails
 from agent.history import record_thread_messages
@@ -22,7 +23,7 @@ def submit_data_access_request(
     reviewers: list[str],
     fields: dict,
 ) -> str:
-    """Log a submitted data access request form and post it back into the requesting thread for review.
+    """Persist a submitted data access request form and post it back into the requesting thread for review.
 
     The form's user_emails field can hold multiple comma/newline-separated addresses; this
     fans out into one independent access_requests row per email (sharing the rest of the
@@ -41,12 +42,9 @@ def submit_data_access_request(
     Returns:
         The Slack message timestamp (ts) of the last posted review-request chunk.
     """
-    log.info(
-        "Data access request submitted: request_type=%s requester_id=%s fields=%s",
-        request_type,
-        requester_id,
-        fields,
-    )
+    emails = parse_emails(fields.get("user_emails") or "")
+    # Deliberately not logging `fields`: it carries the requested emails and access scope.
+    log.info("Data access request submitted: request_type=%s requester_id=%s recipients=%d", request_type, requester_id, len(emails))
 
     # Re-validate against access_request_categories rather than trusting the button's
     # baked-in snapshot from when the form was first offered — the category or this
@@ -64,7 +62,6 @@ def submit_data_access_request(
 
     ticket_id = (fields.get("ticket_id") or "").strip()
     principal_type = fields.get("principal_type", "")
-    emails = parse_emails(fields.get("user_emails") or "")
 
     # One batch lookup for the whole submission rather than one full SCIM listing per email —
     # each listing paginates the entire workspace, so doing it per-email is what made
@@ -74,26 +71,10 @@ def submit_data_access_request(
     else:
         lookup = principals.find_users_by_emails(emails)
 
-    reviewer_mentions = ", ".join(f"<@{r}>" for r in reviewers) or "the data team"
     sections = []
-
     for index, user_email in enumerate(emails, start=1):
         display_name, principal, principal_missing = _resolve_principal(user_email, principal_type, lookup.get(user_email))
-
-        verified = VerifiedAccessRequest(
-            ticket_id=ticket_id,
-            display_name=display_name,
-            user_email=user_email,
-            principal=principal,
-            filter_column=fields.get("filter_column", ""),
-            allowed_value=fields.get("allowed_value", ""),
-            scope_column=fields.get("scope_column", ""),
-            scope_value=fields.get("scope_value", ""),
-            principal_type=principal_type,
-            groups=fields.get("groups") or [],
-            tags=fields.get("tags") or [],
-        )
-
+        verified = _to_verified(fields, ticket_id, principal_type, user_email, display_name, principal)
         row = add_access_request(
             bot_id=bot.bot_id,
             request_type=request_type,
@@ -101,47 +82,69 @@ def submit_data_access_request(
             thread_ts=thread_ts,
             requester_id=requester_id,
             reviewers=reviewers,
-            ticket_id=ticket_id,
-            user_email=user_email,
-            principal_type=principal_type,
-            display_name=display_name,
-            principal=principal,
-            filter_column=fields.get("filter_column", ""),
-            allowed_value=fields.get("allowed_value", ""),
-            scope_column=fields.get("scope_column", ""),
-            scope_value=fields.get("scope_value", ""),
-            groups=fields.get("groups") or [],
-            tags=fields.get("tags") or [],
+            **asdict(verified),
         )
-        request_id = row.id
-        expires_line = f"expires_at: {row.expires_at.strftime('%Y-%m-%d %H:%M UTC')}"
+        sections.append(_review_section(bot.bot_id, index, len(emails), row, verified, principal_missing))
 
-        warning_line = (
-            f":warning: The user `{user_email}` was not found in Databricks — please verify before approving.\n"
-            if principal_missing
-            else ""
-        )
-        sections.append(
-            f"*Request {index} of {len(emails)}* (id: `{request_id}`)\n"
-            f"{verified.to_mrkdwn(extra_lines=[expires_line])}\n"
-            f"{warning_line}"
-            f"Reply `@{bot.bot_id} approve data access request {request_id}` to approve, or "
-            f"`@{bot.bot_id} reject data access request {request_id}` to reject."
-        )
-
-    header = (
-        f"*Data Access Request* — {len(emails)} sub-request(s) for ticket `{ticket_id}`\n"
-        f"User <@{requester_id}> requests adding data access for the following:\n\n"
-    )
-    footer = f"\nPlease help review: {reviewer_mentions}"
-    divider = "\n" + "─" * 24 + "\n\n"
-    message = header + divider.join(sections) + footer
-
+    message = _review_message(ticket_id, requester_id, reviewers, sections)
     ts = thread_ts
     for chunk in slack.split_message(message):
         ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
     record_thread_messages(thread_ts, {"role": "assistant", "content": message})
     return ts
+
+
+def _to_verified(
+    fields: dict,
+    ticket_id: str,
+    principal_type: str,
+    user_email: str,
+    display_name: str,
+    principal: str,
+) -> VerifiedAccessRequest:
+    """Combine the form's shared fields with one email's resolved principal; also the source of the DB row's columns."""
+    return VerifiedAccessRequest(
+        ticket_id=ticket_id,
+        display_name=display_name,
+        user_email=user_email,
+        principal=principal,
+        filter_column=fields.get("filter_column", ""),
+        allowed_value=fields.get("allowed_value", ""),
+        scope_column=fields.get("scope_column", ""),
+        scope_value=fields.get("scope_value", ""),
+        principal_type=principal_type,
+        groups=fields.get("groups") or [],
+        tags=fields.get("tags") or [],
+    )
+
+
+def _review_section(bot_id: str, index: int, total: int, row: AccessRequest, verified: VerifiedAccessRequest, principal_missing: bool) -> str:
+    """Render one email's sub-request block, including how a reviewer approves or rejects it."""
+    expires_line = f"expires_at: {row.expires_at.strftime('%Y-%m-%d %H:%M UTC')}"
+    warning_line = (
+        f":warning: The user `{verified.user_email}` was not found in Databricks — please verify before approving.\n"
+        if principal_missing
+        else ""
+    )
+    return (
+        f"*Request {index} of {total}* (id: `{row.id}`)\n"
+        f"{verified.to_mrkdwn(extra_lines=[expires_line])}\n"
+        f"{warning_line}"
+        f"Reply `@{bot_id} approve data access request {row.id}` to approve, or "
+        f"`@{bot_id} reject data access request {row.id}` to reject."
+    )
+
+
+def _review_message(ticket_id: str, requester_id: str | None, reviewers: list[str], sections: list[str]) -> str:
+    """Join the per-email sections into the single review-request message posted to the thread."""
+    reviewer_mentions = ", ".join(f"<@{r}>" for r in reviewers) or "the data team"
+    header = (
+        f"*Data Access Request* — {len(sections)} sub-request(s) for ticket `{ticket_id}`\n"
+        f"User <@{requester_id}> requests adding data access for the following:\n\n"
+    )
+    footer = f"\nPlease help review: {reviewer_mentions}"
+    divider = "\n" + "─" * 24 + "\n\n"
+    return header + divider.join(sections) + footer
 
 
 def _resolve_principal(user_email: str, principal_type: str, record: dict | None) -> tuple[str, str, bool]:

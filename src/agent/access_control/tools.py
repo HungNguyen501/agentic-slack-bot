@@ -16,6 +16,46 @@ ACCESS_REQUEST_POSTED_MESSAGE = (
 )
 
 
+def build_form_button_value(request_type: str, channel: str, thread_ts: str, requester_id: str | None, reviewers: list[str], now: int) -> str:
+    """Serialize the request metadata carried in the "Open Form" button's `value`.
+
+    Args:
+        now: Current unix time; both created_at and expires_at derive from it so they can't drift apart.
+    """
+    return json.dumps(
+        {
+            "request_type": request_type,
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "requester_id": requester_id,
+            "reviewers": reviewers,
+            "created_at": now,
+            "expires_at": now + AgentConfigs.ACCESS_REQUEST_BUTTON_TTL_SECONDS,
+        }
+    )
+
+
+def build_form_blocks(button_value: str) -> list[dict]:
+    """Block Kit blocks for the TTL notice plus the "Open Form" button."""
+    return [
+        # message_text alone is only the notification fallback once `blocks` is set —
+        # Slack renders the blocks array in-channel, so the TTL notice needs its own
+        # section block here or it never actually shows up next to the button.
+        {"type": "section", "text": {"type": "mrkdwn", "text": ACCESS_REQUEST_POSTED_MESSAGE}},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open Form"},
+                    "action_id": "open_access_request_form",
+                    "value": button_value,
+                }
+            ],
+        },
+    ]
+
+
 def dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
     """Check eligibility for a data access request and, if allowed, post an interactive form button.
 
@@ -43,41 +83,9 @@ def dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, thr
             "Please reach out to your data team directly."
         )
 
-    button_value = json.dumps(
-        {
-            "request_type": request_type,
-            "channel": channel,
-            "thread_ts": thread_ts,
-            "requester_id": user_id,
-            "reviewers": category.reviewers,
-            "created_at": int(time.time()),
-            "expires_at": int(time.time()) + AgentConfigs.ACCESS_REQUEST_BUTTON_TTL_SECONDS,
-        }
-    )
+    button_value = build_form_button_value(request_type, channel, thread_ts, user_id, category.reviewers, int(time.time()))
     try:
-        slack.post_message(
-            channel,
-            ACCESS_REQUEST_POSTED_MESSAGE,
-            thread_ts,
-            blocks=[
-                # message_text alone is only the notification fallback once `blocks` is set —
-                # Slack renders the blocks array in-channel, so the TTL notice needs its own
-                # section block here or it never actually shows up next to the button.
-                {"type": "section", "text": {"type": "mrkdwn", "text": ACCESS_REQUEST_POSTED_MESSAGE}},
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Open Form"},
-                            "action_id": "open_access_request_form",
-                            "value": button_value,
-                        }
-                    ],
-                }
-            ],
-            token=bot.bot_token,
-        )
+        slack.post_message(channel, ACCESS_REQUEST_POSTED_MESSAGE, thread_ts, blocks=build_form_blocks(button_value), token=bot.bot_token)
     except Exception as exc:
         log.exception("Failed to post data access request button")
         return f"Error opening the data access request form: {exc}"

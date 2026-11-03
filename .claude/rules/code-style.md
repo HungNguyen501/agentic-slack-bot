@@ -61,11 +61,10 @@ These are managed by the skills hub (`.claude/skills/.hub-skills.json`) — don'
 
 ## Testing
 
-There is no test suite or pytest dependency yet (`make lint` is the only CI gate). When adding tests, follow `python-unit-tests`:
-- Add pytest via `uv add --group dev pytest`; set `pythonpath = ["src"]` and `addopts = ["--import-mode=importlib"]` under `[tool.pytest.ini_options]` (imports are `connectors...`/`worker...`, rooted at `src/`).
-- Mirror the source tree: `src/agent/forms/access_request_view.py` → `tests/agent/forms/test_access_request_view.py`.
-- Start with the pure modules (`src/agent/forms/`, `src/agent/pr/`, `validate_submission`, `common/crypto.py`); mock Slack/Databricks/GitHub/Supabase/Redis at the boundary (patch where the name is looked up), never hit real services.
-- Add a `pytest` step to `.github/workflows/ci.yaml` once tests exist.
+Tests live in `tests/`, mirroring `src/` (e.g. `src/connectors/slack.py` → `tests/connectors/test_slack.py`), and run with `make test` (also a CI step), which reports coverage with `--cov-fail-under=0` — coverage is reported, not yet enforced. Follow `python-unit-tests`:
+- pytest is configured in `pyproject.toml` (`pythonpath = ["src"]`, `--import-mode=importlib`), so imports are rooted at `src/` and test files can share basenames. `tests/conftest.py` sets inert env defaults because the config classes read env vars at import time.
+- Prefer the pure modules (`src/agent/forms/`, `src/agent/pr/`, `common/crypto.py`, `connectors/slack.split_message`); mock Slack/Databricks/GitHub/Supabase/Redis/OpenAI at the boundary (patch where the name is looked up, with `autospec=True`), never hit real services.
+- Cover a bug fix with a test that fails on the old code.
 
 ## Dependencies
 

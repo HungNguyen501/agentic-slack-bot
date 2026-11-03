@@ -47,3 +47,6 @@ jobs:
 
       - name: Lint SQL
         run: make lint-sql
+
+      - name: Unit tests
+        run: make test

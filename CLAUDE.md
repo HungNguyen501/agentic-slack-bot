@@ -64,6 +64,7 @@ reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETD
 make install          # uv sync --all-groups + pre-commit install
 make lint             # ruff + flake8
 make lint-sql         # sqlfluff against migrations + metric views
+make test             # pytest (tests/ mirrors src/)
 make build-image      # docker buildx build
 make compose-up       # docker compose up -d --build
 make compose-down     # docker compose down --remove-orphans
