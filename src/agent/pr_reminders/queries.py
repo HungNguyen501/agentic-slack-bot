@@ -3,7 +3,7 @@ import json
 
 from agent.pr_reminders.pr_links import PrRef
 
-_PR_FIELDS = "url title state isDraft reviewDecision createdAt latestOpinionatedReviews(first: 20) { nodes { state } }"
+_PR_FIELDS = "url title state isDraft reviewDecision createdAt latestOpinionatedReviews(first: 20) { totalCount nodes { state } }"
 
 
 class GithubQueryError(RuntimeError):

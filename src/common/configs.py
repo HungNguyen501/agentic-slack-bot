@@ -1,7 +1,7 @@
 """Common configuration values shared across receiver, worker, and scheduler."""
 
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 
@@ -102,6 +102,7 @@ class AgentConfigs:
     PR_REMINDER_MAX_PRS_CHECKED: int = 100
     PR_REMINDER_MAX_THREADS_POSTED: int = 25
     PR_REMINDER_MAX_ACTIVE_PER_CHANNEL: int = 5
+    PR_REMINDER_MAX_MENTIONS: int = 10
     PR_REMINDER_MIN_INTERVAL_MINUTES: int = 30
     PR_REMINDER_LIFETIME_DAYS: int = 7
     # Recurring reminders post from START (inclusive) to END (exclusive), local hour in Vietnam. Vietnam has no DST, so a
@@ -191,11 +192,12 @@ class AgentConfigs:
         AgentTool(
             name="check_pr_approvals",
             description=(
-                "Check whether GitHub pull requests shared in Slack are approved, and remind the channel (@channel) "
+                "Check whether GitHub pull requests shared in Slack are approved, and remind the given people (by @mention) "
                 "in the Slack thread of each PR that is still waiting for review. Use when someone asks to check PR "
                 "approval status or to remind reviewers about PRs. scope 'thread' checks the PR links in the current "
-                "thread (or in this message); scope 'channel' checks PR links shared in this channel over the last "
-                "lookback_hours. People named in the request are not pinged; the reminder always pings @channel."
+                "thread (or in this message); scope 'channel' checks PR links in the channel's top-level messages "
+                "(not thread replies) over the last lookback_hours. Needs the people to remind: take them from the @mentions in the user's message, and if "
+                "there are none, ask the user who to remind instead of calling this."
             ),
             parameters={
                 "type": "object",
@@ -209,6 +211,11 @@ class AgentConfigs:
                         ),
                     },
                     "pr_urls": {"type": "array", "items": {"type": "string"}, "description": "GitHub PR links typed in the request itself."},
+                    "mentions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Slack user IDs of the people to remind, from the <@U123> mentions in the user's message (not the bot's own).",
+                    },
                 },
                 "required": ["scope"],
             },
@@ -218,8 +225,11 @@ class AgentConfigs:
             name="schedule_pr_reminder",
             description=(
                 "Set up a recurring PR approval reminder: on every cron tick the bot re-checks the PRs shared in this "
-                "thread or channel, reminds @channel in the thread of each PR still waiting for review, and stops by "
-                "itself once no PR is waiting. Reminders are only sent between "
+                "thread or channel, reminds the given people (by @mention) in the thread of each PR still waiting for "
+                "review. It keeps running even if nothing is waiting yet, since a PR can be shared later, and stops by itself "
+                "once it has reminded about PRs and none is waiting any more. Channel scope reads top-level messages only. "
+                "Needs the people to remind: take them from the @mentions in the user's message, and if there are none, "
+                "ask the user who to remind instead of calling this. Reminders are only sent between "
                 f"{PR_REMINDER_ACTIVE_START_HOUR:02d}:00 and {PR_REMINDER_ACTIVE_END_HOUR:02d}:00 Vietnam time (UTC+{PR_REMINDER_UTC_OFFSET_HOURS}). "
                 "Use this, not add_schedule, for recurring PR review reminders."
             ),
@@ -233,6 +243,11 @@ class AgentConfigs:
                     "scope": {"type": "string", "enum": ["thread", "channel"], "description": "Where to look for PR links on every run."},
                     "lookback_hours": {"type": "integer", "description": "Channel scope only. Default 72, max 336."},
                     "channel": {"type": "string", "description": "Channel scope only: Slack channel ID to watch. Defaults to the current channel."},
+                    "mentions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Slack user IDs of the people to remind, from the <@U123> mentions in the user's message (not the bot's own).",
+                    },
                 },
                 "required": ["cron", "scope"],
             },
@@ -284,18 +299,27 @@ class AgentConfigs:
 class ReminderConfig:
     """The settings of a recurring PR reminder, stored in `schedules.config`.
 
-    `origin_channel` / `origin_thread_ts` are the thread the reminder was requested in: it gets the schedule id and the
-    final note, and a `thread`-scope reminder rescans it on every run. Reminders themselves go to each PR's own thread.
+    `mentions` are the Slack user IDs reminded on every run. `origin_channel` / `origin_thread_ts` are the thread the
+    reminder was requested in: it gets the schedule id and the final note, and a `thread`-scope reminder rescans it on
+    every run. Reminders themselves go to each PR's own thread.
+
+    `has_reminded` and `last_reminded` are progress the reminder job saves as it runs. A reminder only ends by itself
+    once it has reminded about some PR and none is waiting any more, so one created while nothing waits keeps watching
+    for new PRs. `last_reminded` maps "channel:thread_ts" to the unix time of the last reminder there, so that when more
+    threads are waiting than fit in one run, the ones reminded longest ago go first.
     """
 
     scope: str
     origin_channel: str
     origin_thread_ts: str
+    mentions: tuple[str, ...]
     lookback_hours: int | None = None
     created_by: str | None = None
+    has_reminded: bool = False
+    last_reminded: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return asdict(self) | {"mentions": list(self.mentions)}
 
     @classmethod
     def from_dict(cls, data: dict) -> "ReminderConfig":
@@ -307,13 +331,25 @@ class ReminderConfig:
         lookback_hours = data.get("lookback_hours")
         if lookback_hours is not None and (isinstance(lookback_hours, bool) or not isinstance(lookback_hours, int)):
             raise ValueError(f"PR reminder config has a non-integer lookback_hours: {lookback_hours!r}")
+        mentions = data.get("mentions")
+        if not isinstance(mentions, list) or not mentions or not all(isinstance(mention, str) for mention in mentions):
+            raise ValueError(f"PR reminder config needs a non-empty list of mentions: {mentions!r}")
+        has_reminded = data.get("has_reminded", False)
+        last_reminded = data.get("last_reminded", {})
+        if not isinstance(has_reminded, bool):
+            raise ValueError(f"PR reminder config has a non-boolean has_reminded: {has_reminded!r}")
+        if not isinstance(last_reminded, dict) or not all(isinstance(at, int | float) and not isinstance(at, bool) for at in last_reminded.values()):
+            raise ValueError(f"PR reminder config has an invalid last_reminded: {last_reminded!r}")
         try:
             config = cls(
                 scope=data["scope"],
                 origin_channel=data["origin_channel"],
                 origin_thread_ts=data["origin_thread_ts"],
+                mentions=tuple(mentions),
                 lookback_hours=lookback_hours,
                 created_by=data.get("created_by"),
+                has_reminded=has_reminded,
+                last_reminded=last_reminded,
             )
         except KeyError as exc:
             raise ValueError(f"PR reminder config is missing {exc}") from exc

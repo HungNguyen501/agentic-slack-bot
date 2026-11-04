@@ -24,7 +24,11 @@ class PrStatus:
 
 
 def _decision_from_reviews(pr: dict) -> str:
-    states = {review["state"] for review in pr["latestOpinionatedReviews"]["nodes"]}
+    reviews = pr["latestOpinionatedReviews"]
+    if reviews["totalCount"] > len(reviews["nodes"]):
+        # Only the first page of reviews was fetched: a hidden "changes requested" is possible, so don't call it approved.
+        return "REVIEW_REQUIRED"
+    states = {review["state"] for review in reviews["nodes"]}
     if "CHANGES_REQUESTED" in states:
         return "CHANGES_REQUESTED"
     if "APPROVED" in states:

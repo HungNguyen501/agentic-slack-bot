@@ -2,12 +2,14 @@
 import logging
 import re
 import uuid
+from datetime import UTC, datetime
+from typing import NamedTuple
 
 from slack_sdk.errors import SlackApiError
 
-from agent.pr_reminders.limits import ReminderRequestError, validate_reminder_cron
+from agent.pr_reminders.limits import ReminderRequestError, parse_mentions, validate_reminder_cron
 from agent.pr_reminders.message import active_hours_text
-from agent.pr_reminders.service import CHANNEL_READ_HELP, ChannelReadError, CheckResult, check_and_remind, collect_links
+from agent.pr_reminders.service import CHANNEL_READ_HELP, ChannelReadError, CheckResult, check_and_remind, collect_links, save_progress
 from agent.pr_reminders.status import Bucket
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import slack
@@ -29,6 +31,15 @@ def _parse_scope(args: dict) -> str:
     return scope
 
 
+def _parse_mentions(args: dict) -> list[str]:
+    mentions = parse_mentions(args.get("mentions") or [])
+    if not mentions:
+        raise ReminderRequestError(
+            "Who should I remind? Ask the user to mention the people to remind (for example @alice @bob); I ping them in each PR thread."
+        )
+    return mentions
+
+
 def _parse_lookback(args: dict) -> int:
     value = args.get("lookback_hours") or AgentConfigs.PR_REMINDER_DEFAULT_LOOKBACK_HOURS
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -46,10 +57,10 @@ def _thread_links(bot: BotConfig, posted: list[tuple[str, str]]) -> list[str]:
     return links
 
 
-def _summarize(bot: BotConfig, result: CheckResult) -> str:
+def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str:
     waiting = result.waiting
     on_author = result.count(Bucket.WAITING_ON_AUTHOR)
-    inaccessible = result.count(Bucket.INACCESSIBLE)
+    inaccessible = result.unreadable
     done = sum(result.count(bucket) for bucket in (Bucket.APPROVED, Bucket.DONE, Bucket.DRAFT))
     parts = [f"Checked {len(result.statuses)} PR(s): {waiting} waiting for review, {on_author} waiting on the author, {done} approved, closed or draft."]
 
@@ -57,6 +68,8 @@ def _summarize(bot: BotConfig, result: CheckResult) -> str:
         parts.append(f"{inaccessible} PR(s) could not be read from GitHub (repo not visible to my credentials).")
     if result.truncated:
         parts.append(f"{result.truncated} older PR(s) were not checked (limit {AgentConfigs.PR_REMINDER_MAX_PRS_CHECKED}).")
+    if scan_truncated:
+        parts.append(f"The channel has more messages in that window than I scan (limit {AgentConfigs.PR_REMINDER_MAX_MESSAGES_SCANNED}), so older links may be missing.")
     if result.posted:
         links = ", ".join(_thread_links(bot, result.posted[:_MAX_PERMALINKS]))
         more = len(result.posted) - _MAX_PERMALINKS
@@ -66,14 +79,16 @@ def _summarize(bot: BotConfig, result: CheckResult) -> str:
     if result.failed_posts:
         parts.append(f"Could not post in {result.failed_posts} thread(s).")
     if not waiting and not on_author:
-        parts.append("Nothing is waiting for review :white_check_mark:")
+        incomplete = scan_truncated or result.truncated or inaccessible
+        parts.append("I can't say nothing is waiting, because the check was incomplete." if incomplete else "Nothing is waiting for review :white_check_mark:")
     return " ".join(parts)
 
 
 def _check_pr_approvals(args: dict, channel: str, thread_ts: str, bot: BotConfig) -> str:
     scope = _parse_scope(args)
+    mentions = _parse_mentions(args)
     typed_urls = [url for url in args.get("pr_urls") or [] if isinstance(url, str)]
-    links = collect_links(
+    scan = collect_links(
         bot,
         scope=scope,
         channel=channel,
@@ -81,14 +96,25 @@ def _check_pr_approvals(args: dict, channel: str, thread_ts: str, bot: BotConfig
         lookback_hours=_parse_lookback(args),
         typed_urls=typed_urls,
     )
-    if not links:
-        return "I didn't find any GitHub pull request links " + ("in this thread." if scope == "thread" else "in this channel's recent messages.")
-    return _summarize(bot, check_and_remind(bot, links, include_author_only_threads=True))
+    if not scan.links:
+        where = "in this thread." if scope == "thread" else "in this channel's recent top-level messages."
+        more = " The window has more messages than I scan, so older ones may be missing." if scan.truncated else ""
+        return f"I didn't find any GitHub pull request links {where}{more}"
+    return _summarize(bot, check_and_remind(bot, scan.links, mentions=mentions, include_author_only_threads=True), scan.truncated)
 
 
-def _parse_schedule_request(args: dict, channel: str) -> tuple[str, str, str, int | None]:
-    """Validate a schedule_pr_reminder request and return (scope, cron, channel to watch, lookback hours)."""
+class _ScheduleRequest(NamedTuple):
+    scope: str
+    cron: str
+    channel: str
+    lookback_hours: int | None
+    mentions: list[str]
+
+
+def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
+    """Validate a schedule_pr_reminder request; `channel` is the one it was made in, the default channel to watch."""
     scope = _parse_scope(args)
+    mentions = _parse_mentions(args)
     cron = str(args.get("cron") or "").strip()
     validate_reminder_cron(cron)
 
@@ -97,38 +123,37 @@ def _parse_schedule_request(args: dict, channel: str) -> tuple[str, str, str, in
         raise ReminderRequestError(f"'{target_channel}' is not a Slack channel ID.")
     if scope == "thread" and target_channel != channel:
         raise ReminderRequestError("A thread-scope reminder watches the thread it was requested in, so it can't target another channel.")
-    return scope, cron, target_channel, _parse_lookback(args) if scope == "channel" else None
+    return _ScheduleRequest(scope, cron, target_channel, _parse_lookback(args) if scope == "channel" else None, mentions)
 
 
 def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
-    scope, cron, target_channel, lookback_hours = _parse_schedule_request(args, channel)
-    if count_active_pr_reminders(bot.bot_id, target_channel) >= AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL:
+    request = _parse_schedule_request(args, channel)
+    if count_active_pr_reminders(bot.bot_id, request.channel) >= AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL:
         raise ReminderRequestError(f"This channel already has {AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL} active PR reminders. Remove one first.")
 
-    config = ReminderConfig(scope, channel, thread_ts, lookback_hours, user_id)
-    links = collect_links(bot, scope=scope, channel=target_channel, thread_ts=thread_ts, lookback_hours=lookback_hours)
-    if not links:
-        return "I didn't find any GitHub pull request links to watch, so I didn't schedule anything."
+    config = ReminderConfig(request.scope, channel, thread_ts, tuple(request.mentions), request.lookback_hours, user_id)
+    scan = collect_links(bot, scope=request.scope, channel=request.channel, thread_ts=thread_ts, lookback_hours=request.lookback_hours)
 
-    # Store the row before the first check posts, so the schedule id in those messages is always real. The row is
-    # removed again unless something turned out to be waiting, so nothing is left scheduled for no reason.
+    # The schedule is kept even when nothing is waiting yet, since a PR can be shared later. The row goes in before the
+    # first check posts, so the schedule id in those messages is real, and comes out again if that check fails.
     schedule_id = str(uuid.uuid4())
-    add_pr_reminder(schedule_id, cron, target_channel, config.label(), bot.bot_id, config.to_dict())
-    keep = False
+    add_pr_reminder(schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict())
     try:
-        result = check_and_remind(bot, links, schedule_id=schedule_id)
-        keep = bool(result.waiting)
-    finally:
-        if not keep:
-            remove_schedule(schedule_id, bot_id=bot.bot_id)
-    if not keep:
-        return "Nothing is waiting for review right now, so I didn't schedule a reminder."
+        result = check_and_remind(bot, scan.links, mentions=request.mentions, schedule_id=schedule_id)
+    except Exception:
+        remove_schedule(schedule_id, bot_id=bot.bot_id)
+        raise
+    save_progress(schedule_id, config, result, datetime.now(UTC))
 
+    first = (
+        f"First reminders posted in {len(result.posted)} thread(s)."
+        if result.waiting
+        else "Nothing is waiting for review right now, so nothing was posted; I'll remind when a PR is."
+    )
     return (
-        f"PR reminder scheduled — id: `{schedule_id}`. First reminders posted in {len(result.posted)} thread(s). "
-        f"It repeats on `{cron}` (UTC) but only sends reminders {active_hours_text()}, stops by itself when no PR is "
-        f"waiting for review, and ends after {AgentConfigs.PR_REMINDER_LIFETIME_DAYS} days. "
-        f"Ask me to remove schedule `{schedule_id}` to stop it earlier."
+        f"PR reminder scheduled — id: `{schedule_id}`. {first} It repeats on `{request.cron}` (UTC) but only sends reminders "
+        f"{active_hours_text()}, stops by itself once it has reminded about PRs and none is waiting any more, and ends after "
+        f"{AgentConfigs.PR_REMINDER_LIFETIME_DAYS} days. Ask me to remove schedule `{schedule_id}` to stop it earlier."
     )
 
 

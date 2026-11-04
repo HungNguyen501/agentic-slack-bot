@@ -1,4 +1,5 @@
 """RQ worker tasks — resolved by dotted name (e.g. worker.tasks.reply_to_mention)."""
+import functools
 import logging
 import re
 import threading
@@ -16,7 +17,7 @@ from connectors.db.bots import get_by_id as get_bot
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
 
-# Strip all Slack user/bot mention tokens like <@U12345> wherever they appear
+# Any Slack mention token like <@U12345>; the fallback when the bot's own user id can't be looked up.
 _MENTION_RE = re.compile(r"<@[^>]+>\s*", re.UNICODE)
 
 _THINKING_INTERVAL_SECONDS = 1.0
@@ -30,6 +31,24 @@ _THINKING_INTERVAL_SECONDS = 1.0
 _animation_lock = threading.Lock()
 _last_animation_update = 0.0
 _MIN_GLOBAL_UPDATE_GAP_SECONDS = 1.0
+
+
+@functools.cache
+def _bot_user_id(bot_token: str) -> str:
+    return slack.get_bot_user_id(bot_token)
+
+
+def _strip_bot_mention(text: str, bot_token: str) -> str:
+    """Remove the bot's own @mention from a message, keeping other people's: a request can name who to remind.
+
+    If the bot's user id can't be looked up, every mention is stripped, as before, so the request still runs.
+    """
+    try:
+        bot_mention = re.compile(rf"<@{re.escape(_bot_user_id(bot_token))}(\|[^>]*)?>\s*")
+    except SlackApiError:
+        log.warning("Could not look up the bot's user id; stripping every mention from the request")
+        return _MENTION_RE.sub("", text).strip()
+    return bot_mention.sub("", text).strip()
 
 
 def _throttled_animation_update(channel: str, ts: str, text: str, token: str) -> None:
@@ -98,7 +117,7 @@ def reply_to_mention(
         The Slack message timestamp (ts) of the last posted reply chunk.
     """
     bot = get_bot(bot_id)
-    question = _MENTION_RE.sub("", text).strip()
+    question = _strip_bot_mention(text, bot.bot_token)
 
     review_command = review.parse_review_command(question)
     if review_command:

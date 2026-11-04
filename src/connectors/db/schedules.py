@@ -175,6 +175,12 @@ def set_schedule_status(id: str, status: str) -> None:
         cur.execute("UPDATE schedules SET status = %s WHERE id = %s AND status = 'active'", (status, id))
 
 
+def merge_schedule_config(id: str, patch: dict) -> None:
+    """Merge `patch` into a schedule's `config` (top-level keys are replaced, the rest kept)."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE schedules SET config = config || %s WHERE id = %s", (Jsonb(patch), id))
+
+
 def count_active_pr_reminders(bot_id: str, channel: str) -> int:
     """Count the active PR reminders a bot has watching one channel."""
     with connect() as conn, conn.cursor() as cur:

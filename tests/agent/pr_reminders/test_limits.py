@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from agent.pr_reminders.limits import ReminderRequestError, is_reminder_expired, is_within_active_hours, validate_reminder_cron
+from agent.pr_reminders.limits import ReminderRequestError, is_reminder_expired, is_within_active_hours, parse_mentions, validate_reminder_cron
 from common.configs import AgentConfigs
 
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
@@ -71,3 +71,40 @@ def test_is_within_active_hours_converts_from_any_timezone():
 def test_is_within_active_hours_rejects_a_naive_datetime():
     with pytest.raises(ValueError, match="timezone-aware"):
         is_within_active_hours(datetime(2026, 11, 4, 12, 0))
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [
+        (["<@U123ABC>"], ["U123ABC"]),
+        (["U123ABC"], ["U123ABC"]),
+        (["<@U123ABC|alice>"], ["U123ABC"]),
+        ([" <@W9XYZ> "], ["W9XYZ"]),
+        (["<@U1>", "U2", "<@U1>"], ["U1", "U2"]),
+        ([], []),
+    ],
+    ids=["mention", "bare-id", "mention-with-name", "enterprise-id-and-spaces", "duplicates-dropped-in-order", "none"],
+)
+def test_parse_mentions_returns_distinct_user_ids_in_order(values, expected):
+    assert parse_mentions(values) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["<!channel>", "<!here>", "<!everyone>", "<!subteam^S123|@team>", "@channel", "@alice", "alice", "<#C123|general>", "B123ABC", "<@u123>", "", 42, None],
+    ids=["channel", "here", "everyone", "user-group", "plain-channel", "plain-name", "name", "channel-link", "bot-id", "lowercase", "empty", "int", "none"],
+)
+def test_parse_mentions_rejects_anything_that_is_not_a_user(value):
+    with pytest.raises(ReminderRequestError, match="by @mention"):
+        parse_mentions([value])
+
+
+def test_parse_mentions_rejects_more_people_than_the_limit():
+    too_many = [f"U{n:03d}" for n in range(AgentConfigs.PR_REMINDER_MAX_MENTIONS + 1)]
+
+    with pytest.raises(ReminderRequestError, match="at most 10 people"):
+        parse_mentions(too_many)
+
+
+def test_parse_mentions_counts_distinct_people_against_the_limit():
+    assert len(parse_mentions(["U1"] * 50)) == 1

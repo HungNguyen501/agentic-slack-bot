@@ -62,3 +62,13 @@ def test_build_status_for_an_inaccessible_pr_keeps_only_the_link():
     assert status.bucket is Bucket.INACCESSIBLE
     assert status.title == "org/repo#1"
     assert status.created_at is None
+
+
+@pytest.mark.parametrize("reviews", [("APPROVED",), ("APPROVED", "APPROVED"), ()], ids=["one-approval", "two-approvals", "none-shown"])
+def test_classify_does_not_call_a_pr_approved_when_not_every_review_was_fetched(pr_node, reviews):
+    # GitHub reports more reviews than the first page held, so a hidden "changes requested" can't be ruled out.
+    assert classify(pr_node(decision=None, reviews=reviews, total_reviews=len(reviews) + 5)) is Bucket.WAITING
+
+
+def test_classify_trusts_the_fallback_when_every_review_was_fetched(pr_node):
+    assert classify(pr_node(decision=None, reviews=("APPROVED",), total_reviews=1)) is Bucket.APPROVED

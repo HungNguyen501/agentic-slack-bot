@@ -128,3 +128,13 @@ def test_count_active_pr_reminders_is_scoped_to_bot_and_channel():
     assert "kind = 'pr_reminder' AND status = 'active'" in sql
     assert params == ("bot-a", "C1")
     assert count == 3
+
+
+def test_merge_schedule_config_merges_top_level_keys_into_the_existing_config():
+    with fake_connect() as cur:
+        schedules.merge_schedule_config("s1", {"has_reminded": True})
+
+    sql, params = cur.execute.call_args.args
+    assert sql == "UPDATE schedules SET config = config || %s WHERE id = %s"
+    assert params[0].obj == {"has_reminded": True}
+    assert params[1] == "s1"

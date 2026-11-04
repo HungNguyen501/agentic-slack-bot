@@ -1,7 +1,7 @@
 """Render the Slack text PR reminders are posted with. Pure, no I/O.
 
-The only live mention these messages can contain is the `<!channel>` this module adds itself; everything that
-comes from GitHub is escaped first so a PR title can't smuggle in a mention or a link.
+The only live mentions these messages can contain are the user IDs the caller passes (already validated as user
+mentions); everything that comes from GitHub is escaped first so a PR title can't smuggle in a mention or a link.
 """
 from datetime import datetime
 
@@ -39,18 +39,18 @@ def _line(status: PrStatus, detail: str) -> str:
     return f"• <{status.link.ref.url}|{label}> — {detail}"
 
 
-def render_thread_message(waiting: list[PrStatus], on_author: list[PrStatus], *, now: datetime, schedule_id: str | None) -> str | None:
+def render_thread_message(waiting: list[PrStatus], on_author: list[PrStatus], *, mentions: list[str], now: datetime, schedule_id: str | None) -> str | None:
     """Render the reminder for one thread, or None when it has no PR to talk about.
 
-    Any PR in `waiting` adds the `@channel` ping; `on_author` PRs are listed without one. `schedule_id` is set for a
-    recurring reminder, so the message tells people how to stop it and when it runs.
+    The people in `mentions` are pinged only when a PR is in `waiting`; `on_author` PRs are listed without a ping.
+    `schedule_id` is set for a recurring reminder, so the message tells people how to stop it and when it runs.
     """
     if not waiting and not on_author:
         return None
 
     lines = []
     if waiting:
-        lines.append("<!channel> :eyes: Waiting for review")
+        lines.append(f"{' '.join(f'<@{user_id}>' for user_id in mentions)} :eyes: Waiting for review")
         lines.extend(_line(s, f"open {format_age(s.created_at, now)}") for s in waiting)
     if on_author:
         lines.append("Changes requested, waiting on the author:" if waiting else ":speech_balloon: Changes requested, waiting on the author")
@@ -60,10 +60,9 @@ def render_thread_message(waiting: list[PrStatus], on_author: list[PrStatus], *,
     return "\n".join(lines)
 
 
-def render_done_note(schedule_id: str, scope: str, lookback_hours: int | None, unreadable: int = 0) -> str:
+def render_done_note(schedule_id: str, scope: str, lookback_hours: int | None) -> str:
     where = "in this thread" if scope == "thread" else f"in the last {lookback_hours}h"
-    note = f":white_check_mark: No PRs are waiting for review {where} — stopping schedule `{schedule_id}`."
-    return f"{note} {unreadable} PR(s) could not be read from GitHub." if unreadable else note
+    return f":white_check_mark: No PRs are waiting for review {where} — stopping schedule `{schedule_id}`."
 
 
 def render_expired_note(schedule_id: str, lifetime_days: int) -> str:

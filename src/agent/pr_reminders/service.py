@@ -14,7 +14,7 @@ from agent.pr_reminders.status import Bucket, PrStatus, build_status
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import github, slack
 from connectors.db.bots import BotConfig
-from connectors.db.schedules import get_schedule, set_schedule_status
+from connectors.db.schedules import get_schedule, merge_schedule_config, set_schedule_status
 
 log = logging.getLogger("agent.pr_reminders")
 
@@ -41,6 +41,13 @@ class ChannelReadError(Exception):
         self.code = code
 
 
+class ScanResult(NamedTuple):
+    """PR links found in Slack, and whether the scan stopped before reading the whole requested window."""
+
+    links: list[PrLink]
+    truncated: bool
+
+
 @dataclass
 class CheckResult:
     """Outcome of a check. `truncated` PRs were never checked and `deferred_threads` had waiting PRs but no message this run."""
@@ -58,6 +65,10 @@ class CheckResult:
     def waiting(self) -> int:
         return self.count(Bucket.WAITING)
 
+    @property
+    def unreadable(self) -> int:
+        return self.count(Bucket.INACCESSIBLE)
+
 
 def collect_links(
     bot: BotConfig,
@@ -67,19 +78,21 @@ def collect_links(
     thread_ts: str,
     lookback_hours: int | None,
     typed_urls: list[str] | None = None,
-) -> list[PrLink]:
-    """Read Slack and return the PRs linked in the thread `thread_ts` (scope "thread") or in the channel's recent messages (scope "channel").
+) -> ScanResult:
+    """Read Slack and find the PRs linked in the thread `thread_ts` (scope "thread") or in the channel's recent top-level messages (scope "channel").
 
     `typed_urls` are PR links typed in the request itself; they live in `thread_ts` and win over the same PR found in a message.
+    The result is `truncated` when the channel had more messages in the window than AgentConfigs.PR_REMINDER_MAX_MESSAGES_SCANNED.
 
     Raises:
         ChannelReadError: the bot can't read the channel.
     """
+    truncated = False
     try:
         if scope == "thread":
             messages = slack.conversations_replies(channel, thread_ts, token=bot.bot_token)
         else:
-            messages = slack.conversations_history(
+            messages, truncated = slack.conversations_history(
                 channel, time.time() - lookback_hours * 3600, token=bot.bot_token, max_messages=AgentConfigs.PR_REMINDER_MAX_MESSAGES_SCANNED
             )
     except SlackApiError as exc:
@@ -89,7 +102,7 @@ def collect_links(
         raise
 
     scanned = links_from_messages(messages, channel, own_app_id=bot.app_id)
-    return merge_links(scanned, links_from_urls(typed_urls or [], channel, thread_ts))
+    return ScanResult(merge_links(scanned, links_from_urls(typed_urls or [], channel, thread_ts)), truncated)
 
 
 def fetch_statuses(links: list[PrLink]) -> list[PrStatus]:
@@ -116,7 +129,7 @@ def _post(bot: BotConfig, channel: str, thread_ts: str, text: str) -> bool:
                 log.exception("Could not post a PR reminder to %s (thread %s)", channel, thread_ts)
                 return False
             except (SlackClientError, OSError):
-                # A timeout or dropped connection. Raising would make RQ retry the job and repeat @channel in the
+                # A timeout or dropped connection. Raising would make RQ retry the job and repeat the mentions in the
                 # threads already posted to, so count it as a failed post; the next tick covers this thread.
                 log.exception("Could not reach Slack to post a PR reminder to %s (thread %s)", channel, thread_ts)
                 return False
@@ -130,10 +143,16 @@ class _ThreadReminder(NamedTuple):
     on_author: list[PrStatus]
 
 
-def _threads_to_remind(statuses: list[PrStatus], include_author_only_threads: bool) -> list[_ThreadReminder]:
-    """Group PRs by thread and keep the threads worth a message.
+def thread_key(channel: str, thread_ts: str) -> str:
+    """The key a thread has in `ReminderConfig.last_reminded`."""
+    return f"{channel}:{thread_ts}"
 
-    Most overdue first: threads with a PR waiting for review before author-only ones, and within each the thread
+
+def _threads_to_remind(statuses: list[PrStatus], include_author_only_threads: bool, last_reminded: dict[str, float]) -> list[_ThreadReminder]:
+    """Group PRs by thread and keep the threads worth a message, in the order to remind them.
+
+    Threads with a PR waiting for review come before author-only ones. Within each, the thread reminded longest ago
+    (or never) goes first, so that when more threads wait than fit in one run they take turns; ties go to the thread
     whose oldest PR has been open longest.
     """
     by_thread: dict[tuple[str, str], list[PrStatus]] = {}
@@ -146,26 +165,32 @@ def _threads_to_remind(statuses: list[PrStatus], include_author_only_threads: bo
         on_author = [s for s in group if s.bucket is Bucket.WAITING_ON_AUTHOR]
         if waiting or (include_author_only_threads and on_author):
             threads.append(_ThreadReminder(channel, thread_ts, waiting, on_author))
-    return sorted(threads, key=lambda thread: (not thread.waiting, min(s.created_at for s in thread.waiting or thread.on_author)))
+    return sorted(
+        threads,
+        key=lambda t: (not t.waiting, last_reminded.get(thread_key(t.channel, t.thread_ts), 0.0), min(s.created_at for s in t.waiting or t.on_author)),
+    )
 
 
 def check_and_remind(
     bot: BotConfig,
     links: list[PrLink],
     *,
+    mentions: list[str],
     schedule_id: str | None = None,
     include_author_only_threads: bool = False,
+    last_reminded: dict[str, float] | None = None,
     now: datetime | None = None,
 ) -> CheckResult:
     """Check the PRs on GitHub and post one reminder in each thread that has a PR waiting for review.
 
     Only the PR_REMINDER_MAX_PRS_CHECKED most recently mentioned PRs are checked (the rest are counted in
-    `truncated`, so a caller can't conclude "nothing is waiting"), and only the PR_REMINDER_MAX_THREADS_POSTED most
-    overdue threads get a message (the rest are `deferred_threads`).
+    `truncated`, so a caller can't conclude "nothing is waiting"), and only PR_REMINDER_MAX_THREADS_POSTED threads get
+    a message per call (the rest are `deferred_threads`).
 
-    `schedule_id` is set for a recurring reminder, so the message says how to stop it. `include_author_only_threads`
-    also posts, without a ping, in threads whose only news is "changes requested": a one-off check wants that, a
-    recurring one would repeat it every run.
+    `mentions` are the Slack user IDs to ping. `schedule_id` is set for a recurring reminder, so the message says how
+    to stop it. `include_author_only_threads` also posts, without a ping, in threads whose only news is "changes
+    requested": a one-off check wants that, a recurring one would repeat it every run. `last_reminded` (see
+    ReminderConfig) decides which threads go first when there are more than fit in one run.
 
     Raises:
         httpx.HTTPError, queries.GithubQueryError: GitHub couldn't be queried. Nothing is posted in that case.
@@ -174,13 +199,13 @@ def check_and_remind(
     statuses = fetch_statuses(links)
     now = now or datetime.now(UTC)
 
-    threads = _threads_to_remind(statuses, include_author_only_threads)
+    threads = _threads_to_remind(statuses, include_author_only_threads, last_reminded or {})
     cap = AgentConfigs.PR_REMINDER_MAX_THREADS_POSTED
     result = CheckResult(statuses, truncated, deferred_threads=max(0, len(threads) - cap))
     for thread in threads[:cap]:
         if result.posted or result.failed_posts:
             time.sleep(_POST_GAP_SECONDS)
-        text = message.render_thread_message(thread.waiting, thread.on_author, now=now, schedule_id=schedule_id)
+        text = message.render_thread_message(thread.waiting, thread.on_author, mentions=mentions, now=now, schedule_id=schedule_id)
         if _post(bot, thread.channel, thread.thread_ts, text):
             result.posted.append((thread.channel, thread.thread_ts))
         else:
@@ -194,28 +219,43 @@ def _end_reminder(bot: BotConfig, schedule_id: str, config: ReminderConfig, stat
     _post(bot, config.origin_channel, config.origin_thread_ts, note)
 
 
-def _nothing_left_to_remind(schedule_id: str, result: CheckResult) -> bool:
-    """Whether this run proves no PR is waiting, so the reminder can end.
+def _nothing_left_to_remind(schedule_id: str, result: CheckResult, scan_truncated: bool) -> bool:
+    """Whether this run proves no PR is waiting.
 
-    Not seeing a waiting PR proves nothing if PRs were left unchecked (the cap) or none could be read from GitHub.
+    Not seeing a waiting PR proves nothing if the Slack scan stopped early, PRs were left unchecked (the cap), or any
+    PR could not be read from GitHub.
     """
     if result.waiting:
         return False
-    if result.truncated:
-        log.warning("PR reminder %s: %d PR(s) were left unchecked, so it stays active", schedule_id, result.truncated)
-        return False
-    if result.statuses and result.count(Bucket.INACCESSIBLE) == len(result.statuses):
-        log.warning("PR reminder %s: none of its %d PR(s) could be read from GitHub, so it stays active", schedule_id, len(result.statuses))
+    if scan_truncated or result.truncated or result.unreadable:
+        log.warning(
+            "PR reminder %s: inconclusive (scan truncated: %s, %d PR(s) unchecked, %d unreadable), so it stays active",
+            schedule_id,
+            scan_truncated,
+            result.truncated,
+            result.unreadable,
+        )
         return False
     return True
+
+
+def save_progress(schedule_id: str, config: ReminderConfig, result: CheckResult, now: datetime) -> None:
+    """Persist that the reminder has reminded and when each thread last was, writing only when something changed."""
+    waiting_threads = {thread_key(s.link.channel, s.link.thread_ts) for s in result.statuses if s.bucket is Bucket.WAITING}
+    last_reminded = {key: at for key, at in config.last_reminded.items() if key in waiting_threads}
+    last_reminded |= {thread_key(channel, thread_ts): now.timestamp() for channel, thread_ts in result.posted}
+    has_reminded = config.has_reminded or bool(result.waiting)
+    if has_reminded != config.has_reminded or last_reminded != config.last_reminded:
+        merge_schedule_config(schedule_id, {"has_reminded": has_reminded, "last_reminded": last_reminded})
 
 
 def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) -> None:
     """Run one tick of a recurring PR reminder: remind in the threads of PRs waiting for review, or end the reminder.
 
     A tick outside the active hours does nothing at all (no reads, no posts, reminder not ended), so it resumes in the
-    morning. The reminder ends (soft delete) when `_nothing_left_to_remind`, when it has outlived its lifetime, when its
-    config is malformed, or when the bot can no longer read the channel. A transient GitHub or Slack read failure
+    morning. The reminder ends (soft delete) when it has reminded before and `_nothing_left_to_remind`, when it has
+    outlived its lifetime, when its config is malformed, or when the bot can no longer read the channel. One that has
+    never had a PR waiting keeps watching, since a PR can be shared later. A transient GitHub or Slack read failure
     propagates, so RQ retries the job and the reminder stays active.
     """
     now = now or datetime.now(UTC)
@@ -240,7 +280,7 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
         return
 
     try:
-        links = collect_links(
+        scan = collect_links(
             bot, scope=config.scope, channel=schedule.channel, thread_ts=config.origin_thread_ts, lookback_hours=config.lookback_hours
         )
     except ChannelReadError as exc:
@@ -248,8 +288,10 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
         _end_reminder(bot, schedule_id, config, "completed", message.render_unreadable_note(schedule_id, exc.code))
         return
 
-    result = check_and_remind(bot, links, schedule_id=schedule_id, now=now)
+    result = check_and_remind(
+        bot, scan.links, mentions=list(config.mentions), schedule_id=schedule_id, last_reminded=config.last_reminded, now=now
+    )
     log.info("PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s)", schedule_id, len(result.statuses), result.waiting, len(result.posted))
-    if _nothing_left_to_remind(schedule_id, result):
-        note = message.render_done_note(schedule_id, config.scope, config.lookback_hours, result.count(Bucket.INACCESSIBLE))
-        _end_reminder(bot, schedule_id, config, "completed", note)
+    save_progress(schedule_id, config, result, now)
+    if config.has_reminded and _nothing_left_to_remind(schedule_id, result, scan.truncated):
+        _end_reminder(bot, schedule_id, config, "completed", message.render_done_note(schedule_id, config.scope, config.lookback_hours))
