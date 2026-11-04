@@ -268,6 +268,44 @@ def test_a_recurring_reminder_takes_turns_when_more_threads_wait_than_fit_in_one
     assert sorted(second_tick_threads) == ["1.0", "3.0"]
 
 
+@pytest.mark.parametrize(
+    "seconds_ago, posts",
+    [(10, 0), (5 * 60, 0), (14 * 60 + 59, 0), (15 * 60, 1), (30 * 60, 1), (6 * 3600, 1)],
+    ids=["10s", "5m", "just-under-half-the-interval", "exactly-half-the-interval", "a-full-interval", "hours"],
+)
+def test_check_and_remind_skips_a_thread_that_was_reminded_less_than_half_the_minimum_interval_ago(bot, slack, github, pr_node, seconds_ago, posts):
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+    last_reminded = {"C1:1.0": NOW.timestamp() - seconds_ago}
+
+    result = service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, last_reminded=last_reminded, now=NOW)
+
+    assert slack.post_message.call_count == posts
+    assert result.waiting == 1  # skipped threads still count as waiting: the reminder must not end because of this
+
+
+def test_check_and_remind_does_not_count_a_recently_reminded_thread_as_deferred(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+
+    result = service.check_and_remind(
+        bot, [link(PR1, "1.0")], mentions=MENTIONS, last_reminded={"C1:1.0": NOW.timestamp() - 60}, now=NOW
+    )
+
+    assert result.deferred_threads == 0
+    assert result.posted == []
+
+
+def test_a_tick_right_after_the_first_check_does_not_repeat_the_reminder_and_does_not_end_the_reminder(bot, db, collect, slack, github, pr_node, merge_config):
+    # The scheduler can fire a brand-new reminder seconds after the first check posted and saved its time.
+    get, set_status = db
+    get.return_value = schedule(config=CONFIG | {"last_reminded": {"C1:1.0": IN_HOURS.timestamp() - 20}})
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+
+    service.run_reminder(bot, "s1", IN_HOURS)
+
+    slack.post_message.assert_not_called()
+    set_status.assert_not_called()
+
+
 def test_check_and_remind_puts_threads_waiting_for_review_before_author_only_threads(bot, slack, github, pr_node):
     github.graphql.return_value = graphql_payload(
         (1, pr_node(decision="CHANGES_REQUESTED", created_at="2026-10-01T10:00:00Z")),  # much older, but only waits on the author

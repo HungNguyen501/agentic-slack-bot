@@ -9,6 +9,7 @@ from agent.pr_reminders.service import ChannelReadError, CheckResult, ScanResult
 from agent.pr_reminders.status import Bucket, PrStatus
 
 LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
+A, B = "U01ABCDEF", "U02GHIJKL"  # realistic Slack user IDs: at least 9 characters
 
 
 def result(*buckets, posted=(), truncated=0, failed_posts=0):
@@ -59,8 +60,8 @@ def within_hours():
 
 
 def run(name, args, bot, user_id="U1", channel="C1", thread_ts="1.0"):
-    """Call a tool as a user who mentioned two people (<@U1> and a bare U2); tests override `mentions` to change that."""
-    return tools.dispatch_pr_reminder_tool(name, {"mentions": ["<@U1>", "U2"]} | args, user_id, channel, thread_ts, bot)
+    """Call a tool as a user who mentioned two people (an @mention and a bare ID); tests override `mentions` to change that."""
+    return tools.dispatch_pr_reminder_tool(name, {"mentions": [f"<@{A}>", B]} | args, user_id, channel, thread_ts, bot)
 
 
 # --- who to remind --------------------------------------------------------------------------------
@@ -81,7 +82,7 @@ def test_the_agent_is_told_to_ask_for_people_when_nobody_is_mentioned(bot, colle
 @pytest.mark.parametrize("name", ["check_pr_approvals", "schedule_pr_reminder"])
 @pytest.mark.parametrize("mention", ["<!channel>", "<!here>", "<!subteam^S1|@team>", "@alice", "alice"])
 def test_a_mention_that_is_not_a_person_is_rejected_before_any_io(bot, collect, check, db, name, mention):
-    args = {"scope": "channel", "cron": "*/30 * * * *", "mentions": ["<@U1>", mention]}
+    args = {"scope": "channel", "cron": "*/30 * * * *", "mentions": [f"<@{A}>", mention]}
 
     reply = run(name, args, bot)
 
@@ -91,18 +92,33 @@ def test_a_mention_that_is_not_a_person_is_rejected_before_any_io(bot, collect, 
 
 
 def test_check_pr_approvals_reminds_the_mentioned_people_as_distinct_user_ids(bot, collect, check, slack):
-    run("check_pr_approvals", {"scope": "channel", "mentions": ["<@U1>", "U2", "<@U1|alice>"]}, bot)
+    run("check_pr_approvals", {"scope": "channel", "mentions": [f"<@{A}>", B, f"<@{A}|alice>"]}, bot)
 
-    assert check.call_args.kwargs["mentions"] == ["U1", "U2"]
+    assert check.call_args.kwargs["mentions"] == [A, B]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [f"<@{A}> <@{B}>", f"<@{A}>, <@{B}>", f"{A},{B}", f"  {A}   {B}  "],
+    ids=["mentions-space-separated", "mentions-comma-separated", "bare-ids-comma", "extra-spaces"],
+)
+def test_mentions_sent_as_one_string_instead_of_a_list_are_still_understood(bot, collect, check, slack, raw):
+    run("check_pr_approvals", {"scope": "channel", "mentions": raw}, bot)
+
+    assert check.call_args.kwargs["mentions"] == [A, B]
+
+
+def test_a_blank_string_of_mentions_counts_as_nobody(bot, collect, check):
+    assert run("check_pr_approvals", {"scope": "channel", "mentions": "  "}, bot).startswith("Who should I remind?")
 
 
 def test_schedule_pr_reminder_stores_and_posts_with_the_mentioned_people(bot, collect, check, db):
     add, _ = db
 
-    run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "mentions": ["<@U5>", "<@U6>"]}, bot)
+    run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "mentions": ["<@U05MNOPQR>", "<@U06STUVWX>"]}, bot)
 
-    assert check.call_args.kwargs["mentions"] == ["U5", "U6"]
-    assert add.call_args.args[5]["mentions"] == ["U5", "U6"]
+    assert check.call_args.kwargs["mentions"] == ["U05MNOPQR", "U06STUVWX"]
+    assert add.call_args.args[5]["mentions"] == ["U05MNOPQR", "U06STUVWX"]
 
 
 # --- check_pr_approvals ----------------------------------------------------------------------------
@@ -268,7 +284,7 @@ def test_schedule_pr_reminder_stores_the_reminder_under_the_id_shown_in_the_firs
             "scope": "channel",
             "origin_channel": "C1",
             "origin_thread_ts": "4.0",
-            "mentions": ["U1", "U2"],
+            "mentions": [A, B],
             "lookback_hours": 48,
             "created_by": "U7",
             "has_reminded": False,
@@ -346,7 +362,8 @@ def test_schedule_pr_reminder_created_at_night_keeps_the_schedule_but_posts_and_
     collect.assert_not_called()
     check.assert_not_called()
     save.assert_not_called()
-    assert "outside the hours reminders are sent, so the first check waits for the first tick inside them (07:00–22:00 Vietnam time (UTC+7))." in reply
+    assert "It's outside the hours reminders are sent, so the first check waits for the first tick inside them." in reply
+    assert "(07:00–22:00 Vietnam time (UTC+7))" not in reply  # the hours are given once, in the closing sentence
     assert f"id: `{add.call_args.args[0]}`" in reply
 
 
@@ -398,6 +415,27 @@ def test_schedule_pr_reminder_removes_the_row_when_the_channel_cannot_be_read(bo
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
 
     assert "not a member of that channel" in reply
+    remove.assert_called_once_with(add.call_args.args[0], bot_id="bot-a")
+
+
+def test_schedule_pr_reminder_keeps_the_schedule_when_only_saving_progress_fails_after_posting(bot, collect, check, db, save):
+    add, remove = db
+    check.return_value = result(Bucket.WAITING, posted=[("C1", "1.0"), ("C1", "2.0")])
+    save.side_effect = RuntimeError("database down")
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
+    remove.assert_not_called()  # reminders naming this schedule are already out
+    assert f"id: `{add.call_args.args[0]}`" in reply
+    assert "First reminders posted in 2 thread(s), but I couldn't save their progress, so the next run may remind those threads again." in reply
+
+
+def test_schedule_pr_reminder_still_removes_the_row_when_github_fails_before_anything_is_posted(bot, collect, check, db):
+    add, remove = db
+    check.side_effect = RuntimeError("github down")
+
+    run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
     remove.assert_called_once_with(add.call_args.args[0], bot_id="bot-a")
 
 

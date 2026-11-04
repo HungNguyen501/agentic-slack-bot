@@ -12,9 +12,10 @@ _REMINDER_TZ = timezone(timedelta(hours=AgentConfigs.PR_REMINDER_UTC_OFFSET_HOUR
 
 _DAY_HORIZON = 800
 
-# A user mention as Slack writes it (<@U123> or <@U123|name>) or a bare user ID. Channel, here and user-group
-# mentions don't match, so a request can't be used to broadcast.
-_USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>|([UW][A-Z0-9]+)")
+# A user mention as Slack writes it (<@U123ABCDE> or <@U123ABCDE|name>) or a bare user ID. Channel, here and user-group
+# mentions don't match, so a request can't be used to broadcast. Real IDs are at least 9 characters; requiring that keeps
+# a word like UNKNOWN or WHO, which an LLM might pass, from becoming a mention that pings nobody.
+_USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]{8,})(?:\|[^>]*)?>|([UW][A-Z0-9]{8,})")
 
 
 class ReminderRequestError(ValueError):

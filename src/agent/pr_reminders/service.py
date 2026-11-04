@@ -32,6 +32,10 @@ _POST_GAP_SECONDS = 1.0
 # A 429's Retry-After can be long; waiting it all out would hold the worker and run into the job timeout.
 _MAX_RETRY_AFTER_SECONDS = 30.0
 
+# A thread reminded less than this long ago is skipped. The scheduler can fire a freshly created reminder seconds after
+# its first check, while a normal tick is a whole interval after the last one; half the interval allows for jitter.
+_RECENTLY_REMINDED_SECONDS = AgentConfigs.PR_REMINDER_MIN_INTERVAL_MINUTES * 60 / 2
+
 
 class ChannelReadError(Exception):
     """The bot can't read the channel it was asked to scan (not a member, missing history scope, …)."""
@@ -148,12 +152,14 @@ def thread_key(channel: str, thread_ts: str) -> str:
     return f"{channel}:{thread_ts}"
 
 
-def _threads_to_remind(statuses: list[PrStatus], include_author_only_threads: bool, last_reminded: dict[str, float]) -> list[_ThreadReminder]:
+def _threads_to_remind(
+    statuses: list[PrStatus], include_author_only_threads: bool, last_reminded: dict[str, float], now: datetime
+) -> list[_ThreadReminder]:
     """Group PRs by thread and keep the threads worth a message, in the order to remind them.
 
-    Threads with a PR waiting for review come before author-only ones. Within each, the thread reminded longest ago
-    (or never) goes first, so that when more threads wait than fit in one run they take turns; ties go to the thread
-    whose oldest PR has been open longest.
+    Threads reminded within _RECENTLY_REMINDED_SECONDS are left out. Threads with a PR waiting for review come before
+    author-only ones. Within each, the thread reminded longest ago (or never) goes first, so that when more threads
+    wait than fit in one run they take turns; ties go to the thread whose oldest PR has been open longest.
     """
     by_thread: dict[tuple[str, str], list[PrStatus]] = {}
     for status in statuses:
@@ -163,7 +169,8 @@ def _threads_to_remind(statuses: list[PrStatus], include_author_only_threads: bo
     for (channel, thread_ts), group in by_thread.items():
         waiting = [s for s in group if s.bucket is Bucket.WAITING]
         on_author = [s for s in group if s.bucket is Bucket.WAITING_ON_AUTHOR]
-        if waiting or (include_author_only_threads and on_author):
+        recently = now.timestamp() - last_reminded.get(thread_key(channel, thread_ts), 0.0) < _RECENTLY_REMINDED_SECONDS
+        if (waiting or (include_author_only_threads and on_author)) and not recently:
             threads.append(_ThreadReminder(channel, thread_ts, waiting, on_author))
     return sorted(
         threads,
@@ -190,7 +197,8 @@ def check_and_remind(
     `mentions` are the Slack user IDs to ping. `schedule_id` is set for a recurring reminder, so the message says how
     to stop it. `include_author_only_threads` also posts, without a ping, in threads whose only news is "changes
     requested": a one-off check wants that, a recurring one would repeat it every run. `last_reminded` (see
-    ReminderConfig) decides which threads go first when there are more than fit in one run.
+    ReminderConfig) decides which threads go first when there are more than fit in one run, and keeps a thread that was
+    reminded moments ago from being reminded again.
 
     Raises:
         httpx.HTTPError, queries.GithubQueryError: GitHub couldn't be queried. Nothing is posted in that case.
@@ -199,7 +207,7 @@ def check_and_remind(
     statuses = fetch_statuses(links)
     now = now or datetime.now(UTC)
 
-    threads = _threads_to_remind(statuses, include_author_only_threads, last_reminded or {})
+    threads = _threads_to_remind(statuses, include_author_only_threads, last_reminded or {}, now)
     cap = AgentConfigs.PR_REMINDER_MAX_THREADS_POSTED
     result = CheckResult(statuses, truncated, deferred_threads=max(0, len(threads) - cap))
     for thread in threads[:cap]:

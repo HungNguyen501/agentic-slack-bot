@@ -32,7 +32,9 @@ def _parse_scope(args: dict) -> str:
 
 
 def _parse_mentions(args: dict) -> list[str]:
-    mentions = parse_mentions(args.get("mentions") or [])
+    raw = args.get("mentions") or []
+    # A model sometimes sends "<@U1> <@U2>" as one string instead of a list.
+    mentions = parse_mentions([part for part in re.split(r"[\s,]+", raw) if part] if isinstance(raw, str) else raw)
     if not mentions:
         raise ReminderRequestError(
             "Who should I remind? Ask the user to mention the people to remind (for example @alice @bob); I ping them in each PR thread."
@@ -137,14 +139,25 @@ def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConf
 
     Outside the active hours nothing is read or posted: the first tick inside the window does it, so scheduling at
     night doesn't ping anyone.
+
+    Raises only before anything is posted (Slack can't be read, GitHub can't be queried): `check_and_remind` handles
+    its own post failures. A failure to save progress afterwards is reported in the text instead, because by then
+    reminders may be out and the schedule they name must stay.
     """
     now = datetime.now(UTC)
     if not is_within_active_hours(now):
-        return f"It's outside the hours reminders are sent, so the first check waits for the first tick inside them ({active_hours_text()})."
+        return "It's outside the hours reminders are sent, so the first check waits for the first tick inside them."
 
     scan = collect_links(bot, scope=request.scope, channel=request.channel, thread_ts=thread_ts, lookback_hours=request.lookback_hours)
     result = check_and_remind(bot, scan.links, mentions=request.mentions, schedule_id=schedule_id)
-    save_progress(schedule_id, config, result, now)
+    try:
+        save_progress(schedule_id, config, result, now)
+    except Exception:
+        log.exception("Could not save the progress of PR reminder %s after its first check", schedule_id)
+        return (
+            f"First reminders posted in {len(result.posted)} thread(s), but I couldn't save their progress, "
+            "so the next run may remind those threads again."
+        )
     if result.waiting:
         return f"First reminders posted in {len(result.posted)} thread(s)."
     notes = _incomplete_notes(result, scan.truncated)

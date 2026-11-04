@@ -72,3 +72,14 @@ def test_classify_does_not_call_a_pr_approved_when_not_every_review_was_fetched(
 
 def test_classify_trusts_the_fallback_when_every_review_was_fetched(pr_node):
     assert classify(pr_node(decision=None, reviews=("APPROVED",), total_reviews=1)) is Bucket.APPROVED
+
+
+def test_classify_reports_changes_requested_even_when_not_every_review_was_fetched(pr_node):
+    # The visible changes-requested review decides it: the PR waits on the author, not on reviewers, however many more exist.
+    pr = pr_node(decision=None, reviews=("APPROVED", "CHANGES_REQUESTED"), total_reviews=30)
+
+    assert classify(pr) is Bucket.WAITING_ON_AUTHOR
+
+
+def test_classify_reports_changes_requested_when_it_is_the_only_visible_review_of_many(pr_node):
+    assert classify(pr_node(decision=None, reviews=("CHANGES_REQUESTED",), total_reviews=21)) is Bucket.WAITING_ON_AUTHOR
