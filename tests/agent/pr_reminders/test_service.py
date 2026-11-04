@@ -123,9 +123,9 @@ def test_check_and_remind_posts_one_message_per_thread_with_a_waiting_pr(bot, sl
 
     slack.post_message.assert_called_once_with(
         "C1",
-        "<@U1> <@U2> :eyes: Waiting for review\n"
-        "• <https://github.com/org/repo/pull/1|org/repo#1 Fix it> — open 3d\n"
-        "• <https://github.com/org/repo/pull/2|org/repo#2 Two> — open 3d",
+        "<@U1> <@U2> :eyes: Ủa alo, 2 cái PR này đang chờ review nè bà con ơi! :pepe-pray:\n"
+        "• <https://github.com/org/repo/pull/1|org/repo#1 Fix it> — chờ 3 ngày :cricket: dế gáy rồi nha\n"
+        "• <https://github.com/org/repo/pull/2|org/repo#2 Two> — chờ 3 ngày :cricket: dế gáy rồi nha",
         "1.0",
         token="xoxb-test",
     )
@@ -382,7 +382,7 @@ def test_check_and_remind_shows_the_schedule_id_in_the_message(bot, slack, githu
 
     service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, schedule_id="3f2a", now=NOW)
 
-    assert "Schedule `3f2a`" in slack.post_message.call_args.args[1]
+    assert "Lịch nhắc `3f2a`" in slack.post_message.call_args.args[1]
 
 
 # --- run_reminder ----------------------------------------------------------------------------------
@@ -468,7 +468,7 @@ def test_run_reminder_expires_an_old_reminder_and_says_so_in_the_origin_thread(b
 
     set_status.assert_called_once_with("s1", "expired")
     assert slack.post_message.call_args.args[:3] == ("C9", slack.post_message.call_args.args[1], "9.0")
-    assert "7 days" in slack.post_message.call_args.args[1]
+    assert "7 ngày" in slack.post_message.call_args.args[1]
     collect.assert_not_called()
 
 
@@ -491,7 +491,7 @@ def test_run_reminder_reminds_and_keeps_going_while_a_pr_is_waiting(bot, db, col
     service.run_reminder(bot, "s1", IN_HOURS)
 
     assert slack.post_message.call_args.args[2] == "1.0"
-    assert slack.post_message.call_args.args[1].startswith("<@U1> <@U2> :eyes: Waiting for review")
+    assert slack.post_message.call_args.args[1].startswith("<@U1> <@U2> ")
     set_status.assert_not_called()
 
 
@@ -516,7 +516,7 @@ def test_run_reminder_stops_itself_when_nothing_is_waiting(bot, db, collect, sla
     [call] = slack.post_message.call_args_list
     assert call.args[0] == "C9"
     assert call.args[2] == "9.0"
-    assert "No PRs are waiting for review" in call.args[1]
+    assert "Không còn PR nào chờ review" in call.args[1]
 
 
 def test_run_reminder_stays_active_when_some_prs_were_left_unchecked(bot, db, collect, slack, github, pr_node):

@@ -14,7 +14,7 @@ from agent.pr_reminders.status import Bucket
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import slack
 from connectors.db.bots import BotConfig
-from connectors.db.schedules import add_pr_reminder, remove_schedule
+from connectors.db.schedules import Schedule, add_pr_reminder, remove_schedule
 
 log = logging.getLogger("agent.pr_reminders.tools")
 
@@ -166,6 +166,18 @@ def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConf
     return "Nothing is waiting for review right now, so nothing was posted; I'll remind when a PR is."
 
 
+def _already_scheduled(existing: Schedule, request: _ScheduleRequest) -> str:
+    """Reply to a request for a reminder that already exists: nothing is created, posted or checked, so repeating a
+    request can't double the pings."""
+    reply = (
+        f"That PR reminder already exists (same channel, scope and people) — id: `{existing.id}`, repeating on `{existing.cron}` (UTC). "
+        "I didn't create another."
+    )
+    if existing.cron != request.cron:
+        reply += f" You asked for `{request.cron}`; to change it, ask me to remove schedule `{existing.id}` and set it up again."
+    return reply
+
+
 def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
     request = _parse_schedule_request(args, channel)
     config = ReminderConfig(request.scope, channel, thread_ts, tuple(request.mentions), request.lookback_hours, user_id)
@@ -174,8 +186,11 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
     # first check posts, so the schedule id in those messages is real, and comes out again if that check fails.
     schedule_id = str(uuid.uuid4())
     quota = AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL
-    if add_pr_reminder(schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict(), max_active=quota) is None:
+    added = add_pr_reminder(schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict(), max_active=quota)
+    if added is None:
         raise ReminderRequestError(f"This channel already has {quota} active PR reminders. Remove one first.")
+    if not added.created:
+        return _already_scheduled(added.schedule, request)
     try:
         first = _first_check(bot, request, config, schedule_id, thread_ts)
     except Exception:

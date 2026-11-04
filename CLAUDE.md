@@ -189,13 +189,13 @@ src/
       pr_links.py                  # PR links in Slack messages + the thread each lives in (pure)
       queries.py                   # GitHub GraphQL query + response parser (pure)
       status.py                    # reviewDecision -> waiting / approved / ... bucket (pure)
-      message.py                   # Reminder text; the only live mentions are the validated user IDs it is given (pure)
+      message.py                   # Picks and fills in the reminder templates; the only live mentions are the validated user IDs it is given (pure)
       limits.py                    # Cron minimum interval, lifetime, 07:00-22:00 Vietnam-time window for scheduled ticks, mention parsing, ReminderRequestError (pure)
       service.py                   # Collect links, check GitHub, post reminders, run one reminder tick
       tools.py                     # check_pr_approvals / schedule_pr_reminder handlers
   scheduler/app.py           # Cron polling loop
   common/
-    configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas) + ReminderConfig (the `schedules.config` of a PR reminder)
+    configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas) + ReminderConfig (the `schedules.config` of a PR reminder) + ReminderMessages (the Vietnamese wording of PR reminder messages)
     crypto.py                # Fernet encrypt/decrypt for secrets cached at rest (service_principal_secrets)
   connectors/                # Generic clients for external tools — no task-specific logic
     db/                      # Supabase (Postgres) access — sync, psycopg

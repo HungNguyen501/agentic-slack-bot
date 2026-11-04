@@ -1,6 +1,6 @@
 """Supabase schedules table — schedule CRUD."""
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from psycopg.types.json import Jsonb
 
@@ -155,11 +155,32 @@ def remove_schedule(id: str, *, bot_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, config: dict, *, max_active: int) -> Schedule | None:
-    """Insert a PR review reminder row and return it, or None if the bot already has `max_active` active ones in `channel`.
+class AddedReminder(NamedTuple):
+    """The reminder `add_pr_reminder` returns: the new row, or the equivalent one that already existed (`created` False)."""
 
-    The count and the insert share one transaction under an advisory lock keyed on (bot, channel), so two concurrent
-    requests (the worker runs several replicas) can't both pass the quota.
+    schedule: Schedule
+    created: bool
+
+
+def _same_reminder(existing: dict, new: dict) -> bool:
+    """Whether two reminder configs on the same channel are the same job: same scope and the same people, and for a
+    thread-scope reminder the same thread. The cron and lookback are not part of the identity."""
+    return (
+        existing.get("scope") == new["scope"]
+        and sorted(existing.get("mentions") or []) == sorted(new["mentions"])
+        and (new["scope"] != "thread" or existing.get("origin_thread_ts") == new["origin_thread_ts"])
+    )
+
+
+def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, config: dict, *, max_active: int) -> AddedReminder | None:
+    """Insert a PR review reminder row, unless it already exists or the quota is used.
+
+    Returns the new row; or, if the bot already has an active reminder on `channel` that is the same job (see
+    `_same_reminder`), that existing row with `created` False and nothing inserted, so repeating a request doesn't
+    double the pings; or None if the bot already has `max_active` other active ones on `channel`.
+
+    The lookup and the insert share one transaction under an advisory lock keyed on (bot, channel), so two concurrent
+    requests (the worker runs several replicas) can't both create the reminder or both pass the quota.
 
     `id` is chosen by the caller so the first reminder can show it. `label` is stored in `question` and is never sent
     to the LLM for this kind; `config` is a common.configs.ReminderConfig as a dict.
@@ -167,16 +188,20 @@ def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, c
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"pr_reminder:{bot_id}:{channel}",))
         cur.execute(
-            "SELECT count(*) AS n FROM schedules WHERE kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s",
+            f"SELECT {_COLUMNS} FROM schedules WHERE kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s ORDER BY created_at",
             (bot_id, channel),
         )
-        if cur.fetchone()["n"] >= max_active:
+        active = [_row_to_schedule(row) for row in cur.fetchall()]
+        for existing in active:
+            if _same_reminder(existing.config, config):
+                return AddedReminder(existing, created=False)
+        if len(active) >= max_active:
             return None
         cur.execute(
             f"INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config) VALUES (%s, %s, %s, %s, %s, 'pr_reminder', %s) RETURNING {_COLUMNS}",
             (id, cron, channel, label, bot_id, Jsonb(config)),
         )
-        return _row_to_schedule(cur.fetchone())
+        return AddedReminder(_row_to_schedule(cur.fetchone()), created=True)
 
 
 def set_schedule_status(id: str, status: str) -> None:

@@ -103,26 +103,35 @@ def test_get_schedule_returns_none_for_an_unknown_id():
         assert schedules.get_schedule("nope") is None
 
 
-def add(max_active=5):
-    return schedules.add_pr_reminder("s1", "*/30 * * * *", "C1", "label", "bot-a", {"scope": "thread"}, max_active=max_active)
+NEW_CONFIG = {"scope": "channel", "mentions": ["U01ABCDEF", "U02GHIJKL"], "origin_channel": "C9", "origin_thread_ts": "1.0", "lookback_hours": 72}
+
+
+def add(max_active=5, config=NEW_CONFIG):
+    return schedules.add_pr_reminder("s-new", "*/30 * * * *", "C1", "label", "bot-a", config, max_active=max_active)
+
+
+def reminder_row(config, id="s-old", cron="*/30 * * * *"):
+    return ROW | {"id": id, "cron": cron, "kind": "pr_reminder", "config": config}
 
 
 def test_add_pr_reminder_inserts_a_pr_reminder_with_the_given_id():
-    row = ROW | {"kind": "pr_reminder", "config": {"scope": "thread"}}
     with fake_connect() as cur:
-        cur.fetchone.side_effect = [{"n": 0}, row]
-        created = add()
+        cur.fetchall.return_value = []
+        cur.fetchone.return_value = reminder_row(NEW_CONFIG, id="s-new")
+        added = add()
 
     sql, params = cur.execute.call_args.args
     assert "'pr_reminder'" in sql
-    assert params[:5] == ("s1", "*/30 * * * *", "C1", "label", "bot-a")
-    assert params[5].obj == {"scope": "thread"}
-    assert created.kind == "pr_reminder"
+    assert params[:5] == ("s-new", "*/30 * * * *", "C1", "label", "bot-a")
+    assert params[5].obj == NEW_CONFIG
+    assert added.created is True
+    assert added.schedule.kind == "pr_reminder"
 
 
-def test_add_pr_reminder_counts_and_inserts_in_one_transaction_under_a_lock_on_bot_and_channel():
+def test_add_pr_reminder_looks_up_and_inserts_in_one_transaction_under_a_lock_on_bot_and_channel():
     with fake_connect() as cur:
-        cur.fetchone.side_effect = [{"n": 0}, ROW | {"kind": "pr_reminder"}]
+        cur.fetchall.return_value = []
+        cur.fetchone.return_value = reminder_row(NEW_CONFIG)
         add()
 
     statements = [call.args[0] for call in cur.execute.call_args_list]
@@ -133,20 +142,87 @@ def test_add_pr_reminder_counts_and_inserts_in_one_transaction_under_a_lock_on_b
     assert statements[2].startswith("INSERT INTO schedules")
 
 
-@pytest.mark.parametrize("existing", [5, 6], ids=["at-the-limit", "over-the-limit"])
-def test_add_pr_reminder_inserts_nothing_and_returns_none_when_the_quota_is_used(existing):
-    with fake_connect() as cur:
-        cur.fetchone.side_effect = [{"n": existing}]
-        created = add(max_active=5)
+def other_reminder(n):
+    return reminder_row({"scope": "channel", "mentions": [f"U0{n}ZZZZZZ"], "origin_channel": "C9", "origin_thread_ts": "1.0"}, id=f"s{n}")
 
-    assert created is None
+
+@pytest.mark.parametrize("existing", [5, 6], ids=["at-the-limit", "over-the-limit"])
+def test_add_pr_reminder_inserts_nothing_and_returns_none_when_the_quota_is_used_by_other_reminders(existing):
+    with fake_connect() as cur:
+        cur.fetchall.return_value = [other_reminder(n) for n in range(existing)]
+        added = add(max_active=5)
+
+    assert added is None
     assert not any(call.args[0].startswith("INSERT") for call in cur.execute.call_args_list)
 
 
 def test_add_pr_reminder_allows_the_last_slot_under_the_quota():
     with fake_connect() as cur:
-        cur.fetchone.side_effect = [{"n": 4}, ROW | {"kind": "pr_reminder"}]
-        assert add(max_active=5) is not None
+        cur.fetchall.return_value = [other_reminder(n) for n in range(4)]
+        cur.fetchone.return_value = reminder_row(NEW_CONFIG, id="s-new")
+        assert add(max_active=5).created is True
+
+
+@pytest.mark.parametrize(
+    "existing_config",
+    [
+        NEW_CONFIG,
+        NEW_CONFIG | {"mentions": ["U02GHIJKL", "U01ABCDEF"]},
+        NEW_CONFIG | {"lookback_hours": 168},
+        NEW_CONFIG | {"origin_thread_ts": "9.9", "origin_channel": "C7"},
+    ],
+    ids=["identical", "people-in-another-order", "different-lookback", "asked-from-another-thread"],
+)
+def test_add_pr_reminder_returns_the_existing_reminder_instead_of_creating_a_duplicate(existing_config):
+    with fake_connect() as cur:
+        cur.fetchall.return_value = [reminder_row(existing_config, cron="0 9 * * *")]
+        added = add()
+
+    assert added.created is False
+    assert (added.schedule.id, added.schedule.cron) == ("s-old", "0 9 * * *")  # a different cron is still the same job
+    assert not any(call.args[0].startswith("INSERT") for call in cur.execute.call_args_list)
+
+
+def test_add_pr_reminder_returns_the_existing_one_even_when_the_quota_is_full():
+    with fake_connect() as cur:
+        cur.fetchall.return_value = [other_reminder(n) for n in range(4)] + [reminder_row(NEW_CONFIG)]
+        added = add(max_active=5)
+
+    assert added.created is False
+
+
+@pytest.mark.parametrize(
+    "existing_config",
+    [
+        NEW_CONFIG | {"mentions": ["U01ABCDEF"]},
+        NEW_CONFIG | {"mentions": ["U01ABCDEF", "U02GHIJKL", "U03MNOPQR"]},
+        NEW_CONFIG | {"mentions": ["U01ABCDEF", "U09ZZZZZZ"]},
+        NEW_CONFIG | {"scope": "thread"},
+        {"scope": "channel", "origin_channel": "C9", "origin_thread_ts": "1.0"},
+    ],
+    ids=["fewer-people", "more-people", "different-people", "different-scope", "no-mentions-stored"],
+)
+def test_add_pr_reminder_creates_a_new_reminder_when_the_job_differs(existing_config):
+    with fake_connect() as cur:
+        cur.fetchall.return_value = [reminder_row(existing_config)]
+        cur.fetchone.return_value = reminder_row(NEW_CONFIG, id="s-new")
+        added = add()
+
+    assert added.created is True
+
+
+def test_a_thread_scope_reminder_is_the_same_job_only_for_the_same_thread():
+    thread_config = NEW_CONFIG | {"scope": "thread", "lookback_hours": None}
+    with fake_connect() as cur:
+        cur.fetchall.return_value = [reminder_row(thread_config)]
+        same = add(config=thread_config)
+    with fake_connect() as cur:
+        cur.fetchall.return_value = [reminder_row(thread_config)]
+        cur.fetchone.return_value = reminder_row(thread_config, id="s-new")
+        other_thread = add(config=thread_config | {"origin_thread_ts": "2.0"})
+
+    assert same.created is False
+    assert other_thread.created is True
 
 
 def test_set_schedule_status_only_ends_an_active_schedule():

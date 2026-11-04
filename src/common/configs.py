@@ -296,6 +296,67 @@ class AgentConfigs:
 
 
 @dataclass(frozen=True)
+class ReminderMessages:
+    """The wording of the Slack messages PR reminders post (`agent/pr_reminders/message.py`), and the thresholds that pick a quip.
+
+    Vietnamese, in a cheerful, comedic voice. `{placeholders}` are filled in by message.py, so retuning the tone or
+    translating the bot means editing this class only. Every template must keep its placeholders.
+    """
+
+    # The header above a thread's PRs. It rotates every HEADER_ROTATION_SECONDS so a recurring reminder doesn't repeat
+    # itself word for word. {who} is the mentions, {subject} the PR phrase, {Subject} the same with a capital letter
+    # for a template that starts a sentence with it.
+    HEADERS: tuple[str, ...] = (
+        "{who} :eyes: Ủa alo, {subject} đang chờ review nè bà con ơi! :pepe-pray:",
+        "{who} :bell: Dạ thưa quý vị, {subject} chờ review lâu quá trời quá đất luôn rồi nha!",
+        "{who} :wave: Cốc cốc cốc! Có ai ở nhà không? {Subject} đang đứng đợi review nè!",
+        "{who} :mag: Trời ơi tin được không? {subject} vẫn chưa ai review luôn á!",
+    )
+    HEADER_ROTATION_SECONDS: int = 30 * 60
+    SUBJECT_ONE: str = "cái PR này"
+    SUBJECT_MANY: str = "{count} cái PR này"
+
+    # How long a PR has waited, e.g. "20 phút", and the line it appears in.
+    AGE_MINUTES: str = "{n} phút"
+    AGE_HOURS: str = "{n} giờ"
+    AGE_DAYS: str = "{n} ngày"
+    AGE_UNKNOWN: str = "?"
+    WAITING_LINE: str = "chờ {age}{flair}"
+
+    # A quip after the age: fresh PRs sparkle, forgotten ones gather dust. Nothing in between.
+    FLAIR_FRESH_UNDER_HOURS: int = 1
+    FLAIR_STALE_AFTER_DAYS: int = 3
+    FLAIR_ANCIENT_AFTER_DAYS: int = 7
+    FLAIR_FRESH: str = " :sparkles: mới tinh"
+    FLAIR_STALE: str = " :cricket: dế gáy rồi nha"
+    FLAIR_ANCIENT: str = " :spider_web: nhện giăng tơ luôn rồi"
+
+    # PRs with changes requested: listed without a ping, under a heading that depends on whether PRs also wait for review.
+    AUTHOR_COURT_WITH_WAITING: str = "Bóng đang ở sân tác giả (cần sửa lại) :tennis:"
+    AUTHOR_COURT_ALONE: str = ":tennis: PR này bị yêu cầu sửa lại, bóng đang ở sân tác giả nha"
+    AUTHOR_LINE: str = "bị yêu cầu sửa lại"
+
+    # The last line of a recurring reminder: how to stop it, and when it runs. {hours} is e.g. "07:00–22:00".
+    SCHEDULE_FOOTER: str = (
+        'Lịch nhắc `{schedule_id}` — nhắn "xoá lịch nhắc {schedule_id}" để tui hết làm phiền nha. '
+        "Tui chỉ nhắc từ {hours} giờ Việt Nam (UTC+{offset}) thôi, tối còn đi ngủ :zzz:"
+    )
+
+    # Notes posted in the thread the reminder was requested in.
+    DONE: str = ":tada: Quá đã luôn! Không còn PR nào chờ review {where} nữa, tui xin phép giải nghệ lịch nhắc `{schedule_id}` nha. Cảm ơn cả nhà :clap:"
+    DONE_WHERE_THREAD: str = "trong thread này"
+    DONE_WHERE_CHANNEL: str = "trong {hours} giờ qua"
+    EXPIRED: str = ":hourglass: Lịch nhắc `{schedule_id}` đã làm phiền cả nhà {days} ngày rồi, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!"
+    UNREADABLE: str = (
+        ":warning: Ủa, tui không thấy channel của lịch nhắc `{schedule_id}` nữa (lỗi Slack: `{error_code}`), nên tui treo giày nghỉ nhắc luôn. "
+        "Kiểm tra giúp tui coi tui còn ở trong channel và có quyền đọc lịch sử (history scopes) không nha."
+    )
+
+    # Read by the agent, not posted to Slack, so it stays in English.
+    ACTIVE_HOURS_FOR_AGENT: str = "{hours} Vietnam time (UTC+{offset})"
+
+
+@dataclass(frozen=True)
 class ReminderConfig:
     """The settings of a recurring PR reminder, stored in `schedules.config`.
 

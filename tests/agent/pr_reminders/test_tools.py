@@ -7,6 +7,7 @@ from agent.pr_reminders import tools
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.service import ChannelReadError, CheckResult, ScanResult
 from agent.pr_reminders.status import Bucket, PrStatus
+from connectors.db.schedules import AddedReminder, Schedule
 
 LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
 A, B = "U01ABCDEF", "U02GHIJKL"  # realistic Slack user IDs: at least 9 characters
@@ -300,6 +301,7 @@ def test_schedule_pr_reminder_stores_the_reminder_under_the_id_shown_in_the_firs
 
 def test_schedule_pr_reminder_stores_the_row_before_the_first_reminders_are_posted(bot, collect, check, db):
     add, _ = db
+    add.return_value = AddedReminder(Schedule(id="s-new", cron="*/30 * * * *", channel="C1", question="label", bot_id="bot-a", kind="pr_reminder"), created=True)
     calls = MagicMock()
     calls.attach_mock(add, "add")
     calls.attach_mock(check, "check")
@@ -437,6 +439,45 @@ def test_schedule_pr_reminder_still_removes_the_row_when_github_fails_before_any
     run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
 
     remove.assert_called_once_with(add.call_args.args[0], bot_id="bot-a")
+
+
+def existing_reminder(cron="*/30 * * * *"):
+    return AddedReminder(Schedule(id="s-existing", cron=cron, channel="C1", question="label", bot_id="bot-a", kind="pr_reminder"), created=False)
+
+
+def test_repeating_a_schedule_request_returns_the_existing_reminder_and_creates_nothing(bot, collect, check, db, save):
+    add, remove = db
+    add.return_value = existing_reminder()
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
+    assert reply == (
+        "That PR reminder already exists (same channel, scope and people) — id: `s-existing`, repeating on `*/30 * * * *` (UTC). "
+        "I didn't create another."
+    )
+    collect.assert_not_called()  # nothing is read, posted or saved, so repeating a request can't double the pings
+    check.assert_not_called()
+    save.assert_not_called()
+    remove.assert_not_called()
+
+
+def test_repeating_a_request_with_another_cron_says_how_to_change_the_schedule(bot, collect, check, db):
+    add, _ = db
+    add.return_value = existing_reminder(cron="0 9 * * 1-5")
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
+    assert "id: `s-existing`, repeating on `0 9 * * 1-5` (UTC)" in reply
+    assert "You asked for `*/30 * * * *`; to change it, ask me to remove schedule `s-existing` and set it up again." in reply
+    check.assert_not_called()
+
+
+def test_a_duplicate_request_is_answered_even_at_night(bot, collect, check, db, within_hours):
+    add, _ = db
+    add.return_value = existing_reminder()
+    within_hours.return_value = False
+
+    assert "already exists" in run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
 
 
 def test_schedule_pr_reminder_saves_progress_after_the_first_check(bot, collect, check, db, save):

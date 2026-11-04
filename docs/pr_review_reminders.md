@@ -64,6 +64,7 @@ This document describes the approved design. It is implemented on the `hungnguye
 - A reminder is posted as a reply in the thread of the Slack message that holds the PR link, never as a new top-level message. PRs that share a thread get one message. If a PR is linked in several messages, the most recent one is used.
 - A recurring reminder shows only its schedule id as the way to turn it off, and posts nothing on a run where there is nothing to report.
 - Recurring reminders only post between 07:00 and 22:00 Vietnam time (UTC+7; the end is exclusive, so the last tick is before 22:00), and say so in the message. A tick outside that window does nothing and does not end the reminder. The rule gates the recurring reminder: its ticks, and the first check when a schedule is created, which waits for the first tick inside the window if the schedule is created at night. A user's own one-off `check_pr_approvals` request runs at any hour.
+- Repeating a request doesn't create a second reminder. An active reminder on the same watched channel with the same scope and the same set of people (and, for thread scope, the same thread) is the same job: the tool returns its id, and says how to change it if the cron differs, without scanning, posting or saving anything. The cron and lookback are not part of the identity, so a different cron means "remove it and set it up again", not a second reminder with the same people. The check runs in the same locked transaction as the quota, so two simultaneous requests can't both create it, and an existing reminder is returned even when the quota is full.
 - A recurring reminder is created even when nothing is waiting yet, since a PR can be shared later. It ends itself only after it has reminded about some PR and a later run proves none is waiting (every PR checked and readable, the Slack scan complete), and also after a maximum lifetime, so it can never run forever. An admin can end it at any time by schedule id.
 - A report or a stop never treats "nothing found" as "nothing waiting" when the check was incomplete: PRs left unchecked, PRs GitHub couldn't return, or a Slack scan cut short by its message cap all make the result inconclusive.
 - A transient GitHub or Slack failure on one run must not end the reminder; the next tick tries again.
@@ -156,7 +157,7 @@ The tool posts the reminders itself, one message per thread, so the mentions and
 A second tool, in the existing `schedule` category so `dispatch_tool()` applies the existing `bot.admin_users` check before it runs. It takes the same arguments as above plus `cron` (UTC, same convention as `add_schedule`) and an optional `channel` (default: the channel of the request; the bot must be a member of it). It:
 
 1. Validates the cron and the limits above.
-2. Inserts a `schedules` row with `kind = 'pr_reminder'` (see Database Schema), recording the request's channel and thread as the *origin thread*. The row goes in first so the schedule id shown in the first reminders is always real.
+2. Inserts a `schedules` row with `kind = 'pr_reminder'` (see Database Schema), recording the request's channel and thread as the *origin thread*, unless the same reminder already exists (see Requirements). The row goes in first so the schedule id shown in the first reminders is always real.
 3. Inside the active hours, runs the check once immediately, so the admin gets feedback and the first reminders right away. Outside them it reads and posts nothing and says the first check waits for the first tick inside the window. The schedule is kept even if nothing is waiting or no PR links exist yet, because a PR can be shared later; only a failed first check removes the row again. The reply gives the schedule id and says what happened, and never claims nothing is waiting after an incomplete check (unreadable or unchecked PRs, a truncated scan).
 
 To turn a reminder off by hand, an admin asks the bot to remove the schedule; `remove_schedule` already works by id. `list_schedules` shows active reminders too.
@@ -204,17 +205,28 @@ Every reminder message that lists a PR waiting for review starts with the mentio
 
 ## Reminder Message
 
-Waiting PRs are grouped by target thread, and each thread gets one message, rendered by `agent/pr_reminders/message.py` and split with `slack.split_message`. The thread already shows the link, so the message stays short:
+Waiting PRs are grouped by target thread, and each thread gets one message, rendered by `agent/pr_reminders/message.py` and split with `slack.split_message`. The wording is not in that module: every phrase, the four rotating headers and the age thresholds that pick a quip live in the `ReminderMessages` config class in `common/configs.py`, so changing the tone or translating the bot means editing that class only, and `message.py` just picks and fills in the templates. The thread already shows the link, so the message stays short. It is written in Vietnamese, in a cheerful, comedic voice (a light nod to Vietnamese stage comedy, with common catchphrases, no quotes from anyone and no names), and it matches the bot's `:pepe-pray:` thinking animation:
 
 ```
-<@U0123ABC> <@U0456DEF> :eyes: Waiting for review
-• <https://github.com/org/repo/pull/123|org/repo#123 Fix retry logic> — open 2d
-• <https://github.com/org/repo/pull/130|org/repo#130 Add metric view> — open 6h
+<@U0123ABC> <@U0456DEF> :eyes: Ủa alo, 3 cái PR này đang chờ review nè bà con ơi! :pepe-pray:
+• <https://github.com/org/repo/pull/123|org/repo#123 Fix retry logic> — chờ 20 phút :sparkles: mới tinh
+• <https://github.com/org/repo/pull/130|org/repo#130 Add metric view> — chờ 6 giờ
+• <https://github.com/org/repo/pull/98|org/repo#98 Refactor loader> — chờ 4 ngày :cricket: dế gáy rồi nha
 ```
 
-A PR waiting on the author gets a one-line note in its own thread (`org/repo#118 — changes requested, waiting on the author`) with no ping. A recurring reminder appends one line: `Schedule 3f2a…c9 — ask me to remove it to stop. Reminders are only sent 07:00–22:00 Vietnam time (UTC+7).` That id is the only thing about the schedule shown in a PR thread; there is no "Scheduled question" header and no summary.
+- **Rotating header.** The first line rotates through four phrasings every 30 minutes, so a recurring reminder doesn't repeat itself word for word: `:eyes:` "Ủa alo, … đang chờ review nè bà con ơi!", `:bell:` "Dạ thưa quý vị, … chờ review lâu quá trời quá đất luôn rồi nha!", `:wave:` "Cốc cốc cốc! Có ai ở nhà không? … đang đứng đợi review nè!", `:mag:` "Trời ơi tin được không? … vẫn chưa ai review luôn á!". It is chosen from the clock, not at random, so a given half hour always reads the same. It says "cái PR này" for one PR and "N cái PR này" for several, and capitalises the PR phrase where it starts a sentence.
+- **Age.** Each PR line says how long it has waited ("chờ 20 phút", "6 giờ", "4 ngày") with a quip: `:sparkles: mới tinh` under an hour, nothing up to three days, `:cricket: dế gáy rồi nha` from three days, `:spider_web: nhện giăng tơ luôn rồi` from a week.
+- **Author's court.** A PR waiting on the author is listed without a ping under "Bóng đang ở sân tác giả (cần sửa lại) :tennis:", or under ":tennis: PR này bị yêu cầu sửa lại, bóng đang ở sân tác giả nha" when it is the only news in the thread.
+- **Footer.** A recurring reminder ends with one line: `Lịch nhắc 3f2a…c9 — nhắn "xoá lịch nhắc 3f2a…c9" để tui hết làm phiền nha. Tui chỉ nhắc từ 07:00–22:00 giờ Việt Nam (UTC+7) thôi, tối còn đi ngủ :zzz:`. That id is the only thing about the schedule shown in a PR thread; there is no "Scheduled question" header and no summary. The `schedules` skill tells the agent that "xoá lịch nhắc <id>" means `remove_schedule`.
 
-When nothing is waiting, the one-off tool says so in its summary ("All 4 PRs are approved or closed :white_check_mark:"), and a recurring reminder posts a single closing note in its origin thread ("No PRs are waiting for review in the last 72h — stopping schedule 3f2a…c9 :white_check_mark:") and ends. PRs that get approved simply stop appearing in their thread's reminders, so each thread goes quiet as soon as its PRs are done.
+The notes posted in the origin thread share the voice:
+- done: `:tada: Quá đã luôn! Không còn PR nào chờ review trong 72 giờ qua nữa, tui xin phép giải nghệ lịch nhắc 3f2a…c9 nha. Cảm ơn cả nhà :clap:`
+- expired: `:hourglass: Lịch nhắc 3f2a…c9 đã làm phiền cả nhà 7 ngày rồi, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!`
+- unreadable channel: `:warning: Ủa, tui không thấy channel của lịch nhắc 3f2a…c9 nữa (lỗi Slack: not_in_channel), nên tui treo giày nghỉ nhắc luôn. Kiểm tra giúp tui coi tui còn ở trong channel và có quyền đọc lịch sử (history scopes) không nha.`
+
+Only what the code posts to Slack is Vietnamese. The tool descriptions, the summaries returned to the agent (`active_hours_text()` stays English) and the skill files stay in English; the agent replies in the language the user wrote in. The language is fixed for every bot; a per-bot setting would be the next step if a bot serves a team that doesn't read Vietnamese.
+
+When nothing is waiting, the one-off tool says so in its summary ("Nothing is waiting for review :white_check_mark:"), which the agent relays, and a recurring reminder posts the done note above and ends. PRs that get approved simply stop appearing in their thread's reminders, so each thread goes quiet as soon as its PRs are done.
 
 ## Recurring Reminders
 
@@ -236,10 +248,10 @@ When nothing is waiting, the one-off tool says so in its summary ("All 4 PRs are
 - **`connectors/db/schedules.py`:** `Schedule` gains `kind`, `status` and `config`. `get_schedules()` takes optional `kind` and `active_only` arguments, and there are helpers to add a reminder, set `status`, and merge keys into `config`.
 - **Existing schedule tools.** `update_schedule` is restricted to `kind = 'question'`, because it could otherwise change a reminder's cron past the minimum-interval check. `remove_schedule` and `list_schedules` work on both kinds, since removing by id and seeing the id are exactly what an admin needs. Behaviour for question schedules does not change.
 - **`scheduler/app.py`:** load only `active` rows and branch on `kind`.
-- **`common/configs.py`:** the tool entries, `"pr_reminder"` in `AgentTool.category`, the limits as `AgentConfigs` constants, and the `ReminderConfig` class (builds and validates the `config` JSON).
+- **`common/configs.py`:** the tool entries, `"pr_reminder"` in `AgentTool.category`, the limits as `AgentConfigs` constants, the `ReminderConfig` class (builds and validates the `config` JSON), and the `ReminderMessages` class (the wording of the reminder messages).
 - **`agent/dispatch.py`:** one branch for the `pr_reminder` category, and the `schedule`-category branch passes the request's channel and thread to `schedule_pr_reminder`.
 - **`src/worker/tasks.py`:** the `process_pr_reminder` task.
-- **New `src/agent/pr_reminders/`:** `pr_links.py`, `queries.py`, `status.py`, `message.py`, `limits.py` (all pure; `limits.py` has the cron minimum-interval, lifetime, active-hours and mention-parsing checks), `service.py` (collect, check, post), `tools.py` (the two tool handlers).
+- **New `src/agent/pr_reminders/`:** `pr_links.py`, `queries.py`, `status.py`, `message.py` (fills in the templates of `ReminderMessages`), `limits.py` (all pure; `limits.py` has the cron minimum-interval, lifetime, active-hours and mention-parsing checks), `service.py` (collect, check, post), `tools.py` (the two tool handlers).
 - **New skill file** `13_pr_reminders.md`.
 - **Unchanged:** the receiver, the agent loop and `process_scheduled_question`.
 
