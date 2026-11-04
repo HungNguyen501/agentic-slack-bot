@@ -5,7 +5,7 @@ import re
 import threading
 import time
 
-from slack_sdk.errors import SlackApiError
+from slack_sdk.errors import SlackApiError, SlackClientError
 
 from agent.access_control import review, submission
 from agent.agent import run_agent, summarize_answer
@@ -45,7 +45,7 @@ def _strip_bot_mention(text: str, bot_token: str) -> str:
     """
     try:
         bot_mention = re.compile(rf"<@{re.escape(_bot_user_id(bot_token))}(\|[^>]*)?>\s*")
-    except SlackApiError:
+    except (SlackClientError, OSError):
         log.warning("Could not look up the bot's user id; stripping every mention from the request")
         return _MENTION_RE.sub("", text).strip()
     return bot_mention.sub("", text).strip()

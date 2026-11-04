@@ -14,7 +14,7 @@ from agent.pr_reminders.status import Bucket, PrStatus, build_status
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import github, slack
 from connectors.db.bots import BotConfig
-from connectors.db.schedules import get_schedule, merge_schedule_config, set_schedule_status
+from connectors.db.schedules import Schedule, get_schedule, merge_schedule_config, set_schedule_status
 
 log = logging.getLogger("agent.pr_reminders")
 
@@ -129,8 +129,8 @@ def _post(bot: BotConfig, channel: str, thread_ts: str, text: str) -> bool:
                 log.exception("Could not post a PR reminder to %s (thread %s)", channel, thread_ts)
                 return False
             except (SlackClientError, OSError):
-                # A timeout or dropped connection. Raising would make RQ retry the job and repeat the mentions in the
-                # threads already posted to, so count it as a failed post; the next tick covers this thread.
+                # A timeout or dropped connection. Raising would abandon the remaining threads, so count it as a failed
+                # post; the next tick covers this thread.
                 log.exception("Could not reach Slack to post a PR reminder to %s (thread %s)", channel, thread_ts)
                 return False
     return True
@@ -240,13 +240,43 @@ def _nothing_left_to_remind(schedule_id: str, result: CheckResult, scan_truncate
 
 
 def save_progress(schedule_id: str, config: ReminderConfig, result: CheckResult, now: datetime) -> None:
-    """Persist that the reminder has reminded and when each thread last was, writing only when something changed."""
+    """Persist that the reminder has delivered something and when each thread last was, writing only when something changed.
+
+    `has_reminded` follows delivery, not detection: if every post failed the reminder hasn't reminded anyone, and must
+    not later end as though it had.
+    """
     waiting_threads = {thread_key(s.link.channel, s.link.thread_ts) for s in result.statuses if s.bucket is Bucket.WAITING}
     last_reminded = {key: at for key, at in config.last_reminded.items() if key in waiting_threads}
     last_reminded |= {thread_key(channel, thread_ts): now.timestamp() for channel, thread_ts in result.posted}
-    has_reminded = config.has_reminded or bool(result.waiting)
+    has_reminded = config.has_reminded or bool(result.posted)
     if has_reminded != config.has_reminded or last_reminded != config.last_reminded:
         merge_schedule_config(schedule_id, {"has_reminded": has_reminded, "last_reminded": last_reminded})
+
+
+def _load_reminder(schedule_id: str) -> tuple[Schedule, ReminderConfig] | None:
+    """The active reminder and its config, or None when there is nothing to run: it is gone or already ended, or its
+    config is malformed (which ends it)."""
+    schedule = get_schedule(schedule_id)
+    if schedule is None or schedule.kind != "pr_reminder" or schedule.status != "active":
+        log.info("PR reminder %s is gone or no longer active — skipping", schedule_id)
+        return None
+    try:
+        return schedule, ReminderConfig.from_dict(schedule.config)
+    except ValueError:
+        log.exception("PR reminder %s has a malformed config — ending it", schedule_id)
+        set_schedule_status(schedule_id, "completed")
+        return None
+
+
+def _remind_and_finish(bot: BotConfig, schedule: Schedule, config: ReminderConfig, scan: ScanResult, now: datetime) -> None:
+    """Check the scanned PRs, remind, save progress, and end the reminder if this run proves nothing is left to chase."""
+    result = check_and_remind(
+        bot, scan.links, mentions=list(config.mentions), schedule_id=schedule.id, last_reminded=config.last_reminded, now=now
+    )
+    log.info("PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s)", schedule.id, len(result.statuses), result.waiting, len(result.posted))
+    save_progress(schedule.id, config, result, now)
+    if config.has_reminded and _nothing_left_to_remind(schedule.id, result, scan.truncated):
+        _end_reminder(bot, schedule.id, config, "completed", message.render_done_note(schedule.id, config.scope, config.lookback_hours))
 
 
 def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) -> None:
@@ -255,25 +285,20 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
     A tick outside the active hours does nothing at all (no reads, no posts, reminder not ended), so it resumes in the
     morning. The reminder ends (soft delete) when it has reminded before and `_nothing_left_to_remind`, when it has
     outlived its lifetime, when its config is malformed, or when the bot can no longer read the channel. One that has
-    never had a PR waiting keeps watching, since a PR can be shared later. A transient GitHub or Slack read failure
-    propagates, so RQ retries the job and the reminder stays active.
+    never delivered a reminder keeps watching, since a PR can be shared later.
+
+    A transient GitHub or Slack read failure propagates and fails the job; the reminder stays active and the next tick
+    tries again. The scheduler doesn't retry reminder jobs: a retry after posting would repeat the mentions.
     """
     now = now or datetime.now(UTC)
     if not is_within_active_hours(now):
         log.info("PR reminder %s: outside active hours — skipping this tick", schedule_id)
         return
 
-    schedule = get_schedule(schedule_id)
-    if schedule is None or schedule.kind != "pr_reminder" or schedule.status != "active":
-        log.info("PR reminder %s is gone or no longer active — skipping", schedule_id)
+    loaded = _load_reminder(schedule_id)
+    if loaded is None:
         return
-
-    try:
-        config = ReminderConfig.from_dict(schedule.config)
-    except ValueError:
-        log.exception("PR reminder %s has a malformed config — ending it", schedule_id)
-        set_schedule_status(schedule_id, "completed")
-        return
+    schedule, config = loaded
 
     if is_reminder_expired(schedule.created_at, now):
         _end_reminder(bot, schedule_id, config, "expired", message.render_expired_note(schedule_id, AgentConfigs.PR_REMINDER_LIFETIME_DAYS))
@@ -288,10 +313,4 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
         _end_reminder(bot, schedule_id, config, "completed", message.render_unreadable_note(schedule_id, exc.code))
         return
 
-    result = check_and_remind(
-        bot, scan.links, mentions=list(config.mentions), schedule_id=schedule_id, last_reminded=config.last_reminded, now=now
-    )
-    log.info("PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s)", schedule_id, len(result.statuses), result.waiting, len(result.posted))
-    save_progress(schedule_id, config, result, now)
-    if config.has_reminded and _nothing_left_to_remind(schedule_id, result, scan.truncated):
-        _end_reminder(bot, schedule_id, config, "completed", message.render_done_note(schedule_id, config.scope, config.lookback_hours))
+    _remind_and_finish(bot, schedule, config, scan, now)

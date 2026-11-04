@@ -562,6 +562,23 @@ def test_run_reminder_remembers_that_it_has_reminded_so_that_it_can_end_later(bo
     set_status.assert_not_called()
 
 
+def test_a_reminder_whose_posts_all_failed_has_not_reminded_and_does_not_end_on_the_next_all_clear(bot, db, collect, slack, github, pr_node, merge_config):
+    get, set_status = db
+    get.return_value = schedule(config=CONFIG | {"has_reminded": False})
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+    slack.post_message.side_effect = slack_error("is_archived")
+
+    service.run_reminder(bot, "s1", IN_HOURS)  # a PR is waiting, but nothing could be delivered
+
+    merge_config.assert_not_called()  # so it still hasn't reminded anyone
+
+    slack.post_message.side_effect = None
+    github.graphql.return_value = graphql_payload((1, pr_node(decision="APPROVED")))
+    service.run_reminder(bot, "s1", IN_HOURS + timedelta(minutes=30))  # approved before any reminder got through
+
+    set_status.assert_not_called()
+
+
 def test_run_reminder_ends_only_after_it_has_reminded_and_everything_is_approved(bot, db, collect, slack, github, pr_node):
     get, set_status = db
     get.return_value = schedule(config=CONFIG | {"has_reminded": True})

@@ -1,6 +1,8 @@
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from connectors.db import schedules
 
 ROW = {"id": "s1", "cron": "0 9 * * *", "channel": "C1", "question": "q", "bot_id": "bot-a"}
@@ -101,16 +103,50 @@ def test_get_schedule_returns_none_for_an_unknown_id():
         assert schedules.get_schedule("nope") is None
 
 
+def add(max_active=5):
+    return schedules.add_pr_reminder("s1", "*/30 * * * *", "C1", "label", "bot-a", {"scope": "thread"}, max_active=max_active)
+
+
 def test_add_pr_reminder_inserts_a_pr_reminder_with_the_given_id():
     row = ROW | {"kind": "pr_reminder", "config": {"scope": "thread"}}
-    with fake_connect(fetchone=row) as cur:
-        created = schedules.add_pr_reminder("s1", "*/15 * * * *", "C1", "label", "bot-a", {"scope": "thread"})
+    with fake_connect() as cur:
+        cur.fetchone.side_effect = [{"n": 0}, row]
+        created = add()
 
     sql, params = cur.execute.call_args.args
     assert "'pr_reminder'" in sql
-    assert params[:5] == ("s1", "*/15 * * * *", "C1", "label", "bot-a")
+    assert params[:5] == ("s1", "*/30 * * * *", "C1", "label", "bot-a")
     assert params[5].obj == {"scope": "thread"}
     assert created.kind == "pr_reminder"
+
+
+def test_add_pr_reminder_counts_and_inserts_in_one_transaction_under_a_lock_on_bot_and_channel():
+    with fake_connect() as cur:
+        cur.fetchone.side_effect = [{"n": 0}, ROW | {"kind": "pr_reminder"}]
+        add()
+
+    statements = [call.args[0] for call in cur.execute.call_args_list]
+    assert statements[0] == "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+    assert cur.execute.call_args_list[0].args[1] == ("pr_reminder:bot-a:C1",)
+    assert "kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s" in statements[1]
+    assert cur.execute.call_args_list[1].args[1] == ("bot-a", "C1")
+    assert statements[2].startswith("INSERT INTO schedules")
+
+
+@pytest.mark.parametrize("existing", [5, 6], ids=["at-the-limit", "over-the-limit"])
+def test_add_pr_reminder_inserts_nothing_and_returns_none_when_the_quota_is_used(existing):
+    with fake_connect() as cur:
+        cur.fetchone.side_effect = [{"n": existing}]
+        created = add(max_active=5)
+
+    assert created is None
+    assert not any(call.args[0].startswith("INSERT") for call in cur.execute.call_args_list)
+
+
+def test_add_pr_reminder_allows_the_last_slot_under_the_quota():
+    with fake_connect() as cur:
+        cur.fetchone.side_effect = [{"n": 4}, ROW | {"kind": "pr_reminder"}]
+        assert add(max_active=5) is not None
 
 
 def test_set_schedule_status_only_ends_an_active_schedule():
@@ -118,16 +154,6 @@ def test_set_schedule_status_only_ends_an_active_schedule():
         schedules.set_schedule_status("s1", "completed")
 
     cur.execute.assert_called_once_with("UPDATE schedules SET status = %s WHERE id = %s AND status = 'active'", ("completed", "s1"))
-
-
-def test_count_active_pr_reminders_is_scoped_to_bot_and_channel():
-    with fake_connect(fetchone={"n": 3}) as cur:
-        count = schedules.count_active_pr_reminders("bot-a", "C1")
-
-    sql, params = cur.execute.call_args.args
-    assert "kind = 'pr_reminder' AND status = 'active'" in sql
-    assert params == ("bot-a", "C1")
-    assert count == 3
 
 
 def test_merge_schedule_config_merges_top_level_keys_into_the_existing_config():

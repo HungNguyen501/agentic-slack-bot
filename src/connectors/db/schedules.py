@@ -155,13 +155,23 @@ def remove_schedule(id: str, *, bot_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, config: dict) -> Schedule:
-    """Insert a PR review reminder row and return it.
+def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, config: dict, *, max_active: int) -> Schedule | None:
+    """Insert a PR review reminder row and return it, or None if the bot already has `max_active` active ones in `channel`.
+
+    The count and the insert share one transaction under an advisory lock keyed on (bot, channel), so two concurrent
+    requests (the worker runs several replicas) can't both pass the quota.
 
     `id` is chosen by the caller so the first reminder can show it. `label` is stored in `question` and is never sent
     to the LLM for this kind; `config` is a common.configs.ReminderConfig as a dict.
     """
     with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"pr_reminder:{bot_id}:{channel}",))
+        cur.execute(
+            "SELECT count(*) AS n FROM schedules WHERE kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s",
+            (bot_id, channel),
+        )
+        if cur.fetchone()["n"] >= max_active:
+            return None
         cur.execute(
             f"INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config) VALUES (%s, %s, %s, %s, %s, 'pr_reminder', %s) RETURNING {_COLUMNS}",
             (id, cron, channel, label, bot_id, Jsonb(config)),
@@ -179,13 +189,3 @@ def merge_schedule_config(id: str, patch: dict) -> None:
     """Merge `patch` into a schedule's `config` (top-level keys are replaced, the rest kept)."""
     with connect() as conn, conn.cursor() as cur:
         cur.execute("UPDATE schedules SET config = config || %s WHERE id = %s", (Jsonb(patch), id))
-
-
-def count_active_pr_reminders(bot_id: str, channel: str) -> int:
-    """Count the active PR reminders a bot has watching one channel."""
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) AS n FROM schedules WHERE kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s",
-            (bot_id, channel),
-        )
-        return int(cur.fetchone()["n"])

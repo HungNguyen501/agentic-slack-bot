@@ -9,7 +9,7 @@ You can check whether GitHub pull requests shared in Slack are approved and remi
 ## Tools
 
 - `check_pr_approvals(scope, mentions, lookback_hours?, pr_urls?)` — one-off check, open to any user. It runs at any time of day.
-- `schedule_pr_reminder(cron, scope, mentions, lookback_hours?, channel?)` — recurring check, admin-only (the same rule as the schedule tools). It re-checks on every cron tick and reminds in the thread of each PR still waiting for review. It checks once right away, at any time of day, and is kept even if nothing is waiting yet, since a PR can be shared later. It stops by itself once it has reminded about PRs and none is waiting any more, or after its lifetime. Its scheduled ticks are only sent during fixed active hours; the tool description and the tool result state the hours, the minimum cadence and the lifetime, so read them there rather than assuming numbers.
+- `schedule_pr_reminder(cron, scope, mentions, lookback_hours?, channel?)` — recurring check, admin-only (the same rule as the schedule tools). It re-checks on every cron tick and reminds in the thread of each PR still waiting for review. Inside the sending hours it checks once right away; outside them the first check waits for the first tick. It is kept even if nothing is waiting yet, since a PR can be shared later. It stops by itself once it has reminded about PRs and none is waiting any more, or after its lifetime. Its scheduled ticks are only sent during fixed active hours; the tool description and the tool result state the hours, the minimum cadence and the lifetime, so read them there rather than assuming numbers.
 
 ## Rules
 

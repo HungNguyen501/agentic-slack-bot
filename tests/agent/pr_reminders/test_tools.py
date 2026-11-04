@@ -7,7 +7,6 @@ from agent.pr_reminders import tools
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.service import ChannelReadError, CheckResult, ScanResult
 from agent.pr_reminders.status import Bucket, PrStatus
-from common.configs import AgentConfigs
 
 LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
 
@@ -46,11 +45,17 @@ def save():
 @pytest.fixture
 def db(save):
     with (
-        patch("agent.pr_reminders.tools.count_active_pr_reminders", autospec=True, return_value=0) as count,
         patch("agent.pr_reminders.tools.add_pr_reminder", autospec=True) as add,
         patch("agent.pr_reminders.tools.remove_schedule", autospec=True) as remove,
     ):
-        yield count, add, remove
+        yield add, remove
+
+
+@pytest.fixture(autouse=True)
+def within_hours():
+    """Creating a reminder reads the clock; by default it is inside the hours reminders are sent."""
+    with patch("agent.pr_reminders.tools.is_within_active_hours", autospec=True, return_value=True) as within:
+        yield within
 
 
 def run(name, args, bot, user_id="U1", channel="C1", thread_ts="1.0"):
@@ -92,7 +97,7 @@ def test_check_pr_approvals_reminds_the_mentioned_people_as_distinct_user_ids(bo
 
 
 def test_schedule_pr_reminder_stores_and_posts_with_the_mentioned_people(bot, collect, check, db):
-    _, add, _ = db
+    add, _ = db
 
     run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "mentions": ["<@U5>", "<@U6>"]}, bot)
 
@@ -248,7 +253,7 @@ def test_check_pr_approvals_reports_threads_it_could_not_post_in(bot, collect, c
 
 
 def test_schedule_pr_reminder_stores_the_reminder_under_the_id_shown_in_the_first_message(bot, collect, check, db):
-    _, add, remove = db
+    add, remove = db
 
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "lookback_hours": 48}, bot, user_id="U7", channel="C1", thread_ts="4.0")
 
@@ -269,6 +274,7 @@ def test_schedule_pr_reminder_stores_the_reminder_under_the_id_shown_in_the_firs
             "has_reminded": False,
             "last_reminded": {},
         },
+        max_active=5,
     )
     assert f"id: `{schedule_id}`" in reply
     assert "stops by itself" in reply
@@ -277,7 +283,7 @@ def test_schedule_pr_reminder_stores_the_reminder_under_the_id_shown_in_the_firs
 
 
 def test_schedule_pr_reminder_stores_the_row_before_the_first_reminders_are_posted(bot, collect, check, db):
-    _, add, _ = db
+    add, _ = db
     calls = MagicMock()
     calls.attach_mock(add, "add")
     calls.attach_mock(check, "check")
@@ -288,7 +294,7 @@ def test_schedule_pr_reminder_stores_the_row_before_the_first_reminders_are_post
 
 
 def test_schedule_pr_reminder_can_watch_another_channel_but_reports_back_in_the_request_thread(bot, collect, check, db):
-    _, add, remove = db
+    add, remove = db
 
     run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "channel": "C2OTHER99"}, bot, channel="C1", thread_ts="4.0")
 
@@ -298,7 +304,7 @@ def test_schedule_pr_reminder_can_watch_another_channel_but_reports_back_in_the_
 
 
 def test_schedule_pr_reminder_thread_scope_has_no_lookback(bot, collect, check, db):
-    _, add, remove = db
+    add, remove = db
 
     run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "thread"}, bot)
 
@@ -306,7 +312,7 @@ def test_schedule_pr_reminder_thread_scope_has_no_lookback(bot, collect, check, 
 
 
 def test_schedule_pr_reminder_keeps_the_schedule_when_nothing_is_waiting_because_a_pr_can_be_shared_later(bot, collect, check, db):
-    _, add, remove = db
+    add, remove = db
     check.return_value = result(Bucket.APPROVED)
 
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
@@ -318,7 +324,7 @@ def test_schedule_pr_reminder_keeps_the_schedule_when_nothing_is_waiting_because
 
 
 def test_schedule_pr_reminder_keeps_the_schedule_even_when_there_are_no_pr_links_yet(bot, collect, check, db):
-    _, add, remove = db
+    add, remove = db
     collect.return_value = ScanResult([], False)
     check.return_value = result()
 
@@ -329,8 +335,74 @@ def test_schedule_pr_reminder_keeps_the_schedule_even_when_there_are_no_pr_links
     assert "I'll remind when a PR is." in reply
 
 
+def test_schedule_pr_reminder_created_at_night_keeps_the_schedule_but_posts_and_reads_nothing(bot, collect, check, db, within_hours, save):
+    add, remove = db
+    within_hours.return_value = False
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
+    add.assert_called_once()
+    remove.assert_not_called()
+    collect.assert_not_called()
+    check.assert_not_called()
+    save.assert_not_called()
+    assert "outside the hours reminders are sent, so the first check waits for the first tick inside them (07:00–22:00 Vietnam time (UTC+7))." in reply
+    assert f"id: `{add.call_args.args[0]}`" in reply
+
+
+def test_a_one_off_check_still_runs_at_night(bot, collect, check, slack, within_hours):
+    within_hours.return_value = False
+
+    reply = run("check_pr_approvals", {"scope": "channel"}, bot)
+
+    check.assert_called_once()
+    assert "Posted reminders in 1 thread(s)" in reply
+    within_hours.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "check_result, scan_truncated, expected",
+    [
+        (result(Bucket.APPROVED, Bucket.INACCESSIBLE), False, "1 PR(s) could not be read from GitHub"),
+        (result(Bucket.INACCESSIBLE), False, "1 PR(s) could not be read from GitHub"),
+        (result(Bucket.APPROVED, truncated=3), False, "3 older PR(s) were not checked (limit 100)."),
+        (result(Bucket.APPROVED), True, "more messages in that window than I scan (limit 1000)"),
+    ],
+    ids=["one-unreadable", "all-unreadable", "unchecked-prs", "scan-truncated"],
+)
+def test_schedule_pr_reminder_does_not_say_nothing_is_waiting_when_the_first_check_was_incomplete(bot, collect, check, db, check_result, scan_truncated, expected):
+    check.return_value = check_result
+    collect.return_value = ScanResult([LINK], scan_truncated)
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
+    assert "I couldn't confirm that nothing is waiting:" in reply
+    assert expected in reply
+    assert "I'll keep checking." in reply
+    assert "Nothing is waiting for review right now" not in reply
+
+
+def test_schedule_pr_reminder_only_says_nothing_is_waiting_after_a_complete_check(bot, collect, check, db):
+    check.return_value = result(Bucket.APPROVED)
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
+    assert "Nothing is waiting for review right now, so nothing was posted; I'll remind when a PR is." in reply
+    assert "couldn't confirm" not in reply
+
+
+def test_schedule_pr_reminder_removes_the_row_when_the_channel_cannot_be_read(bot, collect, check, db):
+    add, remove = db
+    collect.side_effect = ChannelReadError("not_in_channel")
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
+
+    assert "not a member of that channel" in reply
+    remove.assert_called_once_with(add.call_args.args[0], bot_id="bot-a")
+
+
 def test_schedule_pr_reminder_saves_progress_after_the_first_check(bot, collect, check, db, save):
-    _, add, _ = db
+    add, _ = db
     check.return_value = result(Bucket.WAITING, posted=[("C1", "1.0")])
 
     run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
@@ -342,7 +414,7 @@ def test_schedule_pr_reminder_saves_progress_after_the_first_check(bot, collect,
 
 
 def test_schedule_pr_reminder_removes_the_row_when_the_first_check_fails(bot, collect, check, db):
-    _, add, remove = db
+    add, remove = db
     check.side_effect = RuntimeError("github down")
 
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
@@ -378,15 +450,18 @@ def test_schedule_pr_reminder_rejects_something_that_is_not_a_channel_id(bot, co
     collect.assert_not_called()
 
 
-def test_schedule_pr_reminder_enforces_the_per_channel_limit(bot, collect, check, db):
-    count, add, _ = db
-    count.return_value = AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL
+def test_schedule_pr_reminder_enforces_the_per_channel_limit_through_the_atomic_insert(bot, collect, check, db):
+    add, remove = db
+    add.return_value = None
 
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "channel": "C2OTHER99"}, bot)
 
     assert "already has 5 active PR reminders" in reply
-    count.assert_called_once_with("bot-a", "C2OTHER99")
+    assert add.call_args.args[2] == "C2OTHER99"
+    assert add.call_args.kwargs == {"max_active": 5}
     collect.assert_not_called()
+    check.assert_not_called()
+    remove.assert_not_called()
 
 
 # --- errors ----------------------------------------------------------------------------------------

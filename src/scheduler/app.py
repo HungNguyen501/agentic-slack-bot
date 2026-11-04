@@ -65,12 +65,20 @@ def _enqueue(queue: rq.Queue, entry: Schedule) -> None:
     """Enqueue the job for a due schedule, picked by its kind."""
     # Use the schedule's bot_id if set; fall back to "default" (env-var bot)
     bot_id = entry.bot_id or "default"
-    retry = rq.Retry(max=3, interval=[10, 30, 60])
 
     if entry.kind == "pr_reminder":
-        queue.enqueue("worker.tasks.process_pr_reminder", schedule_id=entry.id, bot_id=bot_id, job_timeout=300, retry=retry)
+        # No RQ retry: a reminder posts before it saves progress, so a retry after a late failure would repeat the
+        # mentions. The next tick is the retry.
+        queue.enqueue("worker.tasks.process_pr_reminder", schedule_id=entry.id, bot_id=bot_id, job_timeout=300)
     else:
-        queue.enqueue("worker.tasks.process_scheduled_question", channel=entry.channel, question=entry.question, bot_id=bot_id, job_timeout=120, retry=retry)
+        queue.enqueue(
+            "worker.tasks.process_scheduled_question",
+            channel=entry.channel,
+            question=entry.question,
+            bot_id=bot_id,
+            job_timeout=120,
+            retry=rq.Retry(max=3, interval=[10, 30, 60]),
+        )
     log.info("Enqueued %s  channel=%s  cron=%r  bot_id=%s", entry.kind, entry.channel, entry.cron, bot_id)
 
 

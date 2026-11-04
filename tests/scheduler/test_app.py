@@ -19,6 +19,7 @@ def test_a_question_schedule_enqueues_the_scheduled_question_job():
     assert queue.enqueue.call_args.args == ("worker.tasks.process_scheduled_question",)
     kwargs = queue.enqueue.call_args.kwargs
     assert (kwargs["channel"], kwargs["question"], kwargs["bot_id"], kwargs["job_timeout"]) == ("C1", "what failed?", "bot-a", 120)
+    assert kwargs["retry"].max == 3
 
 
 def test_a_pr_reminder_enqueues_the_reminder_job_with_its_schedule_id():
@@ -30,6 +31,7 @@ def test_a_pr_reminder_enqueues_the_reminder_job_with_its_schedule_id():
     kwargs = queue.enqueue.call_args.kwargs
     assert (kwargs["schedule_id"], kwargs["bot_id"]) == ("s1", "bot-a")
     assert "question" not in kwargs
+    assert "retry" not in kwargs  # a retry after posting would repeat the mentions; the next tick is the retry
 
 
 def test_an_unowned_schedule_runs_under_the_default_bot():

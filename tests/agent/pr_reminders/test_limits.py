@@ -8,22 +8,40 @@ from common.configs import AgentConfigs
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 
 
-@pytest.mark.parametrize("cron", ["*/30 * * * *", "0 * * * *", "0 9 * * 1-5", "0,30 * * * *", "15 */2 * * *"])
+@pytest.mark.parametrize(
+    "cron",
+    ["*/30 * * * *", "0 * * * *", "0 9 * * 1-5", "0,30 * * * *", "15 */2 * * *", "0 0 29 2 *", "0,40 0,23 * * 1"],
+    ids=["every-30m", "hourly", "weekdays-at-9", "half-hours", "odd-minute-every-2h", "leap-day-only", "short-wrap-but-only-mondays"],
+)
 def test_validate_reminder_cron_accepts_expressions_at_or_above_the_minimum_interval(cron):
     validate_reminder_cron(cron, NOW)
 
 
 @pytest.mark.parametrize(
     "cron",
-    ["* * * * *", "*/5 * * * *", "*/15 * * * *", "*/29 * * * *", "0,29 * * * *", "0,10,40 * * * *", "*/20 9-18 * * 1-5"],
-    ids=["every-minute", "every-5m", "every-15m", "every-29m", "29m-gap", "irregular", "business-hours-20m"],
+    [
+        "* * * * *",
+        "*/5 * * * *",
+        "*/15 * * * *",
+        "*/29 * * * *",
+        "0,29 * * * *",
+        "0,10,40 * * * *",
+        "*/20 9-18 * * 1-5",
+        "0,40 0,2,4,6,8,10,12,14,16,18,20,23 * * *",
+        "10,50 0,23 * * *",
+    ],
+    ids=["every-minute", "every-5m", "every-15m", "every-29m", "29m-gap", "irregular", "business-hours-20m", "23:40-to-00:00-wrap", "23:50-to-00:10-wrap"],
 )
 def test_validate_reminder_cron_rejects_expressions_that_fire_more_often_than_every_30_minutes(cron):
     with pytest.raises(ReminderRequestError, match="at most every 30 minutes"):
         validate_reminder_cron(cron, NOW)
 
 
-@pytest.mark.parametrize("cron", ["", "*/15 * * *", "0 0 * * * *", "not a cron at all", "99 * * * *"], ids=["empty", "4-fields", "6-fields", "garbage", "out-of-range"])
+@pytest.mark.parametrize(
+    "cron",
+    ["", "*/15 * * *", "0 0 * * * *", "not a cron at all", "99 * * * *", "0 0 30 2 *"],
+    ids=["empty", "4-fields", "6-fields", "garbage", "out-of-range", "date-that-never-exists"],
+)
 def test_validate_reminder_cron_rejects_malformed_expressions(cron):
     with pytest.raises(ReminderRequestError):
         validate_reminder_cron(cron, NOW)

@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 import pytest
-from slack_sdk.errors import SlackApiError
+from slack_sdk.errors import SlackApiError, SlackRequestError
 
 from connectors.db.bots import BotConfig
 from worker import tasks
@@ -54,8 +54,13 @@ def test_strip_bot_mention_looks_the_bot_up_once_per_token(bot_user_id):
     bot_user_id.assert_called_once_with("xoxb-1")
 
 
-def test_strip_bot_mention_falls_back_to_stripping_every_mention_when_the_lookup_fails():
-    with patch("worker.tasks.slack.get_bot_user_id", autospec=True, side_effect=SlackApiError("nope", {"error": "ratelimited"})):
+@pytest.mark.parametrize(
+    "error",
+    [SlackApiError("nope", {"error": "ratelimited"}), SlackRequestError("bad request"), TimeoutError("timed out"), ConnectionResetError("reset")],
+    ids=["api-error", "request-error", "timeout", "connection-reset"],
+)
+def test_strip_bot_mention_falls_back_to_stripping_every_mention_when_the_lookup_fails(error):
+    with patch("worker.tasks.slack.get_bot_user_id", autospec=True, side_effect=error):
         assert tasks._strip_bot_mention("<@UBOT> remind <@U1>", "xoxb-1") == "remind"
 
 

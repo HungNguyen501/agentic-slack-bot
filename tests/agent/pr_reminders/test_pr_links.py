@@ -37,6 +37,28 @@ def test_find_pr_refs_ignores_a_number_too_large_to_be_a_pr_in_a_graphql_query()
     assert find_pr_refs(text) == [PrRef("org", "repo", 2147483647)]
 
 
+@pytest.mark.parametrize(
+    "digits",
+    ["9" * 4301, "9" * 10_000, "1" + "0" * 50, "0" * 4400 + "7"],
+    ids=["4301-digits", "10000-digits", "50-digit-number", "leading-zeros-then-7"],
+)
+def test_find_pr_refs_survives_absurdly_long_numbers_and_still_finds_the_valid_link(digits):
+    text = f"https://github.com/org/repo/pull/{digits} and https://github.com/org/repo/pull/12"
+
+    refs = find_pr_refs(text)
+
+    assert PrRef("org", "repo", 12) in refs
+    assert all(ref.number <= 2**31 - 1 for ref in refs)
+
+
+def test_find_pr_refs_reads_a_number_written_with_leading_zeros():
+    assert find_pr_refs("https://github.com/org/repo/pull/0007") == [PrRef("org", "repo", 7)]
+
+
+def test_find_pr_refs_ignores_pull_zero():
+    assert find_pr_refs("https://github.com/org/repo/pull/0 https://github.com/org/repo/pull/000") == []
+
+
 def test_links_from_messages_finds_links_posted_as_attachments_and_blocks():
     messages = [
         {"ts": "1.0", "text": "", "attachments": [{"title_link": "https://github.com/org/repo/pull/1"}]},

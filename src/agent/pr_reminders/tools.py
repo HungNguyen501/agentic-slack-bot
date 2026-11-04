@@ -7,14 +7,14 @@ from typing import NamedTuple
 
 from slack_sdk.errors import SlackApiError
 
-from agent.pr_reminders.limits import ReminderRequestError, parse_mentions, validate_reminder_cron
+from agent.pr_reminders.limits import ReminderRequestError, is_within_active_hours, parse_mentions, validate_reminder_cron
 from agent.pr_reminders.message import active_hours_text
 from agent.pr_reminders.service import CHANNEL_READ_HELP, ChannelReadError, CheckResult, check_and_remind, collect_links, save_progress
 from agent.pr_reminders.status import Bucket
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import slack
 from connectors.db.bots import BotConfig
-from connectors.db.schedules import add_pr_reminder, count_active_pr_reminders, remove_schedule
+from connectors.db.schedules import add_pr_reminder, remove_schedule
 
 log = logging.getLogger("agent.pr_reminders.tools")
 
@@ -57,19 +57,26 @@ def _thread_links(bot: BotConfig, posted: list[tuple[str, str]]) -> list[str]:
     return links
 
 
+def _incomplete_notes(result: CheckResult, scan_truncated: bool) -> list[str]:
+    """Sentences for each way a check can fall short of seeing every PR; empty when it was complete."""
+    notes = []
+    if result.unreadable:
+        notes.append(f"{result.unreadable} PR(s) could not be read from GitHub (repo not visible to my credentials).")
+    if result.truncated:
+        notes.append(f"{result.truncated} older PR(s) were not checked (limit {AgentConfigs.PR_REMINDER_MAX_PRS_CHECKED}).")
+    if scan_truncated:
+        notes.append(f"The channel has more messages in that window than I scan (limit {AgentConfigs.PR_REMINDER_MAX_MESSAGES_SCANNED}), so older links may be missing.")
+    return notes
+
+
 def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str:
     waiting = result.waiting
     on_author = result.count(Bucket.WAITING_ON_AUTHOR)
-    inaccessible = result.unreadable
     done = sum(result.count(bucket) for bucket in (Bucket.APPROVED, Bucket.DONE, Bucket.DRAFT))
     parts = [f"Checked {len(result.statuses)} PR(s): {waiting} waiting for review, {on_author} waiting on the author, {done} approved, closed or draft."]
 
-    if inaccessible:
-        parts.append(f"{inaccessible} PR(s) could not be read from GitHub (repo not visible to my credentials).")
-    if result.truncated:
-        parts.append(f"{result.truncated} older PR(s) were not checked (limit {AgentConfigs.PR_REMINDER_MAX_PRS_CHECKED}).")
-    if scan_truncated:
-        parts.append(f"The channel has more messages in that window than I scan (limit {AgentConfigs.PR_REMINDER_MAX_MESSAGES_SCANNED}), so older links may be missing.")
+    notes = _incomplete_notes(result, scan_truncated)
+    parts += notes
     if result.posted:
         links = ", ".join(_thread_links(bot, result.posted[:_MAX_PERMALINKS]))
         more = len(result.posted) - _MAX_PERMALINKS
@@ -79,8 +86,7 @@ def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str
     if result.failed_posts:
         parts.append(f"Could not post in {result.failed_posts} thread(s).")
     if not waiting and not on_author:
-        incomplete = scan_truncated or result.truncated or inaccessible
-        parts.append("I can't say nothing is waiting, because the check was incomplete." if incomplete else "Nothing is waiting for review :white_check_mark:")
+        parts.append("I can't say nothing is waiting, because the check was incomplete." if notes else "Nothing is waiting for review :white_check_mark:")
     return " ".join(parts)
 
 
@@ -126,30 +132,43 @@ def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
     return _ScheduleRequest(scope, cron, target_channel, _parse_lookback(args) if scope == "channel" else None, mentions)
 
 
+def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConfig, schedule_id: str, thread_ts: str) -> str:
+    """Run the check that follows scheduling, post any first reminders, and describe what happened.
+
+    Outside the active hours nothing is read or posted: the first tick inside the window does it, so scheduling at
+    night doesn't ping anyone.
+    """
+    now = datetime.now(UTC)
+    if not is_within_active_hours(now):
+        return f"It's outside the hours reminders are sent, so the first check waits for the first tick inside them ({active_hours_text()})."
+
+    scan = collect_links(bot, scope=request.scope, channel=request.channel, thread_ts=thread_ts, lookback_hours=request.lookback_hours)
+    result = check_and_remind(bot, scan.links, mentions=request.mentions, schedule_id=schedule_id)
+    save_progress(schedule_id, config, result, now)
+    if result.waiting:
+        return f"First reminders posted in {len(result.posted)} thread(s)."
+    notes = _incomplete_notes(result, scan.truncated)
+    if notes:
+        return f"I couldn't confirm that nothing is waiting: {' '.join(notes)} I'll keep checking."
+    return "Nothing is waiting for review right now, so nothing was posted; I'll remind when a PR is."
+
+
 def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
     request = _parse_schedule_request(args, channel)
-    if count_active_pr_reminders(bot.bot_id, request.channel) >= AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL:
-        raise ReminderRequestError(f"This channel already has {AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL} active PR reminders. Remove one first.")
-
     config = ReminderConfig(request.scope, channel, thread_ts, tuple(request.mentions), request.lookback_hours, user_id)
-    scan = collect_links(bot, scope=request.scope, channel=request.channel, thread_ts=thread_ts, lookback_hours=request.lookback_hours)
 
     # The schedule is kept even when nothing is waiting yet, since a PR can be shared later. The row goes in before the
     # first check posts, so the schedule id in those messages is real, and comes out again if that check fails.
     schedule_id = str(uuid.uuid4())
-    add_pr_reminder(schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict())
+    quota = AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL
+    if add_pr_reminder(schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict(), max_active=quota) is None:
+        raise ReminderRequestError(f"This channel already has {quota} active PR reminders. Remove one first.")
     try:
-        result = check_and_remind(bot, scan.links, mentions=request.mentions, schedule_id=schedule_id)
+        first = _first_check(bot, request, config, schedule_id, thread_ts)
     except Exception:
         remove_schedule(schedule_id, bot_id=bot.bot_id)
         raise
-    save_progress(schedule_id, config, result, datetime.now(UTC))
 
-    first = (
-        f"First reminders posted in {len(result.posted)} thread(s)."
-        if result.waiting
-        else "Nothing is waiting for review right now, so nothing was posted; I'll remind when a PR is."
-    )
     return (
         f"PR reminder scheduled — id: `{schedule_id}`. {first} It repeats on `{request.cron}` (UTC) but only sends reminders "
         f"{active_hours_text()}, stops by itself once it has reminded about PRs and none is waiting any more, and ends after "

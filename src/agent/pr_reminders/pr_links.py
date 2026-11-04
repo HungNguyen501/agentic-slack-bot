@@ -8,6 +8,7 @@ _PR_URL_RE = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)")
 
 # GraphQL's Int is 32-bit: one larger number makes GitHub reject the whole query, failing every PR in the batch.
 _MAX_PR_NUMBER = 2**31 - 1
+_MAX_PR_NUMBER_DIGITS = len(str(_MAX_PR_NUMBER))
 
 
 @dataclass(frozen=True)
@@ -35,17 +36,27 @@ class PrLink:
     message_ts: str
 
 
+def _pr_number(digits: str) -> int | None:
+    """The PR number in `digits`, or None if it can't be one. The length is checked before `int()`, which raises on
+    absurdly long digit strings (a Slack message can hold thousands of digits)."""
+    significant = digits.lstrip("0")
+    if not significant or len(significant) > _MAX_PR_NUMBER_DIGITS:
+        return None
+    number = int(significant)
+    return number if number <= _MAX_PR_NUMBER else None
+
+
 def find_pr_refs(text: str) -> list[PrRef]:
     """Return the distinct PRs linked in `text`, in order of first appearance.
 
     Owner and repo are lower-cased, since GitHub ignores case, so one PR linked two ways counts once. Numbers too
     large to be a PR are ignored.
     """
-    refs = {
-        PrRef(owner.lower(), repo.lower(), int(number)): None
-        for owner, repo, number in _PR_URL_RE.findall(text)
-        if int(number) <= _MAX_PR_NUMBER
-    }
+    refs = {}
+    for owner, repo, digits in _PR_URL_RE.findall(text):
+        number = _pr_number(digits)
+        if number is not None:
+            refs[PrRef(owner.lower(), repo.lower(), number)] = None
     return list(refs)
 
 
