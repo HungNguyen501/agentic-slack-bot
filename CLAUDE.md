@@ -29,6 +29,16 @@ scheduler (croniter eval, Redis last-fired dedup)
   → enqueue process_scheduled_question → worker (post question + answer)
 ```
 
+**PR review reminder:**
+```
+user asks agent to check PR approval → check_pr_approvals tool reads the thread / channel history,
+  finds GitHub PR links, asks GitHub for reviewDecision, posts "<@people> waiting for review"
+  as a reply in the thread of each PR still waiting (no LLM rewrites the text)
+admin asks for a recurring check → schedule_pr_reminder checks once, then stores a schedules row (kind = pr_reminder)
+scheduler → enqueue process_pr_reminder → worker (agent/pr_reminders/service.py::run_reminder, no LLM)
+  → reminds in PR threads; soft-deletes the row (status != active) once nothing is waiting
+```
+
 **Data access request:**
 ```
 user asks agent for access → request_data_access tool checks eligibility
@@ -55,7 +65,7 @@ reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETD
 **Agent loop** (`src/agent/agent.py`):
 1. Router model (gpt-6.1-sol) picks skills from `src/agent/skills/files/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date
-3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / request_data_access / generate_service_principal_secret (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
+3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
 4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
 
 ## Quick Commands
@@ -113,6 +123,7 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
+- `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`)
 
 **Supabase `access_request_categories` table** — gates the `request_data_access` and `generate_service_principal_secret` tools per bot/channel/request_type:
 - `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject, or — for `service_principal_secret` — allowed to call the tool at all)
@@ -155,7 +166,7 @@ src/
     dispatch.py              # Tool schema exposure + per-call routing
     history.py               # Per-thread conversation history (Redis)
     schedules.py             # Schedule-CRUD tool handlers
-    skills/                  # loader.py / router.py; files/ holds the agent (runtime) skill files (01–12) — NOT Claude Code skills
+    skills/                  # loader.py / router.py; files/ holds the agent (runtime) skill files (01–13) — NOT Claude Code skills
     forms/                   # Pure, no I/O — the receiver may import this
       access_request_view.py       # Slack modal view + submission validation
       access_request_submission.py # VerifiedAccessRequest dataclass
@@ -174,9 +185,17 @@ src/
     service_principal_secrets/
       store.py                     # Cached (encrypted) service-principal secret CRUD (Supabase)
       tools.py                     # generate_service_principal_secret tool handler
+    pr_reminders/
+      pr_links.py                  # PR links in Slack messages + the thread each lives in (pure)
+      queries.py                   # GitHub GraphQL query + response parser (pure)
+      status.py                    # reviewDecision -> waiting / approved / ... bucket (pure)
+      message.py                   # Picks and fills in the reminder templates; the only live mentions are the validated user IDs it is given (pure)
+      limits.py                    # Cron minimum interval, lifetime, 07:00-22:00 Vietnam-time window for scheduled ticks, mention parsing, ReminderRequestError (pure)
+      service.py                   # Collect links, check GitHub, post reminders, run one reminder tick
+      tools.py                     # check_pr_approvals / schedule_pr_reminder handlers
   scheduler/app.py           # Cron polling loop
   common/
-    configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas)
+    configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas) + ReminderConfig (the `schedules.config` of a PR reminder) + ReminderMessages (the Vietnamese wording of PR reminder messages)
     crypto.py                # Fernet encrypt/decrypt for secrets cached at rest (service_principal_secrets)
   connectors/                # Generic clients for external tools — no task-specific logic
     db/                      # Supabase (Postgres) access — sync, psycopg
@@ -189,7 +208,7 @@ src/
       jobs.py                    # Job run details
       scim.py                    # SCIM list / create service principal / add group member
       service_principal_secrets.py # OAuth client secret generation
-    github.py                # GitHub REST primitives (file, branch, PR) for 100xteam-ai/vireox-data-platform
+    github.py                # GitHub REST primitives (file, branch, PR) for 100xteam-ai/vireox-data-platform, plus a generic GraphQL call
     slack.py                 # Slack Web API — message posting, modal views, mrkdwn chunking
     openai_client.py         # Shared OpenAI client + Chat Completions / Responses wrappers
     redis_client.py          # Shared Redis client

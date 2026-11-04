@@ -131,6 +131,17 @@ def create_pull_request(title: str, head: str, body: str) -> str:
     return resp.json()["html_url"]
 
 
+def graphql(query: str) -> dict:
+    """Run a GraphQL query and return the decoded response body.
+
+    The body carries `data` and, when only part of the query could be resolved (e.g. a repo the credentials
+    can't see), `errors` as well — callers decide what a null field means. An HTTP-level failure raises.
+    """
+    resp = httpx.post(GithubConfigs.GRAPHQL_API, headers=_headers(), json={"query": query}, timeout=30.0)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def update_pull_request(number: int, title: str, body: str) -> None:
     """Overwrite an open PR's title and body."""
     resp = httpx.patch(f"{GithubConfigs.API}/pulls/{number}", headers=_headers(), json={"title": title, "body": body}, timeout=30.0)

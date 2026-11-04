@@ -1,7 +1,7 @@
 ---
 name: schedules
 always: false
-description: Managing scheduled Slack reports — list, add, update or remove cron-based automated questions
+description: Managing scheduled Slack reports and PR reminders — list, add, update or remove them, also when asked in Vietnamese (xoá lịch nhắc, xem lịch nhắc)
 ---
 
 You can manage automated scheduled questions that the bot posts to Slack channels on a cron schedule.
@@ -26,3 +26,4 @@ Each schedule has:
 - When listing, format as a table with columns: ID, Cron, Channel, Question.
 - When the user asks to "pause" or "disable" a schedule, interpret that as remove and tell them to re-add it when ready.
 - Validate cron expressions have exactly 5 fields before calling add_schedule or update_schedule.
+- Requests may be in Vietnamese. "xoá lịch nhắc <id>" or "xoá lịch <id>" means `remove_schedule` with that id (PR review reminders can be removed this way too), and "xem lịch nhắc" means `list_schedules`. Reply in the language the user wrote in.

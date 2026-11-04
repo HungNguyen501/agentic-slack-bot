@@ -1,7 +1,7 @@
 """Common configuration values shared across receiver, worker, and scheduler."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 
@@ -52,6 +52,8 @@ class GithubConfigs:
     REPO: str = "vireox-data-platform"
     BASE_BRANCH: str = "main"
     API: str = f"https://api.github.com/repos/{OWNER}/{REPO}"
+    # Not tied to the repo above: PR review reminders query pull requests in whichever repos the credentials can read.
+    GRAPHQL_API: str = "https://api.github.com/graphql"
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,7 @@ class AgentTool:
     name: str
     description: str
     parameters: dict
-    category: Literal["core", "schedule", "data_access", "secrets"] = "core"
+    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder"] = "core"
 
     def to_openai_schema(self) -> dict:
         # Responses API tools are flat (no nested "function" key) and default to strict=True,
@@ -90,6 +92,24 @@ class AgentConfigs:
     # How long a one-time service-principal-secret view link stays valid in Redis before
     # it's treated as expired (see agent/service_principal_secrets/tools.py's secret_link:{token} key).
     SECRET_LINK_TTL_SECONDS: int = 600
+
+    # PR review reminders (agent/pr_reminders/).
+    PR_REMINDER_SCOPES: tuple[str, ...] = ("thread", "channel")
+    PR_REMINDER_DEFAULT_LOOKBACK_HOURS: int = 72
+    PR_REMINDER_MAX_LOOKBACK_HOURS: int = 336
+    PR_REMINDER_MAX_MESSAGES_SCANNED: int = 1000
+    # Checking more PRs than are posted about keeps the oldest waiting ones from being crowded out by newer approved ones.
+    PR_REMINDER_MAX_PRS_CHECKED: int = 100
+    PR_REMINDER_MAX_THREADS_POSTED: int = 25
+    PR_REMINDER_MAX_ACTIVE_PER_CHANNEL: int = 5
+    PR_REMINDER_MAX_MENTIONS: int = 10
+    PR_REMINDER_MIN_INTERVAL_MINUTES: int = 30
+    PR_REMINDER_LIFETIME_DAYS: int = 7
+    # Recurring reminders post from START (inclusive) to END (exclusive), local hour in Vietnam. Vietnam has no DST, so a
+    # fixed UTC offset is enough and needs no tz database in the image.
+    PR_REMINDER_ACTIVE_START_HOUR: int = 7
+    PR_REMINDER_ACTIVE_END_HOUR: int = 22
+    PR_REMINDER_UTC_OFFSET_HOURS: int = 7
 
     TOOLS: tuple[AgentTool, ...] = (
         AgentTool(
@@ -170,6 +190,70 @@ class AgentConfigs:
             category="schedule",
         ),
         AgentTool(
+            name="check_pr_approvals",
+            description=(
+                "Check whether GitHub pull requests shared in Slack are approved, and remind the given people (by @mention) "
+                "in the Slack thread of each PR that is still waiting for review. Use when someone asks to check PR "
+                "approval status or to remind reviewers about PRs. scope 'thread' checks the PR links in the current "
+                "thread (or in this message); scope 'channel' checks PR links in the channel's top-level messages "
+                "(not thread replies) over the last lookback_hours. Needs the people to remind: take them from the @mentions in the user's message, and if "
+                "there are none, ask the user who to remind instead of calling this."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "enum": ["thread", "channel"], "description": "Where to look for PR links."},
+                    "lookback_hours": {
+                        "type": "integer",
+                        "description": (
+                            f"Channel scope only: how far back to look. Default {PR_REMINDER_DEFAULT_LOOKBACK_HOURS}, "
+                            f"max {PR_REMINDER_MAX_LOOKBACK_HOURS}. '3d' is 72."
+                        ),
+                    },
+                    "pr_urls": {"type": "array", "items": {"type": "string"}, "description": "GitHub PR links typed in the request itself."},
+                    "mentions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Slack user IDs of the people to remind, from the <@U123> mentions in the user's message (not the bot's own).",
+                    },
+                },
+                "required": ["scope"],
+            },
+            category="pr_reminder",
+        ),
+        AgentTool(
+            name="schedule_pr_reminder",
+            description=(
+                "Set up a recurring PR approval reminder: on every cron tick the bot re-checks the PRs shared in this "
+                "thread or channel, reminds the given people (by @mention) in the thread of each PR still waiting for "
+                "review. It keeps running even if nothing is waiting yet, since a PR can be shared later, and stops by itself "
+                "once it has reminded about PRs and none is waiting any more. Channel scope reads top-level messages only. "
+                "Needs the people to remind: take them from the @mentions in the user's message, and if there are none, "
+                "ask the user who to remind instead of calling this. Reminders are only sent between "
+                f"{PR_REMINDER_ACTIVE_START_HOUR:02d}:00 and {PR_REMINDER_ACTIVE_END_HOUR:02d}:00 Vietnam time (UTC+{PR_REMINDER_UTC_OFFSET_HOURS}). "
+                "Use this, not add_schedule, for recurring PR review reminders."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "cron": {
+                        "type": "string",
+                        "description": f"Cron expression (5 fields, UTC), at most every {PR_REMINDER_MIN_INTERVAL_MINUTES} minutes. E.g. '*/30 * * * *'.",
+                    },
+                    "scope": {"type": "string", "enum": ["thread", "channel"], "description": "Where to look for PR links on every run."},
+                    "lookback_hours": {"type": "integer", "description": "Channel scope only. Default 72, max 336."},
+                    "channel": {"type": "string", "description": "Channel scope only: Slack channel ID to watch. Defaults to the current channel."},
+                    "mentions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Slack user IDs of the people to remind, from the <@U123> mentions in the user's message (not the bot's own).",
+                    },
+                },
+                "required": ["cron", "scope"],
+            },
+            category="schedule",
+        ),
+        AgentTool(
             name="request_data_access",
             description=(
                 "Start a data access request for the current user. Use when the user asks to "
@@ -209,3 +293,135 @@ class AgentConfigs:
             category="secrets",
         ),
     )
+
+
+@dataclass(frozen=True)
+class ReminderMessages:
+    """The wording of the Slack messages PR reminders post (`agent/pr_reminders/message.py`), and the thresholds that pick a quip.
+
+    Vietnamese, in a cheerful, comedic voice. `{placeholders}` are filled in by message.py, so retuning the tone or
+    translating the bot means editing this class only. Every template must keep its placeholders.
+    """
+
+    # The header above a thread's PRs. It rotates every HEADER_ROTATION_SECONDS so a recurring reminder doesn't repeat
+    # itself word for word. {who} is the mentions, {subject} the PR phrase, {Subject} the same with a capital letter
+    # for a template that starts a sentence with it.
+    HEADERS: tuple[str, ...] = (
+        "{who} :eyes: Ủa alo, {subject} đang chờ review nè bà con ơi! :pepe-pray:",
+        "{who} :bell: Dạ thưa quý vị, {subject} chờ review lâu quá trời quá đất luôn rồi nha!",
+        "{who} :wave: Cốc cốc cốc! Có ai ở nhà không? {Subject} đang đứng đợi review nè!",
+        "{who} :mag: Trời ơi tin được không? {subject} vẫn chưa ai review luôn á!",
+    )
+    HEADER_ROTATION_SECONDS: int = 30 * 60
+    SUBJECT_ONE: str = "cái PR này"
+    SUBJECT_MANY: str = "{count} cái PR này"
+
+    # How long a PR has waited, e.g. "20 phút", and the line it appears in.
+    AGE_MINUTES: str = "{n} phút"
+    AGE_HOURS: str = "{n} giờ"
+    AGE_DAYS: str = "{n} ngày"
+    AGE_UNKNOWN: str = "?"
+    WAITING_LINE: str = "chờ {age}{flair}"
+
+    # A quip after the age: fresh PRs sparkle, forgotten ones gather dust. Nothing in between.
+    FLAIR_FRESH_UNDER_HOURS: int = 1
+    FLAIR_STALE_AFTER_DAYS: int = 3
+    FLAIR_ANCIENT_AFTER_DAYS: int = 7
+    FLAIR_FRESH: str = " :sparkles: mới tinh"
+    FLAIR_STALE: str = " :cricket: dế gáy rồi nha"
+    FLAIR_ANCIENT: str = " :spider_web: nhện giăng tơ luôn rồi"
+
+    # PRs with changes requested: listed without a ping, under a heading that depends on whether PRs also wait for review.
+    AUTHOR_COURT_WITH_WAITING: str = "Bóng đang ở sân tác giả (cần sửa lại) :tennis:"
+    AUTHOR_COURT_ALONE: str = ":tennis: PR này bị yêu cầu sửa lại, bóng đang ở sân tác giả nha"
+    AUTHOR_LINE: str = "bị yêu cầu sửa lại"
+
+    # The last line of a recurring reminder: how to stop it, and when it runs. {hours} is e.g. "07:00–22:00".
+    SCHEDULE_FOOTER: str = (
+        'Lịch nhắc `{schedule_id}` — nhắn "xoá lịch nhắc {schedule_id}" để tui hết làm phiền nha. '
+        "Tui chỉ nhắc từ {hours} giờ Việt Nam (UTC+{offset}) thôi, tối còn đi ngủ :zzz:"
+    )
+
+    # Notes posted in the thread the reminder was requested in.
+    DONE: str = ":tada: Quá đã luôn! Không còn PR nào chờ review {where} nữa, tui xin phép giải nghệ lịch nhắc `{schedule_id}` nha. Cảm ơn cả nhà :clap:"
+    DONE_WHERE_THREAD: str = "trong thread này"
+    DONE_WHERE_CHANNEL: str = "trong {hours} giờ qua"
+    EXPIRED: str = ":hourglass: Lịch nhắc `{schedule_id}` đã làm phiền cả nhà {days} ngày rồi, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!"
+    UNREADABLE: str = (
+        ":warning: Ủa, tui không thấy channel của lịch nhắc `{schedule_id}` nữa (lỗi Slack: `{error_code}`), nên tui treo giày nghỉ nhắc luôn. "
+        "Kiểm tra giúp tui coi tui còn ở trong channel và có quyền đọc lịch sử (history scopes) không nha."
+    )
+
+    # Read by the agent, not posted to Slack, so it stays in English.
+    ACTIVE_HOURS_FOR_AGENT: str = "{hours} Vietnam time (UTC+{offset})"
+
+
+@dataclass(frozen=True)
+class ReminderConfig:
+    """The settings of a recurring PR reminder, stored in `schedules.config`.
+
+    `mentions` are the Slack user IDs reminded on every run. `origin_channel` / `origin_thread_ts` are the thread the
+    reminder was requested in: it gets the schedule id and the final note, and a `thread`-scope reminder rescans it on
+    every run. Reminders themselves go to each PR's own thread.
+
+    `has_reminded` and `last_reminded` are progress the reminder job saves as it runs. A reminder only ends by itself
+    once it has reminded about some PR and none is waiting any more, so one created while nothing waits keeps watching
+    for new PRs. `last_reminded` maps "channel:thread_ts" to the unix time of the last reminder there, so that when more
+    threads are waiting than fit in one run, the ones reminded longest ago go first.
+    """
+
+    scope: str
+    origin_channel: str
+    origin_thread_ts: str
+    mentions: tuple[str, ...]
+    lookback_hours: int | None = None
+    created_by: str | None = None
+    has_reminded: bool = False
+    last_reminded: dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self) | {"mentions": list(self.mentions)}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReminderConfig":
+        """Rebuild a config read back from the database, which doesn't constrain `config`.
+
+        Raises:
+            ValueError: a key is missing, or the scope or lookback is invalid.
+        """
+        lookback_hours = data.get("lookback_hours")
+        if lookback_hours is not None and (isinstance(lookback_hours, bool) or not isinstance(lookback_hours, int)):
+            raise ValueError(f"PR reminder config has a non-integer lookback_hours: {lookback_hours!r}")
+        mentions = data.get("mentions")
+        if not isinstance(mentions, list) or not mentions or not all(isinstance(mention, str) for mention in mentions):
+            raise ValueError(f"PR reminder config needs a non-empty list of mentions: {mentions!r}")
+        has_reminded = data.get("has_reminded", False)
+        last_reminded = data.get("last_reminded", {})
+        if not isinstance(has_reminded, bool):
+            raise ValueError(f"PR reminder config has a non-boolean has_reminded: {has_reminded!r}")
+        if not isinstance(last_reminded, dict) or not all(isinstance(at, int | float) and not isinstance(at, bool) for at in last_reminded.values()):
+            raise ValueError(f"PR reminder config has an invalid last_reminded: {last_reminded!r}")
+        try:
+            config = cls(
+                scope=data["scope"],
+                origin_channel=data["origin_channel"],
+                origin_thread_ts=data["origin_thread_ts"],
+                mentions=tuple(mentions),
+                lookback_hours=lookback_hours,
+                created_by=data.get("created_by"),
+                has_reminded=has_reminded,
+                last_reminded=last_reminded,
+            )
+        except KeyError as exc:
+            raise ValueError(f"PR reminder config is missing {exc}") from exc
+        if config.scope not in AgentConfigs.PR_REMINDER_SCOPES:
+            raise ValueError(f"PR reminder config has an unknown scope: {config.scope!r}")
+        if config.scope == "channel" and not config.lookback_hours:
+            raise ValueError("A channel-scope PR reminder needs lookback_hours")
+        return config
+
+    def label(self) -> str:
+        """Description stored in the schedule's `question` column, so list_schedules stays readable."""
+        if self.scope == "thread":
+            return "PR review reminder · thread scope"
+        return f"PR review reminder · channel scope, last {self.lookback_hours}h"

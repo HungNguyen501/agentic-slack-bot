@@ -1,4 +1,7 @@
-"""Slack Web API client — message posting, modal views, and mrkdwn chunking."""
+"""Slack Web API client — message posting, history reads, modal views, and mrkdwn chunking."""
+from collections.abc import Callable
+from typing import Any
+
 from slack_sdk import WebClient
 
 
@@ -40,6 +43,70 @@ def delete_message(channel: str, ts: str, *, token: str) -> None:
         token: Bot OAuth token (xoxb-...) to authenticate the request.
     """
     WebClient(token=token).chat_delete(channel=channel, ts=ts)
+
+
+def _collect_pages(fetch: Callable[[str | None], Any], max_messages: int | None = None) -> tuple[list[dict], bool]:
+    """Follow Slack cursor pagination, calling `fetch(cursor)` until the last page or `max_messages` is reached.
+
+    Returns the messages and whether some were left unread because of `max_messages`.
+    """
+    messages: list[dict] = []
+    cursor = None
+    while True:
+        response = fetch(cursor)
+        messages.extend(response["messages"])
+        cursor = (response.get("response_metadata") or {}).get("next_cursor")
+        if max_messages is not None and len(messages) > max_messages:
+            return messages[:max_messages], True
+        if not cursor:
+            return messages, False
+        if max_messages is not None and len(messages) == max_messages:
+            return messages, True
+
+
+def conversations_replies(channel: str, ts: str, *, token: str) -> list[dict]:
+    """Fetch every message in a thread, root included (needs the channels:history / groups:history scope).
+
+    Args:
+        channel: Slack channel ID containing the thread.
+        ts: Timestamp of the thread's root message.
+        token: Bot OAuth token (xoxb-...) to authenticate the request.
+
+    Returns:
+        The thread's messages, oldest first.
+    """
+    client = WebClient(token=token)
+    return _collect_pages(lambda cursor: client.conversations_replies(channel=channel, ts=ts, limit=200, cursor=cursor))[0]
+
+
+def conversations_history(channel: str, oldest: float, *, token: str, max_messages: int) -> tuple[list[dict], bool]:
+    """Fetch top-level channel messages posted after `oldest` (needs the channels:history / groups:history scope).
+
+    Args:
+        channel: Slack channel ID to read.
+        oldest: Unix time; only messages newer than this are returned.
+        token: Bot OAuth token (xoxb-...) to authenticate the request.
+        max_messages: Stop paginating once this many messages were collected.
+
+    Returns:
+        At most `max_messages` messages, newest first, and whether older ones in the window were left unread. Thread
+        replies are not included, only thread roots.
+    """
+    client = WebClient(token=token)
+    return _collect_pages(
+        lambda cursor: client.conversations_history(channel=channel, oldest=f"{oldest:.6f}", limit=200, cursor=cursor),
+        max_messages,
+    )
+
+
+def get_bot_user_id(token: str) -> str:
+    """Return the Slack user ID the bot token belongs to (what an @mention of the bot looks like)."""
+    return str(WebClient(token=token).auth_test()["user_id"])
+
+
+def get_permalink(channel: str, message_ts: str, *, token: str) -> str:
+    """Return the permanent link to a message."""
+    return str(WebClient(token=token).chat_getPermalink(channel=channel, message_ts=message_ts)["permalink"])
 
 
 def open_view(trigger_id: str, view: dict, *, token: str) -> None:
