@@ -7,7 +7,7 @@ def test_list_schedules_only_asks_for_the_calling_bots_rows():
     with patch("agent.schedules.get_schedules", autospec=True, return_value=[]) as get:
         result = schedules.dispatch_schedule_tool("list_schedules", {}, "bot-a")
 
-    get.assert_called_once_with("bot-a")
+    get.assert_called_once_with("bot-a", active_only=True)
     assert result == "No schedules configured."
 
 

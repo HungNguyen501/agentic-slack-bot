@@ -1,7 +1,7 @@
 """Common configuration values shared across receiver, worker, and scheduler."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 
@@ -52,6 +52,8 @@ class GithubConfigs:
     REPO: str = "vireox-data-platform"
     BASE_BRANCH: str = "main"
     API: str = f"https://api.github.com/repos/{OWNER}/{REPO}"
+    # Not tied to the repo above: PR review reminders query pull requests in whichever repos the credentials can read.
+    GRAPHQL_API: str = "https://api.github.com/graphql"
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,7 @@ class AgentTool:
     name: str
     description: str
     parameters: dict
-    category: Literal["core", "schedule", "data_access", "secrets"] = "core"
+    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder"] = "core"
 
     def to_openai_schema(self) -> dict:
         # Responses API tools are flat (no nested "function" key) and default to strict=True,
@@ -90,6 +92,23 @@ class AgentConfigs:
     # How long a one-time service-principal-secret view link stays valid in Redis before
     # it's treated as expired (see agent/service_principal_secrets/tools.py's secret_link:{token} key).
     SECRET_LINK_TTL_SECONDS: int = 600
+
+    # PR review reminders (agent/pr_reminders/).
+    PR_REMINDER_SCOPES: tuple[str, ...] = ("thread", "channel")
+    PR_REMINDER_DEFAULT_LOOKBACK_HOURS: int = 72
+    PR_REMINDER_MAX_LOOKBACK_HOURS: int = 336
+    PR_REMINDER_MAX_MESSAGES_SCANNED: int = 1000
+    # Checking more PRs than are posted about keeps the oldest waiting ones from being crowded out by newer approved ones.
+    PR_REMINDER_MAX_PRS_CHECKED: int = 100
+    PR_REMINDER_MAX_THREADS_POSTED: int = 25
+    PR_REMINDER_MAX_ACTIVE_PER_CHANNEL: int = 5
+    PR_REMINDER_MIN_INTERVAL_MINUTES: int = 30
+    PR_REMINDER_LIFETIME_DAYS: int = 7
+    # Recurring reminders post from START (inclusive) to END (exclusive), local hour in Vietnam. Vietnam has no DST, so a
+    # fixed UTC offset is enough and needs no tz database in the image.
+    PR_REMINDER_ACTIVE_START_HOUR: int = 7
+    PR_REMINDER_ACTIVE_END_HOUR: int = 22
+    PR_REMINDER_UTC_OFFSET_HOURS: int = 7
 
     TOOLS: tuple[AgentTool, ...] = (
         AgentTool(
@@ -170,6 +189,56 @@ class AgentConfigs:
             category="schedule",
         ),
         AgentTool(
+            name="check_pr_approvals",
+            description=(
+                "Check whether GitHub pull requests shared in Slack are approved, and remind the channel (@channel) "
+                "in the Slack thread of each PR that is still waiting for review. Use when someone asks to check PR "
+                "approval status or to remind reviewers about PRs. scope 'thread' checks the PR links in the current "
+                "thread (or in this message); scope 'channel' checks PR links shared in this channel over the last "
+                "lookback_hours. People named in the request are not pinged; the reminder always pings @channel."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "enum": ["thread", "channel"], "description": "Where to look for PR links."},
+                    "lookback_hours": {
+                        "type": "integer",
+                        "description": (
+                            f"Channel scope only: how far back to look. Default {PR_REMINDER_DEFAULT_LOOKBACK_HOURS}, "
+                            f"max {PR_REMINDER_MAX_LOOKBACK_HOURS}. '3d' is 72."
+                        ),
+                    },
+                    "pr_urls": {"type": "array", "items": {"type": "string"}, "description": "GitHub PR links typed in the request itself."},
+                },
+                "required": ["scope"],
+            },
+            category="pr_reminder",
+        ),
+        AgentTool(
+            name="schedule_pr_reminder",
+            description=(
+                "Set up a recurring PR approval reminder: on every cron tick the bot re-checks the PRs shared in this "
+                "thread or channel, reminds @channel in the thread of each PR still waiting for review, and stops by "
+                "itself once no PR is waiting. Reminders are only sent between "
+                f"{PR_REMINDER_ACTIVE_START_HOUR:02d}:00 and {PR_REMINDER_ACTIVE_END_HOUR:02d}:00 Vietnam time (UTC+{PR_REMINDER_UTC_OFFSET_HOURS}). "
+                "Use this, not add_schedule, for recurring PR review reminders."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "cron": {
+                        "type": "string",
+                        "description": f"Cron expression (5 fields, UTC), at most every {PR_REMINDER_MIN_INTERVAL_MINUTES} minutes. E.g. '*/30 * * * *'.",
+                    },
+                    "scope": {"type": "string", "enum": ["thread", "channel"], "description": "Where to look for PR links on every run."},
+                    "lookback_hours": {"type": "integer", "description": "Channel scope only. Default 72, max 336."},
+                    "channel": {"type": "string", "description": "Channel scope only: Slack channel ID to watch. Defaults to the current channel."},
+                },
+                "required": ["cron", "scope"],
+            },
+            category="schedule",
+        ),
+        AgentTool(
             name="request_data_access",
             description=(
                 "Start a data access request for the current user. Use when the user asks to "
@@ -209,3 +278,53 @@ class AgentConfigs:
             category="secrets",
         ),
     )
+
+
+@dataclass(frozen=True)
+class ReminderConfig:
+    """The settings of a recurring PR reminder, stored in `schedules.config`.
+
+    `origin_channel` / `origin_thread_ts` are the thread the reminder was requested in: it gets the schedule id and the
+    final note, and a `thread`-scope reminder rescans it on every run. Reminders themselves go to each PR's own thread.
+    """
+
+    scope: str
+    origin_channel: str
+    origin_thread_ts: str
+    lookback_hours: int | None = None
+    created_by: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReminderConfig":
+        """Rebuild a config read back from the database, which doesn't constrain `config`.
+
+        Raises:
+            ValueError: a key is missing, or the scope or lookback is invalid.
+        """
+        lookback_hours = data.get("lookback_hours")
+        if lookback_hours is not None and (isinstance(lookback_hours, bool) or not isinstance(lookback_hours, int)):
+            raise ValueError(f"PR reminder config has a non-integer lookback_hours: {lookback_hours!r}")
+        try:
+            config = cls(
+                scope=data["scope"],
+                origin_channel=data["origin_channel"],
+                origin_thread_ts=data["origin_thread_ts"],
+                lookback_hours=lookback_hours,
+                created_by=data.get("created_by"),
+            )
+        except KeyError as exc:
+            raise ValueError(f"PR reminder config is missing {exc}") from exc
+        if config.scope not in AgentConfigs.PR_REMINDER_SCOPES:
+            raise ValueError(f"PR reminder config has an unknown scope: {config.scope!r}")
+        if config.scope == "channel" and not config.lookback_hours:
+            raise ValueError("A channel-scope PR reminder needs lookback_hours")
+        return config
+
+    def label(self) -> str:
+        """Description stored in the schedule's `question` column, so list_schedules stays readable."""
+        if self.scope == "thread":
+            return "PR review reminder · thread scope"
+        return f"PR review reminder · channel scope, last {self.lookback_hours}h"

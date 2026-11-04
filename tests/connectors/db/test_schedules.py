@@ -43,3 +43,88 @@ def test_remove_schedule_is_scoped_to_the_calling_bot():
 
     cur.execute.assert_called_once_with("DELETE FROM schedules WHERE id = %s AND (bot_id = %s OR bot_id IS NULL)", ("s1", "bot-b"))
     assert deleted is False
+
+
+def test_update_schedule_never_touches_pr_reminders():
+    with fake_connect(fetchone=ROW) as cur:
+        schedules.update_schedule("s1", cron="0 10 * * *", bot_id="bot-a")
+
+    assert "AND kind = 'question'" in cur.execute.call_args.args[0]
+
+
+def test_get_schedules_without_filters_reads_everything():
+    with fake_connect() as cur:
+        cur.fetchall.return_value = []
+        schedules.get_schedules()
+
+    sql, params = cur.execute.call_args.args
+    assert "WHERE" not in sql
+    assert params == []
+
+
+def test_get_schedules_active_only_skips_ended_reminders():
+    with fake_connect() as cur:
+        cur.fetchall.return_value = []
+        schedules.get_schedules(active_only=True)
+
+    assert "WHERE status = 'active'" in cur.execute.call_args.args[0]
+
+
+def test_get_schedules_for_a_bot_keeps_the_legacy_unowned_rows():
+    with fake_connect() as cur:
+        cur.fetchall.return_value = []
+        schedules.get_schedules("bot-a", active_only=True)
+
+    sql, params = cur.execute.call_args.args
+    assert "WHERE (bot_id = %s OR bot_id IS NULL) AND status = 'active'" in sql
+    assert params == ["bot-a"]
+
+
+def test_a_row_without_the_new_columns_is_a_live_question_schedule():
+    with fake_connect() as cur:
+        cur.fetchall.return_value = [ROW]
+        [schedule] = schedules.get_schedules()
+
+    assert (schedule.kind, schedule.status, schedule.config) == ("question", "active", {})
+
+
+def test_a_pr_reminder_row_keeps_its_kind_status_and_config():
+    row = ROW | {"kind": "pr_reminder", "status": "completed", "config": {"scope": "thread"}}
+    with fake_connect(fetchone=row):
+        schedule = schedules.get_schedule("s1")
+
+    assert (schedule.kind, schedule.status, schedule.config) == ("pr_reminder", "completed", {"scope": "thread"})
+
+
+def test_get_schedule_returns_none_for_an_unknown_id():
+    with fake_connect(fetchone=None):
+        assert schedules.get_schedule("nope") is None
+
+
+def test_add_pr_reminder_inserts_a_pr_reminder_with_the_given_id():
+    row = ROW | {"kind": "pr_reminder", "config": {"scope": "thread"}}
+    with fake_connect(fetchone=row) as cur:
+        created = schedules.add_pr_reminder("s1", "*/15 * * * *", "C1", "label", "bot-a", {"scope": "thread"})
+
+    sql, params = cur.execute.call_args.args
+    assert "'pr_reminder'" in sql
+    assert params[:5] == ("s1", "*/15 * * * *", "C1", "label", "bot-a")
+    assert params[5].obj == {"scope": "thread"}
+    assert created.kind == "pr_reminder"
+
+
+def test_set_schedule_status_only_ends_an_active_schedule():
+    with fake_connect() as cur:
+        schedules.set_schedule_status("s1", "completed")
+
+    cur.execute.assert_called_once_with("UPDATE schedules SET status = %s WHERE id = %s AND status = 'active'", ("completed", "s1"))
+
+
+def test_count_active_pr_reminders_is_scoped_to_bot_and_channel():
+    with fake_connect(fetchone={"n": 3}) as cur:
+        count = schedules.count_active_pr_reminders("bot-a", "C1")
+
+    sql, params = cur.execute.call_args.args
+    assert "kind = 'pr_reminder' AND status = 'active'" in sql
+    assert params == ("bot-a", "C1")
+    assert count == 3

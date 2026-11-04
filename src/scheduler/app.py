@@ -24,7 +24,8 @@ def _schedule_key(entry: Schedule) -> str:
     Returns:
         A Redis key string in the form scheduler:last_fired:<16-char sha256 hex>.
     """
-    raw = f"{entry.cron}:{entry.channel}:{entry.question}"
+    # A reminder is keyed on its id: its question is only a generated label, so two reminders in one channel could collide.
+    raw = f"pr_reminder:{entry.id}:{entry.cron}" if entry.kind == "pr_reminder" else f"{entry.cron}:{entry.channel}:{entry.question}"
     return f"scheduler:last_fired:{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
 
 
@@ -60,12 +61,26 @@ def _should_fire(entry: Schedule, now: datetime, redis_client: redis.Redis) -> b
     return True
 
 
+def _enqueue(queue: rq.Queue, entry: Schedule) -> None:
+    """Enqueue the job for a due schedule, picked by its kind."""
+    # Use the schedule's bot_id if set; fall back to "default" (env-var bot)
+    bot_id = entry.bot_id or "default"
+    retry = rq.Retry(max=3, interval=[10, 30, 60])
+
+    if entry.kind == "pr_reminder":
+        queue.enqueue("worker.tasks.process_pr_reminder", schedule_id=entry.id, bot_id=bot_id, job_timeout=300, retry=retry)
+    else:
+        queue.enqueue("worker.tasks.process_scheduled_question", channel=entry.channel, question=entry.question, bot_id=bot_id, job_timeout=120, retry=retry)
+    log.info("Enqueued %s  channel=%s  cron=%r  bot_id=%s", entry.kind, entry.channel, entry.cron, bot_id)
+
+
 def run() -> None:
     """Start the scheduler loop — polls Supabase and enqueues due jobs until interrupted.
 
-    Reads all schedules from Supabase on every tick, evaluates each cron expression against
-    the current time, and pushes a process_scheduled_question job onto the slack_events
-    Redis queue for any entry that is due and has not already been enqueued this cycle.
+    Reads all active schedules from Supabase on every tick, evaluates each cron expression against
+    the current time, and pushes a process_scheduled_question (or, for a PR reminder,
+    process_pr_reminder) job onto the slack_events Redis queue for any entry that is due and has
+    not already been enqueued this cycle.
     Sleeps SCHEDULER_INTERVAL seconds between ticks; continues on Supabase read errors.
     """
     redis_client = redis.from_url(Configs.REDIS_URL)
@@ -77,7 +92,7 @@ def run() -> None:
         now = datetime.now(UTC)
 
         try:
-            schedules = get_schedules()
+            schedules = get_schedules(active_only=True)
         except Exception as exc:
             log.error("Failed to load schedules from Supabase: %s", exc)
             time.sleep(Configs.SCHEDULER_INTERVAL)
@@ -89,23 +104,7 @@ def run() -> None:
                 key = _schedule_key(entry)
                 redis_client.set(key, now.replace(tzinfo=None).isoformat(), ex=86400)
 
-                # Use the schedule's bot_id if set; fall back to "default" (env-var bot)
-                bot_id = entry.bot_id or "default"
-
-                queue.enqueue(
-                    "worker.tasks.process_scheduled_question",
-                    channel=entry.channel,
-                    question=entry.question,
-                    bot_id=bot_id,
-                    job_timeout=120,
-                    retry=rq.Retry(max=3, interval=[10, 30, 60]),
-                )
-                log.info(
-                    "Enqueued scheduled question  channel=%s  cron=%r  bot_id=%s",
-                    entry.channel,
-                    entry.cron,
-                    bot_id,
-                )
+                _enqueue(queue, entry)
 
         time.sleep(Configs.SCHEDULER_INTERVAL)
 

@@ -2,6 +2,7 @@
 import logging
 
 from agent.access_control.tools import dispatch_data_access_tool
+from agent.pr_reminders.tools import dispatch_pr_reminder_tool
 from agent.schedules import dispatch_schedule_tool
 from agent.service_principal_secrets.tools import dispatch_secret_generation_tool
 from common.configs import AgentConfigs
@@ -57,7 +58,12 @@ def dispatch_tool(
     if tool_category(name) == "schedule":
         if user_id not in admin_users:
             return "You are not authorized to manage schedules."
+        if name == "schedule_pr_reminder":
+            return dispatch_pr_reminder_tool(name, args, user_id, channel, thread_ts, bot)
         return dispatch_schedule_tool(name, args, bot.bot_id)
+
+    if tool_category(name) == "pr_reminder":
+        return dispatch_pr_reminder_tool(name, args, user_id, channel, thread_ts, bot)
 
     if tool_category(name) == "data_access":
         return dispatch_data_access_tool(args, user_id, channel, thread_ts, bot)

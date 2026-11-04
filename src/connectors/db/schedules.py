@@ -1,6 +1,8 @@
 """Supabase schedules table — schedule CRUD."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+from psycopg.types.json import Jsonb
 
 from connectors.db.connection import connect
 
@@ -14,6 +16,12 @@ class Schedule:
     bot_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    kind: str = "question"
+    status: str = "active"
+    config: dict = field(default_factory=dict)
+
+
+_COLUMNS = "id, cron, channel, question, bot_id, kind, status, config, created_at"
 
 
 def _row_to_schedule(row: Any) -> Schedule:
@@ -25,28 +33,40 @@ def _row_to_schedule(row: Any) -> Schedule:
         bot_id=str(row["bot_id"]) if row.get("bot_id") else None,
         created_at=str(row["created_at"]) if row.get("created_at") else None,
         updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
+        kind=row.get("kind") or "question",
+        status=row.get("status") or "active",
+        config=row.get("config") or {},
     )
 
 
-def get_schedules(bot_id: str | None = None) -> list[Schedule]:
+def get_schedules(bot_id: str | None = None, *, active_only: bool = False) -> list[Schedule]:
     """Fetch schedules from Supabase ordered by creation time.
 
     Args:
         bot_id: If provided, returns only schedules for that bot. Otherwise returns all schedules.
+        active_only: If True, skips schedules that have ended (a finished PR reminder keeps its row with status != 'active').
 
     Returns:
         List of Schedule records.
     """
+    conditions, params = [], []
+    if bot_id is not None:
+        conditions.append("(bot_id = %s OR bot_id IS NULL)")
+        params.append(bot_id)
+    if active_only:
+        conditions.append("status = 'active'")
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     with connect() as conn, conn.cursor() as cur:
-        if bot_id is not None:
-            cur.execute(
-                "SELECT id, cron, channel, question, bot_id FROM schedules "
-                "WHERE bot_id = %s OR bot_id IS NULL ORDER BY created_at",
-                (bot_id,),
-            )
-        else:
-            cur.execute("SELECT id, cron, channel, question, bot_id FROM schedules ORDER BY created_at")
+        cur.execute(f"SELECT {_COLUMNS} FROM schedules{where} ORDER BY created_at", params)
         return [_row_to_schedule(r) for r in cur.fetchall()]
+
+
+def get_schedule(id: str) -> Schedule | None:
+    """Fetch one schedule by its UUID, whatever its kind or status, or None if it doesn't exist."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT {_COLUMNS} FROM schedules WHERE id = %s", (id,))
+        row = cur.fetchone()
+        return _row_to_schedule(row) if row else None
 
 
 def add_schedule(cron: str, channel: str, question: str, bot_id: str | None = None) -> Schedule:
@@ -111,7 +131,7 @@ def update_schedule(
 
     params.extend([id, bot_id])
     sql = (
-        f"UPDATE schedules SET {', '.join(fields)} WHERE id = %s AND (bot_id = %s OR bot_id IS NULL) "
+        f"UPDATE schedules SET {', '.join(fields)} WHERE id = %s AND (bot_id = %s OR bot_id IS NULL) AND kind = 'question' "
         "RETURNING id, cron, channel, question, bot_id, updated_at"
     )
     with connect() as conn, conn.cursor() as cur:
@@ -133,3 +153,33 @@ def remove_schedule(id: str, *, bot_id: str) -> bool:
     with connect() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM schedules WHERE id = %s AND (bot_id = %s OR bot_id IS NULL)", (id, bot_id))
         return cur.rowcount > 0
+
+
+def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, config: dict) -> Schedule:
+    """Insert a PR review reminder row and return it.
+
+    `id` is chosen by the caller so the first reminder can show it. `label` is stored in `question` and is never sent
+    to the LLM for this kind; `config` is a common.configs.ReminderConfig as a dict.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config) VALUES (%s, %s, %s, %s, %s, 'pr_reminder', %s) RETURNING {_COLUMNS}",
+            (id, cron, channel, label, bot_id, Jsonb(config)),
+        )
+        return _row_to_schedule(cur.fetchone())
+
+
+def set_schedule_status(id: str, status: str) -> None:
+    """End an active schedule by moving it to a terminal status ('completed' or 'expired'); the row is kept (soft delete)."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE schedules SET status = %s WHERE id = %s AND status = 'active'", (status, id))
+
+
+def count_active_pr_reminders(bot_id: str, channel: str) -> int:
+    """Count the active PR reminders a bot has watching one channel."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) AS n FROM schedules WHERE kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s",
+            (bot_id, channel),
+        )
+        return int(cur.fetchone()["n"])

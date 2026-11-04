@@ -19,7 +19,7 @@ def dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
     """
     try:
         if name == "list_schedules":
-            schedules = get_schedules(bot_id)
+            schedules = get_schedules(bot_id, active_only=True)
             if not schedules:
                 return "No schedules configured."
             header = f"{'ID':<36}  {'Cron':<20}  {'Channel':<12}  Question"

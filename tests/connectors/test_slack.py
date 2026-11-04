@@ -1,5 +1,8 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
 
+from connectors import slack
 from connectors.slack import split_message
 
 MAX_LEN = 40
@@ -65,3 +68,49 @@ def test_split_message_treats_one_line_code_block_as_balanced():
     chunks = split_message(text, max_len=20)
 
     assert chunks == ["x\n```x```", "hello world", "more text"]
+
+
+def page(messages, next_cursor=""):
+    return {"messages": messages, "response_metadata": {"next_cursor": next_cursor}}
+
+
+def test_conversations_replies_follows_the_cursor_until_the_last_page():
+    client = MagicMock()
+    client.conversations_replies.side_effect = [page([{"ts": "1"}], "c2"), page([{"ts": "2"}])]
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        messages = slack.conversations_replies("C1", "1", token="t")
+
+    assert messages == [{"ts": "1"}, {"ts": "2"}]
+    assert [c.kwargs["cursor"] for c in client.conversations_replies.call_args_list] == [None, "c2"]
+
+
+def test_conversations_history_asks_for_messages_after_oldest():
+    client = MagicMock()
+    client.conversations_history.return_value = page([{"ts": "9"}])
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        slack.conversations_history("C1", 1234.5, token="t", max_messages=10)
+
+    client.conversations_history.assert_called_once_with(channel="C1", oldest="1234.500000", limit=200, cursor=None)
+
+
+def test_conversations_history_stops_at_max_messages():
+    client = MagicMock()
+    client.conversations_history.return_value = page([{"ts": str(n)} for n in range(5)], "more")
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        messages = slack.conversations_history("C1", 0, token="t", max_messages=3)
+
+    assert [m["ts"] for m in messages] == ["0", "1", "2"]
+    assert client.conversations_history.call_count == 1
+
+
+def test_get_permalink_returns_the_link():
+    client = MagicMock()
+    client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p1"}
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.get_permalink("C1", "1.0", token="t") == "https://slack.test/p1"
+
+    client.chat_getPermalink.assert_called_once_with(channel="C1", message_ts="1.0")
