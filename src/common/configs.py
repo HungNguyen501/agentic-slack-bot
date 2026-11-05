@@ -104,7 +104,7 @@ class AgentConfigs:
     PR_REMINDER_MAX_ACTIVE_PER_CHANNEL: int = 5
     PR_REMINDER_MAX_MENTIONS: int = 10
     PR_REMINDER_MIN_INTERVAL_MINUTES: int = 30
-    PR_REMINDER_LIFETIME_DAYS: int = 7
+    PR_REMINDER_MAX_EXPIRY_HOURS: int = 8760
     # Recurring reminders post from START (inclusive) to END (exclusive), local hour in Vietnam. Vietnam has no DST, so a
     # fixed UTC offset is enough and needs no tz database in the image.
     PR_REMINDER_ACTIVE_START_HOUR: int = 7
@@ -226,8 +226,8 @@ class AgentConfigs:
             description=(
                 "Set up a recurring PR approval reminder: on every cron tick the bot re-checks the PRs shared in this "
                 "thread or channel, reminds the given people (by @mention) in the thread of each PR still waiting for "
-                "review. It keeps running even if nothing is waiting yet, since a PR can be shared later, and stops by itself "
-                "once it has reminded about PRs and none is waiting any more. Channel scope reads top-level messages only. "
+                "review. It keeps running until an admin removes it, even when nothing is waiting, since a PR can be shared later; "
+                "set expires_in_hours only when the user asks for a time limit. Channel scope reads top-level messages only. "
                 "Needs the people to remind: take them from the @mentions in the user's message, and if there are none, "
                 "ask the user who to remind instead of calling this. Reminders are only sent between "
                 f"{PR_REMINDER_ACTIVE_START_HOUR:02d}:00 and {PR_REMINDER_ACTIVE_END_HOUR:02d}:00 Vietnam time (UTC+{PR_REMINDER_UTC_OFFSET_HOURS}). "
@@ -243,6 +243,14 @@ class AgentConfigs:
                     "scope": {"type": "string", "enum": ["thread", "channel"], "description": "Where to look for PR links on every run."},
                     "lookback_hours": {"type": "integer", "description": "Channel scope only. Default 72, max 336."},
                     "channel": {"type": "string", "description": "Channel scope only: Slack channel ID to watch. Defaults to the current channel."},
+                    "expires_in_hours": {
+                        "type": "integer",
+                        "description": (
+                            "Only when the user explicitly asks the reminder to stop after a time (e.g. 'for 72h', 'for 3 days' is 72): "
+                            f"hours until it ends, max {PR_REMINDER_MAX_EXPIRY_HOURS} (one year). Omit otherwise: the reminder then runs until removed. "
+                            "Do not set it from a lookback window ('PRs in the last 3d')."
+                        ),
+                    },
                     "mentions": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -343,10 +351,7 @@ class ReminderMessages:
     )
 
     # Notes posted in the thread the reminder was requested in.
-    DONE: str = ":tada: Quá đã luôn! Không còn PR nào chờ review {where} nữa, tui xin phép giải nghệ lịch nhắc `{schedule_id}` nha. Cảm ơn cả nhà :clap:"
-    DONE_WHERE_THREAD: str = "trong thread này"
-    DONE_WHERE_CHANNEL: str = "trong {hours} giờ qua"
-    EXPIRED: str = ":hourglass: Lịch nhắc `{schedule_id}` đã làm phiền cả nhà {days} ngày rồi, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!"
+    EXPIRED: str = ":hourglass: Lịch nhắc `{schedule_id}` đã hết hạn như cả nhà đặt, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!"
     UNREADABLE: str = (
         ":warning: Ủa, tui không thấy channel của lịch nhắc `{schedule_id}` nữa (lỗi Slack: `{error_code}`), nên tui treo giày nghỉ nhắc luôn. "
         "Kiểm tra giúp tui coi tui còn ở trong channel và có quyền đọc lịch sử (history scopes) không nha."
@@ -364,10 +369,10 @@ class ReminderConfig:
     reminder was requested in: it gets the schedule id and the final note, and a `thread`-scope reminder rescans it on
     every run. Reminders themselves go to each PR's own thread.
 
-    `has_reminded` and `last_reminded` are progress the reminder job saves as it runs. A reminder only ends by itself
-    once it has reminded about some PR and none is waiting any more, so one created while nothing waits keeps watching
-    for new PRs. `last_reminded` maps "channel:thread_ts" to the unix time of the last reminder there, so that when more
-    threads are waiting than fit in one run, the ones reminded longest ago go first.
+    `expires_at` is the unix time the reminder ends, set only when the requester asked for a time limit; without it the
+    reminder runs until it is removed. `last_reminded` is progress the reminder job saves as it runs: it maps
+    "channel:thread_ts" to the unix time of the last reminder there, so that when more threads are waiting than fit in
+    one run, the ones reminded longest ago go first.
     """
 
     scope: str
@@ -376,7 +381,7 @@ class ReminderConfig:
     mentions: tuple[str, ...]
     lookback_hours: int | None = None
     created_by: str | None = None
-    has_reminded: bool = False
+    expires_at: float | None = None
     last_reminded: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -395,10 +400,10 @@ class ReminderConfig:
         mentions = data.get("mentions")
         if not isinstance(mentions, list) or not mentions or not all(isinstance(mention, str) for mention in mentions):
             raise ValueError(f"PR reminder config needs a non-empty list of mentions: {mentions!r}")
-        has_reminded = data.get("has_reminded", False)
+        expires_at = data.get("expires_at")
+        if expires_at is not None and (isinstance(expires_at, bool) or not isinstance(expires_at, int | float)):
+            raise ValueError(f"PR reminder config has a non-numeric expires_at: {expires_at!r}")
         last_reminded = data.get("last_reminded", {})
-        if not isinstance(has_reminded, bool):
-            raise ValueError(f"PR reminder config has a non-boolean has_reminded: {has_reminded!r}")
         if not isinstance(last_reminded, dict) or not all(isinstance(at, int | float) and not isinstance(at, bool) for at in last_reminded.values()):
             raise ValueError(f"PR reminder config has an invalid last_reminded: {last_reminded!r}")
         try:
@@ -409,7 +414,7 @@ class ReminderConfig:
                 mentions=tuple(mentions),
                 lookback_hours=lookback_hours,
                 created_by=data.get("created_by"),
-                has_reminded=has_reminded,
+                expires_at=expires_at,
                 last_reminded=last_reminded,
             )
         except KeyError as exc:

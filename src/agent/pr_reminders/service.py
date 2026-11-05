@@ -227,38 +227,13 @@ def _end_reminder(bot: BotConfig, schedule_id: str, config: ReminderConfig, stat
     _post(bot, config.origin_channel, config.origin_thread_ts, note)
 
 
-def _nothing_left_to_remind(schedule_id: str, result: CheckResult, scan_truncated: bool) -> bool:
-    """Whether this run proves no PR is waiting.
-
-    Not seeing a waiting PR proves nothing if the Slack scan stopped early, PRs were left unchecked (the cap), or any
-    PR could not be read from GitHub.
-    """
-    if result.waiting:
-        return False
-    if scan_truncated or result.truncated or result.unreadable:
-        log.warning(
-            "PR reminder %s: inconclusive (scan truncated: %s, %d PR(s) unchecked, %d unreadable), so it stays active",
-            schedule_id,
-            scan_truncated,
-            result.truncated,
-            result.unreadable,
-        )
-        return False
-    return True
-
-
 def save_progress(schedule_id: str, config: ReminderConfig, result: CheckResult, now: datetime) -> None:
-    """Persist that the reminder has delivered something and when each thread last was, writing only when something changed.
-
-    `has_reminded` follows delivery, not detection: if every post failed the reminder hasn't reminded anyone, and must
-    not later end as though it had.
-    """
+    """Persist when each thread last was reminded, writing only when something changed."""
     waiting_threads = {thread_key(s.link.channel, s.link.thread_ts) for s in result.statuses if s.bucket is Bucket.WAITING}
     last_reminded = {key: at for key, at in config.last_reminded.items() if key in waiting_threads}
     last_reminded |= {thread_key(channel, thread_ts): now.timestamp() for channel, thread_ts in result.posted}
-    has_reminded = config.has_reminded or bool(result.posted)
-    if has_reminded != config.has_reminded or last_reminded != config.last_reminded:
-        merge_schedule_config(schedule_id, {"has_reminded": has_reminded, "last_reminded": last_reminded})
+    if last_reminded != config.last_reminded:
+        merge_schedule_config(schedule_id, {"last_reminded": last_reminded})
 
 
 def _load_reminder(schedule_id: str) -> tuple[Schedule, ReminderConfig] | None:
@@ -276,24 +251,13 @@ def _load_reminder(schedule_id: str) -> tuple[Schedule, ReminderConfig] | None:
         return None
 
 
-def _remind_and_finish(bot: BotConfig, schedule: Schedule, config: ReminderConfig, scan: ScanResult, now: datetime) -> None:
-    """Check the scanned PRs, remind, save progress, and end the reminder if this run proves nothing is left to chase."""
-    result = check_and_remind(
-        bot, scan.links, mentions=list(config.mentions), schedule_id=schedule.id, last_reminded=config.last_reminded, now=now
-    )
-    log.info("PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s)", schedule.id, len(result.statuses), result.waiting, len(result.posted))
-    save_progress(schedule.id, config, result, now)
-    if config.has_reminded and _nothing_left_to_remind(schedule.id, result, scan.truncated):
-        _end_reminder(bot, schedule.id, config, "completed", message.render_done_note(schedule.id, config.scope, config.lookback_hours))
-
-
 def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) -> None:
     """Run one tick of a recurring PR reminder: remind in the threads of PRs waiting for review, or end the reminder.
 
     A tick outside the active hours does nothing at all (no reads, no posts, reminder not ended), so it resumes in the
-    morning. The reminder ends (soft delete) when it has reminded before and `_nothing_left_to_remind`, when it has
-    outlived its lifetime, when its config is malformed, or when the bot can no longer read the channel. One that has
-    never delivered a reminder keeps watching, since a PR can be shared later.
+    morning. The reminder ends (soft delete) only when the time limit the requester asked for has passed, when its config
+    is malformed, or when the bot can no longer read the channel. Otherwise it keeps watching, even when nothing is
+    waiting, since a PR can be shared later.
 
     A transient GitHub or Slack read failure propagates and fails the job; the reminder stays active and the next tick
     tries again. The scheduler doesn't retry reminder jobs: a retry after posting would repeat the mentions.
@@ -308,8 +272,8 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
         return
     schedule, config = loaded
 
-    if is_reminder_expired(schedule.created_at, now):
-        _end_reminder(bot, schedule_id, config, "expired", message.render_expired_note(schedule_id, AgentConfigs.PR_REMINDER_LIFETIME_DAYS))
+    if is_reminder_expired(config.expires_at, now):
+        _end_reminder(bot, schedule_id, config, "expired", message.render_expired_note(schedule_id))
         return
 
     try:
@@ -321,4 +285,8 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
         _end_reminder(bot, schedule_id, config, "completed", message.render_unreadable_note(schedule_id, exc.code))
         return
 
-    _remind_and_finish(bot, schedule, config, scan, now)
+    result = check_and_remind(
+        bot, scan.links, mentions=list(config.mentions), schedule_id=schedule.id, last_reminded=config.last_reminded, now=now
+    )
+    log.info("PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s)", schedule.id, len(result.statuses), result.waiting, len(result.posted))
+    save_progress(schedule.id, config, result, now)

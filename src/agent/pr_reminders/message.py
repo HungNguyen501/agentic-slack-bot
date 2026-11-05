@@ -90,13 +90,8 @@ def render_thread_message(waiting: list[PrStatus], on_author: list[PrStatus], *,
     return "\n".join(lines)
 
 
-def render_done_note(schedule_id: str, scope: str, lookback_hours: int | None) -> str:
-    where = ReminderMessages.DONE_WHERE_THREAD if scope == "thread" else ReminderMessages.DONE_WHERE_CHANNEL.format(hours=lookback_hours)
-    return ReminderMessages.DONE.format(where=where, schedule_id=schedule_id)
-
-
-def render_expired_note(schedule_id: str, lifetime_days: int) -> str:
-    return ReminderMessages.EXPIRED.format(schedule_id=schedule_id, days=lifetime_days)
+def render_expired_note(schedule_id: str) -> str:
+    return ReminderMessages.EXPIRED.format(schedule_id=schedule_id)
 
 
 def render_unreadable_note(schedule_id: str, error_code: str) -> str:

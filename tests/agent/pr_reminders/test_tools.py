@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +8,7 @@ from agent.pr_reminders import tools
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.service import ChannelReadError, CheckResult, ScanResult
 from agent.pr_reminders.status import Bucket, PrStatus
+from common.configs import AgentConfigs
 from connectors.db.schedules import AddedReminder, Schedule
 
 LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
@@ -288,13 +290,14 @@ def test_schedule_pr_reminder_stores_the_reminder_under_the_id_shown_in_the_firs
             "mentions": [A, B],
             "lookback_hours": 48,
             "created_by": "U7",
-            "has_reminded": False,
+            "expires_at": None,
             "last_reminded": {},
         },
         max_active=5,
     )
     assert f"id: `{schedule_id}`" in reply
-    assert "stops by itself" in reply
+    assert "until it is removed" in reply
+    assert "ends by itself" not in reply
     assert "only sends reminders 07:00–22:00 Vietnam time (UTC+7)" in reply
     remove.assert_not_called()
 
@@ -327,6 +330,49 @@ def test_schedule_pr_reminder_thread_scope_has_no_lookback(bot, collect, check, 
     run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "thread"}, bot)
 
     assert add.call_args.args[5]["lookback_hours"] is None
+
+
+def test_schedule_pr_reminder_stores_the_time_limit_the_request_asked_for(bot, collect, check, db):
+    add, _ = db
+
+    with patch("agent.pr_reminders.tools.datetime", autospec=True) as clock:
+        clock.now.return_value = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
+        reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "expires_in_hours": 72}, bot)
+
+    assert add.call_args.args[5]["expires_at"] == datetime(2026, 11, 7, 12, 0, tzinfo=UTC).timestamp()
+    assert "ends by itself after 72 hours" in reply
+    assert "until it is removed" not in reply
+
+
+def test_schedule_pr_reminder_accepts_the_maximum_time_limit(bot, collect, check, db):
+    add, _ = db
+
+    run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "expires_in_hours": AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS}, bot)
+
+    assert add.call_args.args[5]["expires_at"] is not None
+
+
+def test_schedule_pr_reminder_has_no_time_limit_unless_asked(bot, collect, check, db):
+    add, _ = db
+
+    run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "lookback_hours": 72}, bot)
+
+    assert add.call_args.args[5]["expires_at"] is None
+
+
+@pytest.mark.parametrize(
+    "hours",
+    [0, -3, "72", 1.5, True, AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS + 1, 10**400],
+    ids=["zero", "negative", "string", "float", "bool", "just-over-max", "overflows-a-float"],
+)
+def test_schedule_pr_reminder_rejects_a_bad_time_limit_before_touching_slack(bot, collect, check, db, hours):
+    add, _ = db
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "expires_in_hours": hours}, bot)
+
+    assert "expires_in_hours" in reply
+    add.assert_not_called()
+    collect.assert_not_called()
 
 
 def test_schedule_pr_reminder_keeps_the_schedule_when_nothing_is_waiting_because_a_pr_can_be_shared_later(bot, collect, check, db):
@@ -488,7 +534,7 @@ def test_schedule_pr_reminder_saves_progress_after_the_first_check(bot, collect,
 
     schedule_id, config, check_result, _ = save.call_args.args
     assert schedule_id == add.call_args.args[0]
-    assert config.has_reminded is False
+    assert config.expires_at is None
     assert check_result is check.return_value
 
 

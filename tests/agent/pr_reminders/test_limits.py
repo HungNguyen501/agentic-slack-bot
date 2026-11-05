@@ -48,19 +48,19 @@ def test_validate_reminder_cron_rejects_malformed_expressions(cron):
 
 
 @pytest.mark.parametrize(
-    "age, expired",
+    "expires_at, expired",
     [
-        (timedelta(days=1), False),
-        (timedelta(days=AgentConfigs.PR_REMINDER_LIFETIME_DAYS, minutes=-1), False),
-        (timedelta(days=AgentConfigs.PR_REMINDER_LIFETIME_DAYS, minutes=1), True),
+        (NOW.timestamp() + 60, False),
+        (NOW.timestamp(), True),
+        (NOW.timestamp() - 60, True),
     ],
-    ids=["fresh", "just-inside", "just-past"],
+    ids=["not-yet", "exactly-now", "past"],
 )
-def test_is_reminder_expired_uses_the_lifetime(age, expired):
-    assert is_reminder_expired(str(NOW - age), NOW) is expired
+def test_is_reminder_expired_compares_the_time_limit_with_now(expires_at, expired):
+    assert is_reminder_expired(expires_at, NOW) is expired
 
 
-def test_is_reminder_expired_is_false_without_a_creation_time():
+def test_a_reminder_without_a_time_limit_never_expires():
     assert is_reminder_expired(None, NOW) is False
 
 

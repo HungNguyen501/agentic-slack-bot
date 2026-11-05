@@ -49,6 +49,19 @@ def _parse_lookback(args: dict) -> int:
     return min(value, AgentConfigs.PR_REMINDER_MAX_LOOKBACK_HOURS)
 
 
+def _parse_expires_in_hours(args: dict) -> int | None:
+    value = args.get("expires_in_hours")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ReminderRequestError("expires_in_hours must be a positive whole number of hours.")
+    if value > AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS:
+        raise ReminderRequestError(
+            f"expires_in_hours can be at most {AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS} (one year); leave it out for a reminder that runs until removed."
+        )
+    return value
+
+
 def _thread_links(bot: BotConfig, posted: list[tuple[str, str]]) -> list[str]:
     links = []
     for channel, thread_ts in posted:
@@ -117,6 +130,7 @@ class _ScheduleRequest(NamedTuple):
     channel: str
     lookback_hours: int | None
     mentions: list[str]
+    expires_in_hours: int | None
 
 
 def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
@@ -131,7 +145,7 @@ def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
         raise ReminderRequestError(f"'{target_channel}' is not a Slack channel ID.")
     if scope == "thread" and target_channel != channel:
         raise ReminderRequestError("A thread-scope reminder watches the thread it was requested in, so it can't target another channel.")
-    return _ScheduleRequest(scope, cron, target_channel, _parse_lookback(args) if scope == "channel" else None, mentions)
+    return _ScheduleRequest(scope, cron, target_channel, _parse_lookback(args) if scope == "channel" else None, mentions, _parse_expires_in_hours(args))
 
 
 def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConfig, schedule_id: str, thread_ts: str) -> str:
@@ -180,7 +194,8 @@ def _already_scheduled(existing: Schedule, request: _ScheduleRequest) -> str:
 
 def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
     request = _parse_schedule_request(args, channel)
-    config = ReminderConfig(request.scope, channel, thread_ts, tuple(request.mentions), request.lookback_hours, user_id)
+    expires_at = datetime.now(UTC).timestamp() + request.expires_in_hours * 3600 if request.expires_in_hours else None
+    config = ReminderConfig(request.scope, channel, thread_ts, tuple(request.mentions), request.lookback_hours, user_id, expires_at=expires_at)
 
     # The schedule is kept even when nothing is waiting yet, since a PR can be shared later. The row goes in before the
     # first check posts, so the schedule id in those messages is real, and comes out again if that check fails.
@@ -197,11 +212,12 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
         remove_schedule(schedule_id, bot_id=bot.bot_id)
         raise
 
-    return (
-        f"PR reminder scheduled — id: `{schedule_id}`. {first} It repeats on `{request.cron}` (UTC) but only sends reminders "
-        f"{active_hours_text()}, stops by itself once it has reminded about PRs and none is waiting any more, and ends after "
-        f"{AgentConfigs.PR_REMINDER_LIFETIME_DAYS} days. Ask me to remove schedule `{schedule_id}` to stop it earlier."
+    ends = (
+        f"ends by itself after {request.expires_in_hours} hours. Ask me to remove schedule `{schedule_id}` to stop it earlier."
+        if request.expires_in_hours
+        else f"keeps running, even when nothing is waiting, until it is removed. Ask me to remove schedule `{schedule_id}` to stop it."
     )
+    return f"PR reminder scheduled — id: `{schedule_id}`. {first} It repeats on `{request.cron}` (UTC) but only sends reminders {active_hours_text()}, and {ends}"
 
 
 def dispatch_pr_reminder_tool(name: str, args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:

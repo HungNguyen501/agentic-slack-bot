@@ -36,7 +36,7 @@ user asks agent to check PR approval → check_pr_approvals tool reads the threa
   as a reply in the thread of each PR still waiting (no LLM rewrites the text)
 admin asks for a recurring check → schedule_pr_reminder checks once, then stores a schedules row (kind = pr_reminder)
 scheduler → enqueue process_pr_reminder → worker (agent/pr_reminders/service.py::run_reminder, no LLM)
-  → reminds in PR threads; soft-deletes the row (status != active) once nothing is waiting
+  → reminds in PR threads; soft-deletes the row (status != active) only once its optional time limit passes
 ```
 
 **Data access request:**
@@ -190,7 +190,7 @@ src/
       queries.py                   # GitHub GraphQL query + response parser (pure)
       status.py                    # reviewDecision -> waiting / approved / ... bucket (pure)
       message.py                   # Picks and fills in the reminder templates; the only live mentions are the validated user IDs it is given (pure)
-      limits.py                    # Cron minimum interval, lifetime, 07:00-22:00 Vietnam-time window for scheduled ticks, mention parsing, ReminderRequestError (pure)
+      limits.py                    # Cron minimum interval, optional expiry check, 07:00-22:00 Vietnam-time window for scheduled ticks, mention parsing, ReminderRequestError (pure)
       service.py                   # Collect links, check GitHub, post reminders, run one reminder tick
       tools.py                     # check_pr_approvals / schedule_pr_reminder handlers
   scheduler/app.py           # Cron polling loop
