@@ -301,7 +301,7 @@ Migration `V9__schedules_pr_reminders.sql` adds the three columns to `schedules`
 
 # **Rollout Plan**
 
-1. Merge the migration (`V9`), then apply it with a `db-dev-v…` tag, then `db-staging-v…`, per the deployment notes in `CLAUDE.md`. It is safe ahead of the code: the new columns have defaults, and the old scheduler and tools ignore them.
+1. Merge the migration (`V9`), which the DB Migrate workflow then applies to dev and staging automatically, per the deployment notes in `CLAUDE.md`. It is safe ahead of the code: the new columns have defaults, and the old scheduler and tools ignore them.
 2. Add the Slack scopes and reinstall the dev bot's app; make sure the GitHub App or PAT can read the repos you want covered, and no more.
 3. Ship the code with an `agentic-slack-bot-v…` tag. No new environment variables, so `ansible-infra` needs no change. Skills are baked into the image, so the new skill file only reaches deployed environments with this tag. Don't create a reminder until the scheduler and worker both run the new image: an old scheduler would enqueue a `pr_reminder` row as a scheduled question. They ship in the same image and rollout, so this only matters if a deploy is split.
 4. Try the three example requests in a dev channel, then repeat for the other bots. A bot without the history scopes gets a clear error from the tool, so enabling bots one at a time is safe.

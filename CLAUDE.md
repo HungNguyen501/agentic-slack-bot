@@ -96,9 +96,9 @@ WORKER_COUNT=5 docker compose up -d  # scale workers
 
 Remote deployment is not in this repo. Pushing a tag matching `agentic-slack-bot-vYYYY.MM.DD.<sha>` runs `.github/workflows/image-deploy.yaml`, which builds and pushes the image to Docker Hub. The image is then rolled out by the `slack_bot_deploy` role in the separate `ansible-infra` repo (`make check` / `make deploy ENV=staging IMAGE_TAG=<tag>`; also restart and stop playbooks). That repo owns the production compose file (a copy of `docker-compose.yml` with the pre-built image) and the `.env` handling — keep it in sync when `docker-compose.yml` or required env vars change. Skills are baked into the image in deployed environments, so a skill edit reaches them only through a new image tag and redeploy.
 
-Tags are created with the *Create Tag* workflow (`.github/workflows/create-tag.yaml`, run from `master`; pick `agentic-slack-bot`, `db-dev` or `db-staging`). A tag is `<type>-vYYYY.MM.DD.<sha>`, so a second tag of the same type for the same commit on the same day can't be created — to retry a failed run, use "Re-run jobs" on it instead.
+Image tags are created with the *Create Tag* workflow (`.github/workflows/create-tag.yaml`, run from `master`; pick the `type`, currently only `agentic-slack-bot`). A tag is `<type>-vYYYY.MM.DD.<sha>`, so a second tag of the same type for the same commit on the same day can't be created — to retry a failed run, use "Re-run jobs" on it instead.
 
-DB migrations run from `.github/workflows/db-migrate.yaml` (Flyway via `make db-migrate`). Pushing a `db-dev-v…` tag migrates the `development` database and a `db-staging-v…` tag migrates `staging`; each tag must be on `master`, and the job reads the `SUPABASE_DB_URL` secret of the GitHub Environment of the same name.
+DB migrations run automatically from `.github/workflows/db-migrate.yaml` (Flyway via `make db-migrate`) on every push to `master`. A `dorny/paths-filter` job checks whether the push touched `src/migrations/**`; if so, `migrate-dev` migrates the `development` database and then `migrate-staging` migrates `staging` (it needs `migrate-dev` to succeed). Each job reads the `SUPABASE_DB_URL` secret of the GitHub Environment of the same name. Flyway applies only the pending versions, so re-running is safe.
 
 ## Environment Variables
 
