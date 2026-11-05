@@ -8,6 +8,7 @@ from agent.pr_reminders import tools
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.service import ChannelReadError, CheckResult, ScanResult
 from agent.pr_reminders.status import Bucket, PrStatus
+from common.configs import AgentConfigs
 from connectors.db.schedules import AddedReminder, Schedule
 
 LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
@@ -343,6 +344,14 @@ def test_schedule_pr_reminder_stores_the_time_limit_the_request_asked_for(bot, c
     assert "until it is removed" not in reply
 
 
+def test_schedule_pr_reminder_accepts_the_maximum_time_limit(bot, collect, check, db):
+    add, _ = db
+
+    run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "expires_in_hours": AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS}, bot)
+
+    assert add.call_args.args[5]["expires_at"] is not None
+
+
 def test_schedule_pr_reminder_has_no_time_limit_unless_asked(bot, collect, check, db):
     add, _ = db
 
@@ -351,7 +360,11 @@ def test_schedule_pr_reminder_has_no_time_limit_unless_asked(bot, collect, check
     assert add.call_args.args[5]["expires_at"] is None
 
 
-@pytest.mark.parametrize("hours", [0, -3, "72", 1.5, True], ids=["zero", "negative", "string", "float", "bool"])
+@pytest.mark.parametrize(
+    "hours",
+    [0, -3, "72", 1.5, True, AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS + 1, 10**400],
+    ids=["zero", "negative", "string", "float", "bool", "just-over-max", "overflows-a-float"],
+)
 def test_schedule_pr_reminder_rejects_a_bad_time_limit_before_touching_slack(bot, collect, check, db, hours):
     add, _ = db
 

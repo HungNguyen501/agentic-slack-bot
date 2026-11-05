@@ -104,6 +104,7 @@ class AgentConfigs:
     PR_REMINDER_MAX_ACTIVE_PER_CHANNEL: int = 5
     PR_REMINDER_MAX_MENTIONS: int = 10
     PR_REMINDER_MIN_INTERVAL_MINUTES: int = 30
+    PR_REMINDER_MAX_EXPIRY_HOURS: int = 8760
     # Recurring reminders post from START (inclusive) to END (exclusive), local hour in Vietnam. Vietnam has no DST, so a
     # fixed UTC offset is enough and needs no tz database in the image.
     PR_REMINDER_ACTIVE_START_HOUR: int = 7
@@ -246,7 +247,7 @@ class AgentConfigs:
                         "type": "integer",
                         "description": (
                             "Only when the user explicitly asks the reminder to stop after a time (e.g. 'for 72h', 'for 3 days' is 72): "
-                            "hours until it ends. Omit otherwise: the reminder then runs until removed. "
+                            f"hours until it ends, max {PR_REMINDER_MAX_EXPIRY_HOURS} (one year). Omit otherwise: the reminder then runs until removed. "
                             "Do not set it from a lookback window ('PRs in the last 3d')."
                         ),
                     },

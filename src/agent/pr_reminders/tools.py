@@ -55,6 +55,10 @@ def _parse_expires_in_hours(args: dict) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ReminderRequestError("expires_in_hours must be a positive whole number of hours.")
+    if value > AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS:
+        raise ReminderRequestError(
+            f"expires_in_hours can be at most {AgentConfigs.PR_REMINDER_MAX_EXPIRY_HOURS} (one year); leave it out for a reminder that runs until removed."
+        )
     return value
 
 
