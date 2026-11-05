@@ -15,7 +15,7 @@ NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 IN_HOURS = datetime(2026, 11, 4, 5, 0, tzinfo=UTC)
 NIGHT = datetime(2026, 11, 4, 18, 0, tzinfo=UTC)  # 01:00 in Vietnam
 MENTIONS = ["U1", "U2"]
-CONFIG = {"scope": "channel", "origin_channel": "C9", "origin_thread_ts": "9.0", "lookback_hours": 72, "mentions": MENTIONS, "has_reminded": True}
+CONFIG = {"scope": "channel", "origin_channel": "C9", "origin_thread_ts": "9.0", "lookback_hours": 72, "mentions": MENTIONS}
 
 
 def link(ref, thread_ts, message_ts=None, channel="C1"):
@@ -460,16 +460,37 @@ def test_run_reminder_ends_a_reminder_with_a_malformed_config(bot, db, collect):
     collect.assert_not_called()
 
 
-def test_run_reminder_expires_an_old_reminder_and_says_so_in_the_origin_thread(bot, db, collect, slack):
+def test_run_reminder_expires_a_reminder_past_its_time_limit_and_says_so_in_the_origin_thread(bot, db, collect, slack):
     get, set_status = db
-    get.return_value = schedule(created_at=str(IN_HOURS - timedelta(days=8)))
+    get.return_value = schedule(config=CONFIG | {"expires_at": (IN_HOURS - timedelta(minutes=1)).timestamp()})
 
     service.run_reminder(bot, "s1", IN_HOURS)
 
     set_status.assert_called_once_with("s1", "expired")
     assert slack.post_message.call_args.args[:3] == ("C9", slack.post_message.call_args.args[1], "9.0")
-    assert "7 ngày" in slack.post_message.call_args.args[1]
+    assert "đã hết hạn" in slack.post_message.call_args.args[1]
     collect.assert_not_called()
+
+
+def test_run_reminder_keeps_going_before_its_time_limit(bot, db, collect, slack, github, pr_node):
+    get, set_status = db
+    get.return_value = schedule(config=CONFIG | {"expires_at": (IN_HOURS + timedelta(hours=1)).timestamp()})
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+
+    service.run_reminder(bot, "s1", IN_HOURS)
+
+    set_status.assert_not_called()
+    assert slack.post_message.call_args.args[2] == "1.0"
+
+
+def test_run_reminder_never_expires_without_a_time_limit_however_old_it_is(bot, db, collect, slack, github, pr_node):
+    get, set_status = db
+    get.return_value = schedule(created_at=str(IN_HOURS - timedelta(days=400)))
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+
+    service.run_reminder(bot, "s1", IN_HOURS)
+
+    set_status.assert_not_called()
 
 
 def test_run_reminder_ends_when_the_bot_can_no_longer_read_the_channel(bot, db, collect, slack):
@@ -505,126 +526,37 @@ def test_run_reminder_uses_the_schedules_channel_and_the_origin_thread_for_scann
     collect.assert_called_once_with(bot, scope="thread", channel="C1", thread_ts="7.0", lookback_hours=None)
 
 
-def test_run_reminder_stops_itself_when_nothing_is_waiting(bot, db, collect, slack, github, pr_node):
+def test_run_reminder_keeps_running_when_every_pr_is_approved(bot, db, collect, slack, github, pr_node):
     get, set_status = db
     get.return_value = schedule()
     github.graphql.return_value = graphql_payload((1, pr_node(decision="APPROVED")))
 
     service.run_reminder(bot, "s1", IN_HOURS)
 
-    set_status.assert_called_once_with("s1", "completed")
-    [call] = slack.post_message.call_args_list
-    assert call.args[0] == "C9"
-    assert call.args[2] == "9.0"
-    assert "Không còn PR nào chờ review" in call.args[1]
-
-
-def test_run_reminder_stays_active_when_some_prs_were_left_unchecked(bot, db, collect, slack, github, pr_node):
-    get, set_status = db
-    get.return_value = schedule()
-    collect.return_value = service.ScanResult([link(PrRef("org", "repo", n), f"{n}.0") for n in range(1, 4)], False)
-    github.graphql.return_value = graphql_payload(*((n, pr_node(decision="APPROVED")) for n in (2, 3)))
-
-    with patch.object(AgentConfigs, "PR_REMINDER_MAX_PRS_CHECKED", 2):
-        service.run_reminder(bot, "s1", IN_HOURS)
-
     set_status.assert_not_called()
     slack.post_message.assert_not_called()
 
 
-def test_run_reminder_stays_active_when_none_of_its_prs_can_be_read(bot, db, collect, slack, github):
+def test_run_reminder_keeps_running_when_there_are_no_pr_links_at_all(bot, db, collect, slack):
     get, set_status = db
     get.return_value = schedule()
-    github.graphql.return_value = {"data": {"r0": None}, "errors": [{"type": "NOT_FOUND"}]}
-
-    service.run_reminder(bot, "s1", IN_HOURS)
-
-    set_status.assert_not_called()
-    slack.post_message.assert_not_called()
-
-
-def test_run_reminder_stays_active_when_one_pr_is_unreadable_even_if_the_others_are_approved(bot, db, collect, slack, github, pr_node):
-    get, set_status = db
-    get.return_value = schedule()
-    collect.return_value = service.ScanResult([link(PR1, "1.0"), link(PrRef("org", "other", 9), "2.0")], False)
-    # Links are checked newest first, so the "other" repo (message 2.0) is r0 and org/repo (message 1.0) is r1.
-    github.graphql.return_value = {"data": {"r0": None, "r1": {"p1": pr_node(decision="APPROVED")}}}
-
-    service.run_reminder(bot, "s1", IN_HOURS)
-
-    set_status.assert_not_called()
-    slack.post_message.assert_not_called()
-
-
-def test_run_reminder_stays_active_when_the_slack_scan_stopped_early(bot, db, collect, slack, github, pr_node):
-    get, set_status = db
-    get.return_value = schedule()
-    collect.return_value = service.ScanResult([link(PR1, "1.0")], True)
-    github.graphql.return_value = graphql_payload((1, pr_node(decision="APPROVED")))
-
-    service.run_reminder(bot, "s1", IN_HOURS)
-
-    set_status.assert_not_called()
-
-
-def test_run_reminder_keeps_watching_while_it_has_never_had_a_pr_to_remind_about(bot, db, collect, slack, github, pr_node, merge_config):
-    get, set_status = db
-    get.return_value = schedule(config=CONFIG | {"has_reminded": False})
-    github.graphql.return_value = graphql_payload((1, pr_node(decision="APPROVED")))
-
-    service.run_reminder(bot, "s1", IN_HOURS)
-
-    set_status.assert_not_called()
-    slack.post_message.assert_not_called()
-    merge_config.assert_not_called()
-
-
-def test_run_reminder_keeps_watching_when_the_channel_has_no_pr_links_yet(bot, db, collect, slack, merge_config):
-    get, set_status = db
-    get.return_value = schedule(config=CONFIG | {"has_reminded": False})
     collect.return_value = service.ScanResult([], False)
 
     service.run_reminder(bot, "s1", IN_HOURS)
 
     set_status.assert_not_called()
+    slack.post_message.assert_not_called()
 
 
-def test_run_reminder_remembers_that_it_has_reminded_so_that_it_can_end_later(bot, db, collect, slack, github, pr_node, merge_config):
+def test_run_reminder_keeps_running_after_an_incomplete_check(bot, db, collect, slack, github):
     get, set_status = db
-    get.return_value = schedule(config=CONFIG | {"has_reminded": False})
-    github.graphql.return_value = graphql_payload((1, pr_node()))
+    get.return_value = schedule()
+    collect.return_value = service.ScanResult([link(PR1, "1.0")], True)
+    github.graphql.return_value = {"data": {"r0": None}, "errors": [{"type": "NOT_FOUND"}]}
 
     service.run_reminder(bot, "s1", IN_HOURS)
 
-    merge_config.assert_called_once_with("s1", {"has_reminded": True, "last_reminded": {"C1:1.0": IN_HOURS.timestamp()}})
     set_status.assert_not_called()
-
-
-def test_a_reminder_whose_posts_all_failed_has_not_reminded_and_does_not_end_on_the_next_all_clear(bot, db, collect, slack, github, pr_node, merge_config):
-    get, set_status = db
-    get.return_value = schedule(config=CONFIG | {"has_reminded": False})
-    github.graphql.return_value = graphql_payload((1, pr_node()))
-    slack.post_message.side_effect = slack_error("is_archived")
-
-    service.run_reminder(bot, "s1", IN_HOURS)  # a PR is waiting, but nothing could be delivered
-
-    merge_config.assert_not_called()  # so it still hasn't reminded anyone
-
-    slack.post_message.side_effect = None
-    github.graphql.return_value = graphql_payload((1, pr_node(decision="APPROVED")))
-    service.run_reminder(bot, "s1", IN_HOURS + timedelta(minutes=30))  # approved before any reminder got through
-
-    set_status.assert_not_called()
-
-
-def test_run_reminder_ends_only_after_it_has_reminded_and_everything_is_approved(bot, db, collect, slack, github, pr_node):
-    get, set_status = db
-    get.return_value = schedule(config=CONFIG | {"has_reminded": True})
-    github.graphql.return_value = graphql_payload((1, pr_node(decision="APPROVED")))
-
-    service.run_reminder(bot, "s1", IN_HOURS)
-
-    set_status.assert_called_once_with("s1", "completed")
 
 
 def test_run_reminder_forgets_threads_that_are_no_longer_waiting(bot, db, collect, slack, github, pr_node, merge_config):
@@ -634,7 +566,7 @@ def test_run_reminder_forgets_threads_that_are_no_longer_waiting(bot, db, collec
 
     service.run_reminder(bot, "s1", IN_HOURS)
 
-    merge_config.assert_called_once_with("s1", {"has_reminded": True, "last_reminded": {"C1:1.0": IN_HOURS.timestamp()}})
+    merge_config.assert_called_once_with("s1", {"last_reminded": {"C1:1.0": IN_HOURS.timestamp()}})
 
 
 def test_run_reminder_writes_nothing_when_its_progress_did_not_change(bot, db, collect, slack, github, pr_node, merge_config):
@@ -645,16 +577,6 @@ def test_run_reminder_writes_nothing_when_its_progress_did_not_change(bot, db, c
     service.run_reminder(bot, "s1", IN_HOURS)
 
     merge_config.assert_not_called()
-
-
-def test_run_reminder_ends_when_there_are_no_prs_at_all(bot, db, collect, slack):
-    get, set_status = db
-    get.return_value = schedule()
-    collect.return_value = service.ScanResult([], False)
-
-    service.run_reminder(bot, "s1", IN_HOURS)
-
-    set_status.assert_called_once_with("s1", "completed")
 
 
 def test_run_reminder_leaves_the_reminder_active_when_github_fails(bot, db, collect, slack, github):

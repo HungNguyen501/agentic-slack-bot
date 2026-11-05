@@ -12,7 +12,7 @@ def test_reminder_config_round_trips_through_its_dict():
 
 
 def test_reminder_config_round_trips_its_progress():
-    config = ReminderConfig("thread", "C1", "1.0", ("U1",), has_reminded=True, last_reminded={"C1:1.0": 1730000000.5})
+    config = ReminderConfig("thread", "C1", "1.0", ("U1",), expires_at=1730100000.0, last_reminded={"C1:1.0": 1730000000.5})
 
     assert ReminderConfig.from_dict(config.to_dict()) == config
 
@@ -20,8 +20,15 @@ def test_reminder_config_round_trips_its_progress():
 def test_a_config_saved_without_progress_starts_with_none():
     config = ReminderConfig.from_dict(VALID)
 
-    assert config.has_reminded is False
+    assert config.expires_at is None
     assert config.last_reminded == {}
+
+
+def test_a_config_saved_by_an_older_version_with_has_reminded_still_loads():
+    config = ReminderConfig.from_dict(VALID | {"has_reminded": True})
+
+    assert config.expires_at is None
+    assert "has_reminded" not in config.to_dict()
 
 
 def test_reminder_config_dict_holds_mentions_as_a_json_list():
@@ -42,8 +49,8 @@ def test_reminder_config_dict_holds_mentions_as_a_json_list():
         VALID | {"mentions": []},
         VALID | {"mentions": "U1"},
         VALID | {"mentions": ["U1", 7]},
-        VALID | {"has_reminded": "yes"},
-        VALID | {"has_reminded": 1},
+        VALID | {"expires_at": "tomorrow"},
+        VALID | {"expires_at": True},
         VALID | {"last_reminded": []},
         VALID | {"last_reminded": {"C1:1.0": "yesterday"}},
         VALID | {"last_reminded": {"C1:1.0": True}},
@@ -61,8 +68,8 @@ def test_reminder_config_dict_holds_mentions_as_a_json_list():
         "empty-mentions",
         "mentions-not-a-list",
         "mention-not-a-string",
-        "has-reminded-string",
-        "has-reminded-int",
+        "expires-at-string",
+        "expires-at-bool",
         "last-reminded-not-a-dict",
         "last-reminded-string-time",
         "last-reminded-bool-time",
@@ -102,9 +109,7 @@ def test_every_template_can_be_filled_with_the_values_message_py_passes():
     ReminderMessages.AGE_DAYS.format(n=5)
     ReminderMessages.WAITING_LINE.format(age="5 phút", flair="")
     ReminderMessages.SCHEDULE_FOOTER.format(schedule_id="3f2a", hours="07:00–22:00", offset=7)
-    ReminderMessages.DONE.format(where=ReminderMessages.DONE_WHERE_THREAD, schedule_id="3f2a")
-    ReminderMessages.DONE_WHERE_CHANNEL.format(hours=72)
-    ReminderMessages.EXPIRED.format(schedule_id="3f2a", days=7)
+    ReminderMessages.EXPIRED.format(schedule_id="3f2a")
     ReminderMessages.UNREADABLE.format(schedule_id="3f2a", error_code="not_in_channel")
     ReminderMessages.ACTIVE_HOURS_FOR_AGENT.format(hours="07:00–22:00", offset=7)
     for header in ReminderMessages.HEADERS:

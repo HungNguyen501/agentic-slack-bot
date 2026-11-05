@@ -68,11 +68,9 @@ def validate_reminder_cron(cron: str, now: datetime | None = None) -> None:
         raise ReminderRequestError(f"A PR reminder can run at most every {AgentConfigs.PR_REMINDER_MIN_INTERVAL_MINUTES} minutes.")
 
 
-def is_reminder_expired(created_at: str | None, now: datetime) -> bool:
-    """Whether a reminder created at `created_at` (as the schedules table returns it) has outlived its lifetime."""
-    if not created_at:
-        return False
-    return now - datetime.fromisoformat(created_at) > timedelta(days=AgentConfigs.PR_REMINDER_LIFETIME_DAYS)
+def is_reminder_expired(expires_at: float | None, now: datetime) -> bool:
+    """Whether a reminder with a time limit (`ReminderConfig.expires_at`, unix time) has reached it; one without never expires."""
+    return expires_at is not None and now.timestamp() >= expires_at
 
 
 def is_within_active_hours(now: datetime) -> bool:

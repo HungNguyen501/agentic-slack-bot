@@ -7,7 +7,6 @@ from agent.pr_reminders.message import (
     active_hours_text,
     escape,
     format_age,
-    render_done_note,
     render_expired_note,
     render_thread_message,
     render_unreadable_note,
@@ -164,20 +163,11 @@ def test_render_thread_message_is_none_when_there_is_nothing_to_say():
     assert render_thread_message([], [], mentions=MENTIONS, now=NOW, schedule_id="3f2a") is None
 
 
-@pytest.mark.parametrize("scope, lookback, where", [("thread", None, "trong thread này"), ("channel", 72, "trong 72 giờ qua")])
-def test_render_done_note_names_where_it_looked(scope, lookback, where):
-    note = render_done_note("3f2a", scope, lookback)
-
-    assert where in note
-    assert "`3f2a`" in note
-    assert note.startswith(":tada: Quá đã luôn! Không còn PR nào chờ review")
-
-
-def test_render_expired_note_says_how_long_it_ran_and_how_to_get_another():
-    note = render_expired_note("3f2a", 7)
+def test_render_expired_note_says_the_time_limit_was_reached_and_how_to_get_another():
+    note = render_expired_note("3f2a")
 
     assert "`3f2a`" in note
-    assert "đã làm phiền cả nhà 7 ngày rồi" in note
+    assert "đã hết hạn" in note
     assert "kêu tui lập lịch mới" in note
 
 
@@ -214,13 +204,10 @@ def test_the_wording_comes_from_the_config_class_so_it_can_be_retuned_there():
 
 def test_the_closing_notes_also_come_from_the_config_class():
     with (
-        patch.object(ReminderMessages, "DONE", "DONE {where} {schedule_id}"),
-        patch.object(ReminderMessages, "DONE_WHERE_CHANNEL", "{hours}H"),
-        patch.object(ReminderMessages, "EXPIRED", "EXPIRED {schedule_id} {days}"),
+        patch.object(ReminderMessages, "EXPIRED", "EXPIRED {schedule_id}"),
         patch.object(ReminderMessages, "UNREADABLE", "UNREADABLE {schedule_id} {error_code}"),
     ):
-        assert render_done_note("s1", "channel", 48) == "DONE 48H s1"
-        assert render_expired_note("s1", 7) == "EXPIRED s1 7"
+        assert render_expired_note("s1") == "EXPIRED s1"
         assert render_unreadable_note("s1", "not_in_channel") == "UNREADABLE s1 not_in_channel"
 
 

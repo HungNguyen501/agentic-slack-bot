@@ -1,6 +1,6 @@
 # **PR Review Reminders**
 
-*Ask the bot to check whether pull requests shared in Slack are approved, and to remind the people who haven't reviewed — once, or on a recurring schedule that stops itself when the PRs are approved*
+*Ask the bot to check whether pull requests shared in Slack are approved, and to remind the people who haven't reviewed — once, or on a recurring schedule that runs until it is removed (or until a time limit the requester sets)*
 
 | Authors | hung@100xteam.ai |
 | --- | --- |
@@ -11,7 +11,7 @@
 
 # **Overview**
 
-PR links get shared in Slack and then sit unreviewed because nobody remembers to chase them. This RFC adds two agent tools. One checks pull requests shared in Slack against GitHub and answers with the ones still waiting for approval, mentioning the people the requester names, in the thread where each PR was shared. The other sets that check up to repeat on a schedule: the bot reminds inside the Slack thread where each PR was shared, posts nothing when there is nothing to say, and stops by itself once the PRs are approved.
+PR links get shared in Slack and then sit unreviewed because nobody remembers to chase them. This RFC adds two agent tools. One checks pull requests shared in Slack against GitHub and answers with the ones still waiting for approval, mentioning the people the requester names, in the thread where each PR was shared. The other sets that check up to repeat on a schedule: the bot reminds inside the Slack thread where each PR was shared, posts nothing when there is nothing to say, and keeps running until an admin removes it, or until a time limit the requester asked for.
 
 Example requests:
 
@@ -42,7 +42,7 @@ This document describes the approved design. It is implemented on the `hungnguye
 - Remind the people named in the request by @mention, and ask who when no one is named.
 - Remind inside the thread where each PR was shared, never as a new top-level message.
 - Repeat the check on a schedule.
-- Stop the schedule automatically when nothing is waiting for review any more.
+- Run until an admin removes the schedule, and end it automatically only when the requester asked for a time limit (`expires_in_hours`).
 - Judge "approved" the way GitHub's Merge button does.
 
 ## Non-goals
@@ -65,10 +65,10 @@ This document describes the approved design. It is implemented on the `hungnguye
 - A recurring reminder shows only its schedule id as the way to turn it off, and posts nothing on a run where there is nothing to report.
 - Recurring reminders only post between 07:00 and 22:00 Vietnam time (UTC+7; the end is exclusive, so the last tick is before 22:00), and say so in the message. A tick outside that window does nothing and does not end the reminder. The rule gates the recurring reminder: its ticks, and the first check when a schedule is created, which waits for the first tick inside the window if the schedule is created at night. A user's own one-off `check_pr_approvals` request runs at any hour.
 - Repeating a request doesn't create a second reminder. An active reminder on the same watched channel with the same scope and the same set of people (and, for thread scope, the same thread) is the same job: the tool returns its id, and says how to change it if the cron differs, without scanning, posting or saving anything. The cron and lookback are not part of the identity, so a different cron means "remove it and set it up again", not a second reminder with the same people. The check runs in the same locked transaction as the quota, so two simultaneous requests can't both create it, and an existing reminder is returned even when the quota is full.
-- A recurring reminder is created even when nothing is waiting yet, since a PR can be shared later. It ends itself only after it has reminded about some PR and a later run proves none is waiting (every PR checked and readable, the Slack scan complete), and also after a maximum lifetime, so it can never run forever. An admin can end it at any time by schedule id.
+- A recurring reminder is created even when nothing is waiting yet, since a PR can be shared later. It runs until an admin removes it by schedule id: "nothing is waiting" never ends it, because new PRs keep being shared. It ends by itself only when the request set a time limit (`expires_in_hours`, stored as `config.expires_at`), when its channel becomes unreadable, or when its `config` is malformed. The per-channel cap keeps permanent reminders from piling up.
 - A report or a stop never treats "nothing found" as "nothing waiting" when the check was incomplete: PRs left unchecked, PRs GitHub couldn't return, or a Slack scan cut short by its message cap all make the result inconclusive.
 - A transient GitHub or Slack failure on one run must not end the reminder; the next tick tries again.
-- Limits: 14 days of lookback, 1,000 channel messages scanned, 100 PRs checked and 25 threads reminded per run; recurring reminders run at most every 30 minutes, live at most 7 days, and at most 5 may be active per channel.
+- Limits: 14 days of lookback, 1,000 channel messages scanned, 100 PRs checked and 25 threads reminded per run; recurring reminders run at most every 30 minutes and at most 5 may be active per channel.
 - Link parsing, status bucketing, message rendering and config validation are pure functions that can be tested without any service.
 
 # Solution
@@ -130,11 +130,11 @@ sequenceDiagram
     Queue->>Agent: process_pr_reminder
     Agent->>Slack: reads thread / channel history
     Agent->>GitHub: fetches current PR status
-    alt something is waiting for review
+    alt past the time limit the request set (if any)
+        Agent->>Slack: posts one "expired" note in the request thread
+        Agent->>Database: soft-deletes the schedule by marking it expired
+    else something is waiting for review
         Agent->>Slack: posts a reminder in the thread of each waiting PR
-    else nothing waiting
-        Agent->>Slack: posts one "all approved, stopping" note in the request thread
-        Agent->>Database: soft-deletes the schedule by marking it completed
     end
 ```
 
@@ -171,7 +171,7 @@ A new skill, `13_pr_reminders.md` (`always: false`, description starting "Use wh
 - **What counts as a link.** A regex for `https://github.com/<owner>/<repo>/pull/<number>` run over message `text`, and also over attachments (`title_link`, `from_url`, `original_url`) and `blocks`. This matters because the GitHub Slack app posts PR notifications as attachments whose `text` can be empty. Slack's `<url|label>` wrapping is handled.
 - **Own messages are skipped.** The bot's earlier reminders contain PR links, so messages from the bot are ignored; otherwise its own reminders would keep PRs "alive" in the window.
 - **Where each link lives.** Every link keeps the message it was found in, as `(channel, message ts, thread ts)`. The thread to remind in is the message's own `thread_ts` if it has one, otherwise the message's `ts`, since replying to a top-level message starts a thread on it. A link typed in the request itself lives in the request's thread. If a PR appears in several messages, the most recent one wins, so the reminder lands in the thread that is probably still active.
-- **Result.** A de-duplicated list of PRs, each with its target thread. The 100 most recently mentioned are checked; the rest are counted, reported in a one-off summary, and stop a recurring reminder from ending (see Stopping).
+- **Result.** A de-duplicated list of PRs, each with its target thread. The 100 most recently mentioned are checked; the rest are counted, reported in a one-off summary, and are reported in the one-off summary as an incomplete check.
 
 ## Checking PR Status
 
@@ -220,25 +220,24 @@ Waiting PRs are grouped by target thread, and each thread gets one message, rend
 - **Footer.** A recurring reminder ends with one line: `Lịch nhắc 3f2a…c9 — nhắn "xoá lịch nhắc 3f2a…c9" để tui hết làm phiền nha. Tui chỉ nhắc từ 07:00–22:00 giờ Việt Nam (UTC+7) thôi, tối còn đi ngủ :zzz:`. That id is the only thing about the schedule shown in a PR thread; there is no "Scheduled question" header and no summary. The `schedules` skill tells the agent that "xoá lịch nhắc <id>" means `remove_schedule`.
 
 The notes posted in the origin thread share the voice:
-- done: `:tada: Quá đã luôn! Không còn PR nào chờ review trong 72 giờ qua nữa, tui xin phép giải nghệ lịch nhắc 3f2a…c9 nha. Cảm ơn cả nhà :clap:`
-- expired: `:hourglass: Lịch nhắc 3f2a…c9 đã làm phiền cả nhà 7 ngày rồi, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!`
+- expired (only for a reminder created with a time limit): `:hourglass: Lịch nhắc 3f2a…c9 đã hết hạn như cả nhà đặt, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!`
 - unreadable channel: `:warning: Ủa, tui không thấy channel của lịch nhắc 3f2a…c9 nữa (lỗi Slack: not_in_channel), nên tui treo giày nghỉ nhắc luôn. Kiểm tra giúp tui coi tui còn ở trong channel và có quyền đọc lịch sử (history scopes) không nha.`
 
 Only what the code posts to Slack is Vietnamese. The tool descriptions, the summaries returned to the agent (`active_hours_text()` stays English) and the skill files stay in English; the agent replies in the language the user wrote in. The language is fixed for every bot; a per-bot setting would be the next step if a bot serves a team that doesn't read Vietnamese.
 
-When nothing is waiting, the one-off tool says so in its summary ("Nothing is waiting for review :white_check_mark:"), which the agent relays, and a recurring reminder posts the done note above and ends. PRs that get approved simply stop appearing in their thread's reminders, so each thread goes quiet as soon as its PRs are done.
+When nothing is waiting, the one-off tool says so in its summary ("Nothing is waiting for review :white_check_mark:"), which the agent relays, and a recurring reminder simply stays quiet and keeps watching. PRs that get approved simply stop appearing in their thread's reminders, so each thread goes quiet as soon as its PRs are done.
 
 ## Recurring Reminders
 
 - **Storage.** A row in the existing `schedules` table with `kind = 'pr_reminder'`. The generic columns (`bot_id`, `cron`, `channel`) are used as they are; the settings live in a new `config jsonb` column. `question`, which is `NOT NULL`, holds a short label generated by code (for example `PR review reminder · channel scope, last 72h`), so `list_schedules` stays readable. It is never sent to an LLM for this kind.
 - **Scheduler.** `scheduler/app.py` already loads every schedule on each tick. It now loads only `status = 'active'` rows and picks the job by `kind`: `process_scheduled_question` for `question` (unchanged) and `process_pr_reminder(schedule_id, bot_id)` for `pr_reminder`. It never calls GitHub or Slack, preserving the service boundary. A reminder's dedup key is `scheduler:last_fired:{sha256[:16]}` of `pr_reminder:{id}:{cron}`, the existing Redis key pattern, so the key table in `architecture.md` needs no new entry. Question schedules keep their existing key, so shipping this can't change any existing schedule's key and double-fire it.
-- **Worker task.** `process_pr_reminder` is a thin shell over `agent/pr_reminders/service.py`. It loads the row and the bot and does nothing if the row is no longer `active`. If the schedule is older than the 7-day lifetime it posts one "expired" note in the origin thread and sets `status = expired`. Otherwise it collects PRs, checks them and either posts a reminder in each waiting PR's thread or, if nothing is waiting, posts the closing note in the origin thread and sets `status = completed`. No LLM is involved, so a run costs one Slack read, one GitHub call and one Slack post per thread that has waiting PRs.
+- **Worker task.** `process_pr_reminder` is a thin shell over `agent/pr_reminders/service.py`. It loads the row and the bot and does nothing if the row is no longer `active`. If the reminder has a time limit (`config.expires_at`) and it has passed, it posts one "expired" note in the origin thread and sets `status = expired`. Otherwise it collects PRs, checks them and posts a reminder in each waiting PR's thread, or nothing when none is waiting. No LLM is involved, so a run costs one Slack read, one GitHub call and one Slack post per thread that has waiting PRs.
 - **Where it posts.** Reminders go in the thread of the message that holds each PR link (see Collecting PR Links), so they are always replies and never new top-level messages. Only two things go to the *origin thread*, the request thread stored in `config.origin_channel` and `config.origin_thread_ts`: the schedule id at creation and the closing or expiry note. That matters when the reminder watches a different channel from the one the admin asked in, since there is no single thread to close out in the watched channel. A mention inside a thread reply still notifies the person.
 - **Scope on each run.** `thread` scope rescans the origin thread, so PR links added to it later are picked up; the schedule's `channel` must be the origin channel. `channel` scope rescans the lookback window, which slides; a PR that ages out of the window stops being tracked.
-- **Stopping.** The automatic stop is a soft delete: the row stays, `status` becomes `completed` (or `expired`), and the scheduler no longer loads it. A run ends the reminder only if it has reminded before (`config.has_reminded`) and proves nothing is waiting: no PR is waiting for review, every linked PR was checked (none over the cap), none was unreadable, and the Slack scan completed. A reminder that has never had a PR waiting keeps watching quietly until its lifetime ends. If the check was incomplete, the reminder stays active with a logged warning and tries again next tick, so one PR the credentials can't see keeps it alive until the lifetime ends. A manual stop by an admin uses the existing `remove_schedule`, which deletes the row.
+- **Stopping.** A reminder has no end of its own: with no `expires_in_hours` in the request it runs until an admin removes it with the existing `remove_schedule`, which deletes the row. Nothing waiting, or never having had anything to remind about, doesn't end it, and neither does an incomplete check. The automatic stops are soft deletes (the row stays and the scheduler no longer loads it): `status = expired` once `config.expires_at` has passed, and `completed` for a permanent problem (see Failures). `expires_in_hours` is passed by the agent only when the user explicitly asks for a time limit ("for 72h"); a lookback window ("PRs in the last 3d") is not one.
 - **Failures.** Reminder jobs are not retried by RQ: a run posts before it saves its progress, so a retry after a late failure would repeat the mentions. A transient GitHub error, or a Slack error while reading, fails the job; the reminder stays `active` and the next tick is the retry. A Slack error while posting (a refusal, a timeout or a dropped connection) is only a failed post for that thread, logged and skipped, and does not count as having reminded. If the first check at scheduling time posts reminders and then fails to save its progress, the schedule is kept (the reminders name it) and the reply says the next run may remind those threads again; only a failure before anything is posted removes the row. A permanent problem, such as `not_in_channel`, `missing_scope` or a malformed `config`, is posted back to the origin thread when possible, logged, and ends the reminder (`status = completed`) rather than failing every tick.
-- **Active hours.** `run_reminder` first checks the clock (`limits.is_within_active_hours`, a fixed UTC+7 offset since Vietnam has no DST, constants in `AgentConfigs`) and returns at once outside 07:00–22:00: no Slack read, no GitHub call, no post, no status change. Lifetime keeps counting, so a reminder can expire overnight; the expiry note is posted on the first tick back inside the window. The one-off tool never consults the clock; the first check of `schedule_pr_reminder` does, as above.
-- **Limits.** Minimum interval 30 minutes, checked exactly: the minutes and hours the cron expands to give the shortest gap within a day, and the days it is eligible on over the next two years give the gap across midnight, so `0,40 0,2,23 * * *` (23:40, then 00:00) is rejected while the same times on Mondays only are not. Lifetime 7 days from `created_at`. At most 5 active reminders per channel, enforced by counting and inserting in one transaction under a Postgres advisory lock on (bot, channel), so concurrent requests on different worker replicas can't both pass. All are constants in `AgentConfigs`. No `expires_at` column is needed, since `created_at` already exists.
+- **Active hours.** `run_reminder` first checks the clock (`limits.is_within_active_hours`, a fixed UTC+7 offset since Vietnam has no DST, constants in `AgentConfigs`) and returns at once outside 07:00–22:00: no Slack read, no GitHub call, no post, no status change. A time limit keeps counting, so a reminder can expire overnight; the expiry note is posted on the first tick back inside the window. The one-off tool never consults the clock; the first check of `schedule_pr_reminder` does, as above.
+- **Limits.** Minimum interval 30 minutes, checked exactly: the minutes and hours the cron expands to give the shortest gap within a day, and the days it is eligible on over the next two years give the gap across midnight, so `0,40 0,2,23 * * *` (23:40, then 00:00) is rejected while the same times on Mondays only are not. A time limit is optional and comes from the request (stored as `config.expires_at`). At most 5 active reminders per channel, enforced by counting and inserting in one transaction under a Postgres advisory lock on (bot, channel), so concurrent requests on different worker replicas can't both pass. The constants are in `AgentConfigs`; the time limit lives in `config`, so no column is needed.
 
 ## Changes to Existing Code
 
@@ -251,7 +250,7 @@ When nothing is waiting, the one-off tool says so in its summary ("Nothing is wa
 - **`common/configs.py`:** the tool entries, `"pr_reminder"` in `AgentTool.category`, the limits as `AgentConfigs` constants, the `ReminderConfig` class (builds and validates the `config` JSON), and the `ReminderMessages` class (the wording of the reminder messages).
 - **`agent/dispatch.py`:** one branch for the `pr_reminder` category, and the `schedule`-category branch passes the request's channel and thread to `schedule_pr_reminder`.
 - **`src/worker/tasks.py`:** the `process_pr_reminder` task.
-- **New `src/agent/pr_reminders/`:** `pr_links.py`, `queries.py`, `status.py`, `message.py` (fills in the templates of `ReminderMessages`), `limits.py` (all pure; `limits.py` has the cron minimum-interval, lifetime, active-hours and mention-parsing checks), `service.py` (collect, check, post), `tools.py` (the two tool handlers).
+- **New `src/agent/pr_reminders/`:** `pr_links.py`, `queries.py`, `status.py`, `message.py` (fills in the templates of `ReminderMessages`), `limits.py` (all pure; `limits.py` has the cron minimum-interval, expiry, active-hours and mention-parsing checks), `service.py` (collect, check, post), `tools.py` (the two tool handlers).
 - **New skill file** `13_pr_reminders.md`.
 - **Unchanged:** the receiver, the agent loop and `process_scheduled_question`.
 
@@ -281,7 +280,7 @@ Migration `V9__schedules_pr_reminders.sql` adds the three columns to `schedules`
 | --- | --- |
 | schedules.kind | Selects the job the scheduler enqueues and which tools may edit the row. |
 | schedules.status | `active` rows are picked up by the scheduler; `completed` and `expired` are the automatic soft-delete states. Question schedules stay `active` for good. |
-| schedules.config | For `pr_reminder`: `scope` (`thread` or `channel`), `mentions` (Slack user IDs, at least one), `lookback_hours` (channel scope), `origin_channel` and `origin_thread_ts` (the request thread, which gets the schedule id and the closing note and is the thread scanned in `thread` scope), `created_by`, and the progress the job saves as it runs: `has_reminded` (a reminder may only end once it has reminded) and `last_reminded` (thread key to unix time, so threads take turns). Reminders themselves go to each PR's own thread, which is found on every run, so no target thread is stored. Validated in `common/configs.py`, not by the database. |
+| schedules.config | For `pr_reminder`: `scope` (`thread` or `channel`), `mentions` (Slack user IDs, at least one), `lookback_hours` (channel scope), `origin_channel` and `origin_thread_ts` (the request thread, which gets the schedule id and the closing note and is the thread scanned in `thread` scope), `created_by`, `expires_at` (unix time, only when the request set a time limit) and the progress the job saves as it runs: `last_reminded` (thread key to unix time, so threads take turns). Reminders themselves go to each PR's own thread, which is found on every run, so no target thread is stored. Validated in `common/configs.py`, not by the database. |
 
 # **External Systems Touched**
 
@@ -295,7 +294,7 @@ Migration `V9__schedules_pr_reminders.sql` adds the three columns to `schedules`
 - **Run a recurring check as a plain scheduled question** (the existing `add_schedule`, with the agent calling the one-off tool each run). No schema change, but each run is about three LLM calls, `process_scheduled_question` posts a new top-level "Scheduled question" message and summary every time, a run can't stay quiet, and it has no way to know its own schedule id and stop itself. These are exactly the behaviours this RFC needs, so it was rejected.
 - **A separate `pr_reminders` table.** Cleaner columns and database-level constraints (for example a thread-scope row must have a thread), and no `kind` guard on `update_schedule`. It costs a second table, a second scheduler query and a second CRUD module. Rejected in favour of reusing `schedules`; switch to it if more recurring job kinds appear and `config` starts to sprawl.
 - **One consolidated reminder thread per reminder** (a single summary of every waiting PR). Fewer posts and a clean place to see everything, but the nudge lands away from the PR's own discussion, which is where reviewers will see it. Rejected in favour of reminding in each PR's thread.
-- **Keep the stop rule narrower** (snapshot the PRs at creation and stop when those are approved). More precise for channel scope, but needs a stored PR list. Rejected for v1; the simple rule is "stop when nothing is waiting for review".
+- **Stop when nothing is waiting for review** (v1 behaviour, with a 7-day lifetime). Dropped: admins want reminders to run permanently, since new PRs keep being shared, and the stop note read as the bot quitting. A time limit is now opt-in per request.
 - **GitHub webhooks (or the GitHub Slack app) instead of polling.** Real-time and no Slack history scopes, but it needs a public endpoint with signature checking on the receiver, repo-side config, and doesn't cover "what was posted in the last 3 days". Polling is enough.
 - **Only track PRs the bot was mentioned with.** No new Slack scopes, but it breaks the "PRs in this channel" request.
 - **Approval = at least one approving review.** Ignores required reviewer counts and CODEOWNERS, so the bot could call a PR approved while the Merge button is still blocked.
@@ -309,7 +308,7 @@ Migration `V9__schedules_pr_reminders.sql` adds the three columns to `schedules`
 
 # **Testing**
 
-Tests mirror `src/` under `tests/`. Pure modules get table-driven tests: link extraction (plain, `<url|label>`, attachment-only, duplicates, non-PR GitHub links, other hosts, the bot's own messages), status bucketing for every row of the table above including null `reviewDecision`, message rendering and escaping (a title containing `<!channel>` or `<@U1>` stays inert, and the only live mentions are the ones passed in), mention parsing (`<@U1>`, `<@U1|name>`, bare `U1`, duplicates, the limit, and rejection of `<!channel>`, `<!here>`, user groups and plain names), the worker's removal of only the bot's own mention, and `config` and cron validation (minimum interval, lifetime, per-channel cap).
+Tests mirror `src/` under `tests/`. Pure modules get table-driven tests: link extraction (plain, `<url|label>`, attachment-only, duplicates, non-PR GitHub links, other hosts, the bot's own messages), status bucketing for every row of the table above including null `reviewDecision`, message rendering and escaping (a title containing `<!channel>` or `<@U1>` stays inert, and the only live mentions are the ones passed in), mention parsing (`<@U1>`, `<@U1|name>`, bare `U1`, duplicates, the limit, and rejection of `<!channel>`, `<!here>`, user groups and plain names), the worker's removal of only the bot's own mention, and `config` and cron validation (minimum interval, expiry, per-channel cap).
 
 The tool handlers and `process_pr_reminder` are tested with Slack, GitHub and Supabase mocked at the boundary (`autospec=True`):
 - non-admin refused by `schedule_pr_reminder`;
@@ -317,12 +316,12 @@ The tool handlers and `process_pr_reminder` are tested with Slack, GitHub and Su
 - a reminder that has never delivered a reminder keeps watching, remembers when it first does (a run whose posts all failed doesn't count), and only then can end;
 - creating a reminder at night keeps the schedule but reads and posts nothing; a one-off check at night still runs;
 - a cron whose shortest gap is across midnight, an absurdly long PR number, and the per-channel quota under concurrency are each covered by their own tests;
-- an incomplete check (unchecked PRs, an unreadable PR, a truncated Slack scan) never ends a reminder and never produces an all-clear;
+- an incomplete check (unchecked PRs, an unreadable PR, a truncated Slack scan) never produces an all-clear in the one-off summary, and a recurring reminder is never ended by a check;
 - with more waiting threads than fit in one run, the next tick reminds the threads that were left out first;
 - a run with waiting PRs posts one reply per target thread (PRs sharing a thread get one message), never a top-level message, and the thread of a PR linked in several messages is the most recent one;
 - a PR linked in a top-level message is reminded in a thread on that message, and one linked in a reply in that reply's thread;
-- a run with nothing waiting posts the closing note once, in the origin thread, and sets `completed`;
-- a run past the lifetime posts the expiry note and sets `expired`;
+- a run with nothing waiting posts nothing and leaves the reminder `active`, however many times it has already reminded;
+- a reminder without a time limit never expires, however old; one past its `expires_at` posts the expiry note and sets `expired`;
 - a transient GitHub error leaves the row `active`; `not_in_channel` ends it with a note;
 - a 404 is listed as "can't access" without leaking details.
 
@@ -332,11 +331,11 @@ Regression tests for the shared table: the scheduler enqueues the right job per 
 - **Many threads means many posts.** A run posts one message per thread with waiting PRs, at most 25 threads. When more wait than fit, the threads reminded longest ago (or never) go first, using the per-thread times in `config.last_reminded`, so they take turns across ticks; threads waiting for review come before author-only ones, and ties go to the oldest PR. The rest are counted as deferred. A thread reminded less than half the minimum interval ago (15 minutes) is skipped, so a tick the scheduler fires seconds after the first check, which happens when a reminder is created just after a cron boundary, doesn't repeat it; a normal tick, a full interval later, is unaffected. Slack allows about one message per second per channel; the poster honours `Retry-After` on a 429 and spaces posts out. Even at the 30-minute minimum, many unapproved PRs means a lot of nudging, which is the main argument for the escalation cap below.
 - **The request thread gets a confirmation, so it can look doubled.** When the PR link lives in the request's own thread, that thread gets the reminder and the agent's short confirmation. Acceptable for v1; the tool could skip the confirmation in that case.
 - **A thread the bot can't post in.** Archived channels, deleted parent messages and threads in channels the bot has left fail per thread. The run logs it, carries on with the other threads and doesn't end the reminder; only a channel-wide `not_in_channel` ends it.
-- **"Nothing waiting" can still be a false all-clear in two cases.** For channel scope, a PR that ages out of the lookback window while still unapproved ends the reminder, and a PR waiting on the author doesn't keep it alive. The closing note names the window so it isn't mistaken for "everything was approved". Unchecked PRs, unreadable PRs and a truncated Slack scan no longer end a reminder (see Stopping).
+- **"Nothing waiting" is not an all-clear for the one-off tool when the check was incomplete.** Unchecked PRs, unreadable PRs and a truncated Slack scan make its summary say it can't confirm. A recurring reminder is unaffected: it never ends on a check, so a PR that ages out of a channel-scope lookback window just stops being tracked.
 - **Channel scope only scans top-level messages.** A PR link posted inside a thread reply is missed, and a recurring reminder that only sees such PRs never starts. The tool description says top-level only. Adding replies costs one `conversations.replies` call per active thread and is the first thing to hit Slack rate limits. Worth doing if people paste PRs into threads.
 - **Anyone can trigger a one-off reminder for anyone.** A user can have the bot mention up to 10 people per request, and nothing rate-limits one-off checks. The 30-minute minimum caps recurring reminders, but a short per-thread cooldown on one-off checks (a Redis key, which would need a row in the key table in `architecture.md`) would stop mention spam. Add it if misuse shows up.
 - **Working hours are fixed.** Recurring reminders post 07:00–22:00 Vietnam time only, the same for every bot, channel and reminder. There are no per-reminder hours, no timezone setting, and weekends and public holidays are not skipped. A per-reminder `active_hours` in `config`, or a timezone per bot, would be the next step if teams in other timezones use this.
-- **Escalation.** Re-pinging every few minutes until approval can be annoying. A per-reminder cap on posts, or backing off after N reminders, can be added later; the 7-day lifetime is the only brake today.
+- **Escalation.** Re-pinging every few minutes until approval can be annoying. A per-reminder cap on posts, or backing off after N reminders, can be added later; with no time limit, removing the schedule is the only brake today.
 - **People are named by hand.** The requester has to @mention everyone, every time. Working out who owes a review needs the PR's requested reviewers mapped from GitHub logins to Slack users (a `github_slack_users` table per bot, or a "link my GitHub account" tool with verification).
 - **`config` is unchecked by the database.** A malformed row is caught only by the code that wrote it, so `process_pr_reminder` treats it as a permanent error and ends the reminder. The `question` column also holds a generated label for this kind, which is a small abuse of its meaning.
 - **Multiple GitHub installations** (repos in more than one org) are unsupported by the current token cache.
