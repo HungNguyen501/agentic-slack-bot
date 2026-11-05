@@ -4,12 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       type:
-        description: 'Tag type: agentic-slack-bot (build + push image), db-dev / db-staging (run DB migrations)'
+        description: 'Tag type: agentic-slack-bot (build + push image)'
         type: choice
         options:
           - agentic-slack-bot
-          - db-dev
-          - db-staging
         default: agentic-slack-bot
 
 permissions:
