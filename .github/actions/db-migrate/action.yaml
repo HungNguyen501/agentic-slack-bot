@@ -8,7 +8,7 @@ runs:
     - name: Mask decoded database password
       shell: bash
       run: |
-        python3 -c "import os; from urllib.parse import urlparse, unquote; print('::add-mask::' + unquote(urlparse(os.environ['SUPABASE_DB_URL']).password))"
+        python3 -c "import os; from urllib.parse import urlparse, unquote; print('::add-mask::' + unquote(urlparse(os.environ['SUPABASE_DB_URL']).password).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))"
 
     - name: Show migration status (before)
       shell: bash

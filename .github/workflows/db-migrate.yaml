@@ -12,6 +12,7 @@ jobs:
   changes:
     name: Detect migration changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       migrations: ${{ steps.filter.outputs.migrations }}
 
@@ -32,6 +33,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     environment: development
     concurrency:
       group: db-migrate-development
@@ -51,6 +53,7 @@ jobs:
     needs: [changes, migrate-dev]
     if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     environment: staging
     concurrency:
       group: db-migrate-staging
