@@ -135,6 +135,80 @@ The sync is a generic module, not form-specific; any feature that needs slowly-c
 - **Scheduled.** A recurring sync is a row in the existing `schedules` table with `kind = 'dataset_sync'` and `config = {"dataset": ...}`, picked up by the scheduler like any other schedule and run by the worker as `process_dataset_sync`. At most one active recurring sync exists per dataset (across bots; a bot can only remove its own, so changing another bot's has to be done through that bot), and the minimum interval is 60 minutes. Successful runs are silent; a failed run is posted in the schedule's channel.
 - **On demand.** Admins (the bot's `admin_users`) can ask the agent to list datasets and their sync state, sync one now, or schedule a recurring sync. The agent is instructed to ask which dataset (showing the list) and what cadence and failure channel when the request is unclear, and to relay a refusal rather than retry it.
 
+### Runbook: syncing the form's two datasets
+
+Both datasets are registered by migration V11 and start empty ("never synced"); the form refuses to open until both have synced once. The exact queries registered are:
+
+```sql
+-- store_locations
+select company_key, company, location_market, location, id as location_id
+from vireox.ai_semantic.unified_dim_store_locations
+
+-- row_filter_tags
+select explode(collect_set(regexp_replace(try_element_at(split(target_columns, ','), 4), "[ '\" ]", ""))) as tag_name
+from system.information_schema.row_filters a
+```
+
+The form reads the columns `company_key`, `company`, `location_market` and `location` from the first and `tag_name` from the second, so a changed query must keep those names.
+
+**Before the first run**
+
+1. Apply the migrations (`make db-migrate`; `make db-migrate-info` should show V10 and V11 as `Success`).
+2. Run the services on the new image (`make compose-up` locally rebuilds; elsewhere roll out the new image tag).
+3. Your Slack user ID is in the bot's `admin_users` (`select id, admin_users from bots;`). Skip this if you use the command-line route below.
+4. The Databricks token (`DATABRICKS_ACCESS_TOKEN`) can read the locations table and see every row filter. Unity Catalog only shows `information_schema.row_filters` entries the querying identity has privileges on, so a token without access gives a short or empty tags list.
+
+**Run the sync, from Slack** (as an admin, in any channel the bot is in)
+
+1. `@bot what datasets can be synced?` lists both datasets with their state.
+2. `@bot sync store_locations`, then `@bot sync row_filter_tags`. Each reply gives the new row count.
+3. To keep them fresh, schedule each one, for example:
+   - `@bot schedule a daily sync of store_locations at 02:00 UTC, report failures in this channel`
+   - `@bot schedule a daily sync of row_filter_tags at 02:15 UTC`
+
+   Cron is UTC, the minimum interval is 60 minutes, the scheduler picks a run up within about 3 minutes of its time, and successful runs post nothing. To stop one, say `@bot remove schedule <id>`; `@bot list schedules` shows the ids.
+
+**Run the sync, from the command line** (no Slack or admin rights needed; same lock and safeguards)
+
+```bash
+docker compose exec worker python -c "from agent.dataset_sync.service import sync_dataset; print(sync_dataset('store_locations'))"
+docker compose exec worker python -c "from agent.dataset_sync.service import sync_dataset; print(sync_dataset('row_filter_tags'))"
+```
+
+A `SyncResult(dataset=..., row_count=..., previous_row_count=...)` line means it worked; a failure prints the reason as a `DatasetSyncError`. Add `force=True` to `sync_dataset(...)` only to override the "much smaller than the stored copy" refusal.
+
+**Check the result**
+
+```sql
+select dataset, row_count, last_status, last_error, last_synced_at from synced_datasets;
+```
+
+Expect `last_status = 'ok'`, a non-zero `row_count` for both, and a recent `last_synced_at`. Then ask the bot for data access in an allowed channel and click "Open Form": the allowed value, scope value and tags dropdowns show the synced data. Compare the counts and values with the lists that used to be in the code.
+
+**If it fails**
+
+| What you see | Meaning and fix |
+| --- | --- |
+| The form says a dataset "has not been synced yet" | Run the sync for that dataset. |
+| `Databricks query failed: ... PERMISSION_DENIED` or `TABLE_OR_VIEW_NOT_FOUND` | The token can't read the table. Grant access, or check the table name. |
+| `The query returned no rows` | For tags, the token probably can't see any row filters (see step 4). The previous copy is kept; an empty result can never be forced. |
+| `returned N rows but the stored copy has M` | The result is under half the stored size, which usually means lost privileges. Fix that first; sync with `force` only if the drop is real. |
+| `Query was cancelled (exceeded 50s timeout)` | Usually a cold warehouse; run it again. |
+| `already running` | Another sync of the same dataset holds the lock; wait a minute. |
+| `duplicate column name(s)` | Give each selected column a unique alias in the query. |
+| The form says a dataset "is missing column(s)", or a value is "too long", or a dropdown has too many options | The data can't make a valid form under Slack's limits (see below); fix the source data or the query. |
+
+**Changing a query or adding a dataset** needs no deploy:
+
+```sql
+update synced_datasets set source_sql = $sql$ select ... $sql$ where dataset = 'store_locations';
+
+insert into synced_datasets (dataset, description, source_sql)
+values ('my_dataset', 'What it is for', $sql$ select ... $sql$);
+```
+
+Then sync it. A query must be a `SELECT` or `WITH` and return at most 50,000 rows. The change applies to the next sync; the stored copy is not touched until then.
+
 ### Why a Redis snapshot instead of reading Supabase at click time
 
 Slack gives the receiver about three seconds from a button click to open the form, and the receiver is deliberately free of database access. So the worker, which is allowed to read Supabase, builds the dropdown options when it posts the button and stores them in Redis for the button's lifetime; the receiver only does a Redis read. The trade-off is that a form shows the data as of the moment the button was posted (at most an hour old).
