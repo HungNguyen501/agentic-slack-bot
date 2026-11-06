@@ -1,4 +1,5 @@
 """Slack webhook receiver — verify signatures, deduplicate events, enqueue work."""
+import asyncio
 import hashlib
 import hmac
 import json
@@ -20,7 +21,10 @@ from connectors.db.bots import BotConfig, get_by_app_id
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
 
-redis_conn = Redis.from_url(Configs.REDIS_URL)
+# Slack gives the receiver about 3 s to answer or open a form, so a slow or unreachable Redis must fail fast, not hang.
+_REDIS_TIMEOUT_SECONDS = 2
+
+redis_conn = Redis.from_url(Configs.REDIS_URL, socket_timeout=_REDIS_TIMEOUT_SECONDS, socket_connect_timeout=_REDIS_TIMEOUT_SECONDS)
 queue = Queue(name="slack_events", connection=redis_conn)
 
 app = FastAPI()
@@ -184,7 +188,7 @@ async def slack_interactivity(request: Request) -> dict:
         action = payload["actions"][0]
         if action.get("action_id") == "open_access_request_form":
             value = json.loads(action["value"])
-            options = _load_form_options(value)
+            options = await asyncio.to_thread(_load_form_options, value)
             # Missing expires_at means this button was posted before the TTL feature shipped —
             # default to 0 (always in the past) so those old buttons are refused, not grandfathered in.
             if time.time() > value.get("expires_at", 0) or options is None:

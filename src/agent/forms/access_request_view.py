@@ -2,11 +2,10 @@
 import re
 from dataclasses import dataclass, field
 
-from agent.forms.access_request_options import FormOptions
+from agent.forms.access_request_options import FormOptions, allowed_value_groups
 
-# Slack's limits on select menus: 75 characters of option text, and 100 options per select / per option group.
+# Slack allows 75 characters of option text and of an option group's label.
 _OPTION_TEXT_MAX = 75
-_GROUP_OPTIONS_MAX = 100
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -39,19 +38,6 @@ def _option(value: str) -> dict:
     return {"text": {"type": "plain_text", "text": text}, "value": value}
 
 
-def _chunk_groups(groups: dict[str, list[str]]) -> dict[str, list[str]]:
-    """Split any option group over Slack's per-group limit into numbered parts, e.g. "Schwazze (1/2)"."""
-    chunked: dict[str, list[str]] = {}
-    for label, values in groups.items():
-        parts = [values[i:i + _GROUP_OPTIONS_MAX] for i in range(0, len(values), _GROUP_OPTIONS_MAX)]
-        if len(parts) <= 1:
-            chunked[label] = values
-            continue
-        for number, part in enumerate(parts, start=1):
-            chunked[f"{label[: _OPTION_TEXT_MAX - 8]} ({number}/{len(parts)})"] = part
-    return chunked
-
-
 @dataclass(frozen=True)
 class FormField:
     """One input field of the data access request modal.
@@ -60,9 +46,10 @@ class FormField:
         block_id: Slack block_id — also the key the submitted value is stored under.
         label: Field label shown to the user.
         options: Selectable values; ignored when text_input is True or groups is set.
-        groups: Selectable values grouped under option_groups (Slack's static_select caps
+        groups: (label, values) pairs rendered as option_groups (Slack's static_select caps
             flat options at 100 — allowed_value alone spans 200+ locations across companies,
-            so it's grouped by company instead). Ignored when text_input is True.
+            so it's grouped by company instead). The caller keeps each group and the group count
+            within Slack's limits (see allowed_value_groups). Ignored when text_input is True.
         multi: Render as a multi_static_select instead of a static_select.
         text_input: Render as a free-text plain_text_input instead of a select.
         multiline: For a text_input field, render a taller box that accepts newlines
@@ -74,7 +61,7 @@ class FormField:
     block_id: str
     label: str
     options: list[str] = field(default_factory=list)
-    groups: dict[str, list[str]] | None = None
+    groups: list[tuple[str, list[str]]] | None = None
     multi: bool = False
     text_input: bool = False
     multiline: bool = False
@@ -90,8 +77,8 @@ class FormField:
             element = {"type": "multi_static_select" if self.multi else "static_select", "action_id": "value"}
             if self.groups:
                 element["option_groups"] = [
-                    {"label": {"type": "plain_text", "text": group_label[:_OPTION_TEXT_MAX]}, "options": [_option(o) for o in group_options]}
-                    for group_label, group_options in _chunk_groups(self.groups).items()
+                    {"label": {"type": "plain_text", "text": group_label}, "options": [_option(o) for o in group_options]}
+                    for group_label, group_options in self.groups
                 ]
             else:
                 element["options"] = [_option(o) for o in self.options]
@@ -110,11 +97,7 @@ def build_form_fields(options: FormOptions) -> list[FormField]:
         FormField(block_id="ticket_id", label="Ticket ID", text_input=True),
         FormField(block_id="user_emails", label="User email(s) — one per line", text_input=True, multiline=True),
         FormField(block_id="filter_column", label="Filter column", options=["location", "location_market"]),
-        FormField(
-            block_id="allowed_value",
-            label="Allowed value",
-            groups={"Wildcard": ["ALL"], **options.locations_by_company, "Market codes": options.market_codes},
-        ),
+        FormField(block_id="allowed_value", label="Allowed value", groups=allowed_value_groups(options)),
         FormField(block_id="scope_column", label="Scope column", options=["company_key"]),
         FormField(block_id="scope_value", label="Scope value", options=options.company_keys),
         FormField(block_id="principal_type", label="Principal type", options=["Service principals"]),

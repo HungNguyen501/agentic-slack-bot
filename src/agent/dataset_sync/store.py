@@ -1,4 +1,6 @@
 """Datasets copied from Databricks into Supabase (`synced_datasets`): their registry entries and latest snapshots."""
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -11,6 +13,10 @@ _SOURCE_COLUMNS = "dataset, description, source_sql, enabled, row_count, last_sy
 
 class DatasetNotSyncedError(Exception):
     """A dataset is unknown or has never been synced successfully, so there is nothing to read."""
+
+
+class DatasetBusyError(Exception):
+    """Another sync of the same dataset is already running."""
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,25 @@ def _row_to_source(row: dict) -> DatasetSource:
         last_status=row["last_status"],
         last_error=row["last_error"],
     )
+
+
+@contextmanager
+def dataset_lock(dataset: str) -> Iterator[None]:
+    """Hold a database lock on `dataset` for the whole block, so syncs of one dataset never overlap.
+
+    Without it a slow sync could overwrite a newer snapshot, and the shrink guard would compare against a row count read
+    before another sync changed it. The lock is transaction-scoped (taken on a connection whose transaction stays open
+    for the block, which also works behind a transaction pooler) and non-blocking: a second sync is refused rather than
+    queued, since it would only repeat the same query.
+
+    Raises:
+        DatasetBusyError: another sync of the dataset holds the lock.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS locked", (f"dataset_sync:{dataset}",))
+        if not cur.fetchone()["locked"]:
+            raise DatasetBusyError(f"A sync of dataset '{dataset}' is already running.")
+        yield
 
 
 def list_sources() -> list[DatasetSource]:

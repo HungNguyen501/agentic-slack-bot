@@ -58,7 +58,12 @@ def _schedule_dataset_sync(args: dict, user_id: str | None, channel: str, bot: B
     if not added.created:
         existing = added.schedule
         reply = f"`{source.dataset}` already has a recurring sync — id: `{existing.id}`, on `{existing.cron}` (UTC). I didn't create another."
-        if existing.cron != cron:
+        if existing.bot_id not in (None, bot.bot_id):
+            reply += (
+                f" It was set up through another bot (`{existing.bot_id}`), and a bot can only remove its own schedules, "
+                f"so changing it (you asked for `{cron}`) has to be done through that bot."
+            )
+        elif existing.cron != cron:
             reply += f" You asked for `{cron}`; to change it, ask me to remove schedule `{existing.id}` and set it up again."
         return reply
     return (

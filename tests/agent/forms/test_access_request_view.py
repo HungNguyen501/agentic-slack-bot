@@ -33,12 +33,12 @@ def test_the_form_keeps_its_fixed_fields_in_order():
     ]  # fmt: skip
 
 
-def test_a_group_over_slacks_limit_is_split_into_numbered_parts():
-    field = FormField(block_id="x", label="X", groups={"Big": [f"v{i}" for i in range(150)], "Small": ["a"]})
+def test_groups_render_in_the_given_order_even_when_two_share_a_label():
+    field = FormField(block_id="x", label="X", groups=[("Same", ["a"]), ("Same", ["b"])])
 
     groups = field.to_block()["element"]["option_groups"]
 
-    assert [(g["label"]["text"], len(g["options"])) for g in groups] == [("Big (1/2)", 100), ("Big (2/2)", 50), ("Small", 1)]
+    assert [(g["label"]["text"], values(g["options"])) for g in groups] == [("Same", ["a"]), ("Same", ["b"])]
 
 
 def test_long_option_text_is_cut_for_display_but_the_value_stays_whole():

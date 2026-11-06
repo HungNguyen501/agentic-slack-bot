@@ -5,7 +5,7 @@ from slack_sdk.errors import SlackApiError
 
 from agent.dataset_sync import service
 from agent.dataset_sync.service import DatasetSyncError
-from agent.dataset_sync.store import DatasetNotSyncedError, DatasetSource
+from agent.dataset_sync.store import DatasetBusyError, DatasetNotSyncedError, DatasetSource
 from connectors.databricks import DatabricksQueryError, RowSet
 from connectors.db.bots import BotConfig
 from connectors.db.schedules import Schedule
@@ -112,6 +112,31 @@ def test_a_small_dataset_may_shrink_freely(store, fetch):
     store.save_snapshot.assert_called_once()
 
 
+def test_the_whole_sync_runs_under_the_datasets_lock(store, fetch):
+    store.get_source.return_value = source()
+    fetch.return_value = rowset(2)
+    calls = []
+    store.dataset_lock.return_value.__enter__.side_effect = lambda: calls.append("lock")
+    store.dataset_lock.return_value.__exit__.side_effect = lambda *args: calls.append("unlock")
+    store.get_source.side_effect = lambda name: calls.append("read") or source()
+    store.save_snapshot.side_effect = lambda *args: calls.append("save")
+
+    service.sync_dataset("d")
+
+    assert calls == ["lock", "read", "save", "unlock"]
+    store.dataset_lock.assert_called_once_with("d")
+
+
+def test_a_sync_is_refused_while_another_one_of_the_dataset_is_running(store, fetch):
+    store.dataset_lock.return_value.__enter__.side_effect = DatasetBusyError("busy")
+
+    with pytest.raises(service.DatasetSyncBusyError, match="already running"):
+        service.sync_dataset("d")
+
+    store.get_source.assert_not_called()
+    fetch.assert_not_called()
+
+
 def schedule(**overrides):
     fields = {"id": "s1", "cron": "0 2 * * *", "channel": "C1", "question": "label", "bot_id": "bot-a", "kind": "dataset_sync", "config": {"dataset": "d"}}
     return Schedule(**fields | overrides)
@@ -140,6 +165,17 @@ def test_a_failed_scheduled_sync_is_reported_in_the_schedules_channel():
     assert post.call_args.args[0] == "C1"
     assert "`d`" in post.call_args.args[1] and "nope" in post.call_args.args[1]
     assert post.call_args.kwargs == {"token": "xoxb-test"}
+
+
+def test_a_scheduled_sync_that_finds_another_sync_running_stays_quiet():
+    with (
+        patch("agent.dataset_sync.service.get_schedule", autospec=True, return_value=schedule()),
+        patch("agent.dataset_sync.service.sync_dataset", autospec=True, side_effect=service.DatasetSyncBusyError("busy")),
+        patch("agent.dataset_sync.service.slack.post_message", autospec=True) as post,
+    ):
+        service.run_scheduled_sync(BOT, "s1")
+
+    post.assert_not_called()
 
 
 def test_an_unexpected_error_is_reported_and_still_fails_the_job():

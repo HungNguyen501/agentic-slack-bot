@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from slack_sdk.errors import SlackApiError
 
 from agent.dataset_sync import store
-from agent.dataset_sync.store import DatasetNotSyncedError, DatasetSource
+from agent.dataset_sync.store import DatasetBusyError, DatasetNotSyncedError, DatasetSource
 from common.configs import AgentConfigs
 from connectors import slack
 from connectors.databricks import DatabricksQueryError, fetch_rows
@@ -17,6 +17,10 @@ log = logging.getLogger("agent.dataset_sync.service")
 
 class DatasetSyncError(Exception):
     """A sync didn't replace the stored dataset; the message is fit to show an admin and the previous copy is intact."""
+
+
+class DatasetSyncBusyError(DatasetSyncError):
+    """Another sync of the same dataset is running, so this one did nothing."""
 
 
 @dataclass(frozen=True)
@@ -51,10 +55,21 @@ def sync_dataset(dataset: str, *, force: bool = False) -> SyncResult:
 
     The copy is replaced only by a complete, non-empty result. A failed sync leaves the previous copy in place and
     records the reason on the dataset. A result that would shrink a sizeable dataset sharply is refused unless `force`.
+    Syncs of one dataset are serialized: the registry entry is read, the query run and the copy replaced under one lock,
+    so a concurrent manual and scheduled sync can't overwrite each other or judge the shrink against stale numbers.
 
     Raises:
+        DatasetSyncBusyError: another sync of this dataset is running.
         DatasetSyncError: the dataset is unknown or disabled, the query failed, or the result was refused.
     """
+    try:
+        with store.dataset_lock(dataset):
+            return _sync_locked(dataset, force)
+    except DatasetBusyError as exc:
+        raise DatasetSyncBusyError(f"A sync of `{dataset}` is already running; try again in a minute.") from exc
+
+
+def _sync_locked(dataset: str, force: bool) -> SyncResult:
     source = require_source(dataset)
 
     try:
@@ -106,6 +121,8 @@ def run_scheduled_sync(bot: BotConfig, schedule_id: str) -> None:
 
     try:
         sync_dataset(dataset)
+    except DatasetSyncBusyError:
+        log.info("Scheduled sync of %s skipped: another sync of it is running", dataset)
     except DatasetSyncError as exc:
         log.warning("Scheduled sync of %s failed: %s", dataset, exc)
         _report_failure(bot, schedule.channel, dataset, str(exc))

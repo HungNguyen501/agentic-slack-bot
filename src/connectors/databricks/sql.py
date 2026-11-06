@@ -154,11 +154,14 @@ def fetch_rows(sql: str, *, max_rows: int) -> RowSet:
 
     Raises:
         DatabricksQueryError: the statement isn't read-only, fails, is cancelled at the 50 s timeout, exceeds
-            `max_rows`, or the API can't be reached.
+            `max_rows`, repeats a column name, or the API can't be reached.
     """
     data = _execute_statement(_require_select(sql), row_limit=max_rows + 1)
     rows = _read_all_rows(data.get("result", {}))
     if len(rows) > max_rows:
         raise DatabricksQueryError(f"Query returned more than {max_rows} rows.")
     columns = _column_names(data)
+    duplicates = sorted({name for name in columns if columns.count(name) > 1})
+    if duplicates:
+        raise DatabricksQueryError(f"Query returns duplicate column name(s) {', '.join(duplicates)}, which rows can't hold; give each column a unique alias.")
     return RowSet(columns=columns, rows=[dict(zip(columns, row, strict=True)) for row in rows])

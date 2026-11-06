@@ -89,3 +89,12 @@ def test_both_entry_points_send_the_same_statement_request():
 
     plain, fetched = (call.kwargs["json"] for call in post.call_args_list)
     assert fetched == plain | {"row_limit": 6}
+
+
+def test_fetch_rows_refuses_duplicate_column_names_instead_of_dropping_values():
+    payload = {"status": {"state": "SUCCEEDED"}, "manifest": {"schema": {"columns": [{"name": "id"}, {"name": "id"}]}}, "result": {"data_array": [["1", "2"]]}}
+    with (
+        patch("connectors.databricks.sql.httpx.post", autospec=True, return_value=response(payload)),
+        pytest.raises(sql.DatabricksQueryError, match="duplicate column name.*id.*unique alias"),
+    ):
+        sql.fetch_rows("select 1 as id, 2 as id", max_rows=10)

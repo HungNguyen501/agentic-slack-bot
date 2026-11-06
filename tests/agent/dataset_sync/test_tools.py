@@ -81,6 +81,25 @@ def test_scheduling_a_dataset_that_already_has_a_sync_returns_the_existing_one(s
     assert "already has a recurring sync" in reply and "`s1`" in reply and "You asked for `0 2 * * *`" in reply
 
 
+def test_a_sync_owned_by_another_bot_is_not_offered_for_removal_here(store):
+    other_bots_sync = existing_sync("0 3 * * *")
+    other_bots_sync.bot_id = "bot-b"
+    with patch("agent.dataset_sync.tools.add_dataset_sync", autospec=True, return_value=AddedDatasetSync(other_bots_sync, created=False)):
+        reply = run("schedule_dataset_sync", {"dataset": "store_locations", "cron": "0 2 * * *"})
+
+    assert "another bot (`bot-b`)" in reply and "through that bot" in reply
+    assert "ask me to remove" not in reply
+
+
+def test_a_legacy_sync_with_no_owner_can_still_be_removed_from_any_bot(store):
+    legacy = existing_sync("0 3 * * *")
+    legacy.bot_id = None
+    with patch("agent.dataset_sync.tools.add_dataset_sync", autospec=True, return_value=AddedDatasetSync(legacy, created=False)):
+        reply = run("schedule_dataset_sync", {"dataset": "store_locations", "cron": "0 2 * * *"})
+
+    assert "ask me to remove schedule `s1`" in reply
+
+
 @pytest.mark.parametrize(
     ("args", "message"),
     [

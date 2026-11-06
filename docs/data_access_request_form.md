@@ -130,8 +130,9 @@ The sync is a generic module, not form-specific; any feature that needs slowly-c
 
 - **Full replace.** A sync re-runs the dataset's query and replaces the stored copy as a whole in one statement; there is no diffing or merging, so readers never see a half-written dataset.
 - **Registry in Supabase.** The `synced_datasets` table holds one row per dataset: its name, description, the SQL, an enabled flag, the latest rows, and the outcome of the last attempt (`last_synced_at`, `last_status`, `last_error`, `row_count`). Adding a dataset is an INSERT, with no deploy. The SQL runs with the bot's Databricks token through a read-only guard (SELECT/WITH only, 50 s timeout), so write access to this table should be limited to the people who may already query Databricks through the bot.
+- **One sync at a time.** The whole sequence (read the dataset's entry, run the query, check the result, replace the copy) runs under a per-dataset database lock. A manual and a scheduled sync can't overwrite each other, and the shrink check never compares against a stale row count. A second sync is refused rather than queued (a scheduled tick that finds one running does nothing).
 - **Safe on failure.** A failed or timed-out query, or an empty result, never replaces the stored copy; the previous data stays in use and the error is recorded on the dataset. A result that would shrink a dataset of 10 or more rows below half its size is also refused unless an admin forces it (a query that suddenly sees few rows usually means lost privileges, not removed data). An empty result can never be forced.
-- **Scheduled.** A recurring sync is a row in the existing `schedules` table with `kind = 'dataset_sync'` and `config = {"dataset": ...}`, picked up by the scheduler like any other schedule and run by the worker as `process_dataset_sync`. At most one active recurring sync exists per dataset, and the minimum interval is 60 minutes. Successful runs are silent; a failed run is posted in the schedule's channel.
+- **Scheduled.** A recurring sync is a row in the existing `schedules` table with `kind = 'dataset_sync'` and `config = {"dataset": ...}`, picked up by the scheduler like any other schedule and run by the worker as `process_dataset_sync`. At most one active recurring sync exists per dataset (across bots; a bot can only remove its own, so changing another bot's has to be done through that bot), and the minimum interval is 60 minutes. Successful runs are silent; a failed run is posted in the schedule's channel.
 - **On demand.** Admins (the bot's `admin_users`) can ask the agent to list datasets and their sync state, sync one now, or schedule a recurring sync. The agent is instructed to ask which dataset (showing the list) and what cadence and failure channel when the request is unclear, and to relay a refusal rather than retry it.
 
 ### Why a Redis snapshot instead of reading Supabase at click time
@@ -140,7 +141,11 @@ Slack gives the receiver about three seconds from a button click to open the for
 
 ### Slack limits handled by the form builder
 
-A select menu allows 100 options, an option group 100, and option text 75 characters. A company with more than 100 locations is split into numbered groups ("Name (1/2)"), long text is shortened for display while the submitted value stays whole, and the synced data is refused with a clear message if the scope-value or tags dropdown would pass 100 options.
+Slack rejects the whole modal if any limit is broken, so the data is checked when the worker builds the options, before anything is cached or a button is posted; a violation makes the bot decline with a message naming what to fix in the source data.
+
+- A select menu allows 100 options (company keys and tags are checked); an option group allows 100 options and a modal 100 option groups. A company with more than 100 locations is split into numbered groups ("Name (1/2)"), and the group count is checked after splitting, with the fixed "Wildcard" and "Market codes" groups included. Groups are kept as an ordered list, so groups with equal labels can't overwrite each other.
+- Option text is limited to 75 characters and is shortened for display. An option's value is limited to 150 characters and is never shortened, because it identifies the access requested; a longer value is refused.
+- Company keys and market codes can't be blank throughout, or the dropdown would be empty.
 
 ### Known caveat
 

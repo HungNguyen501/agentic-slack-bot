@@ -40,3 +40,17 @@ def test_save_snapshot_replaces_the_rows_in_one_update():
 def test_save_snapshot_for_a_deleted_dataset_raises_instead_of_pretending_to_succeed():
     with fake_connect(rowcount=0), pytest.raises(store.DatasetNotSyncedError, match="no longer exists"):
         store.save_snapshot("d", ["a"], [{"a": "1"}])
+
+
+def test_dataset_lock_takes_a_transaction_scoped_lock_per_dataset_and_holds_it_for_the_block():
+    with fake_connect(fetchone={"locked": True}) as cur:
+        with store.dataset_lock("d"):
+            assert cur.execute.call_count == 1
+        sql, params = cur.execute.call_args.args
+
+    assert "pg_try_advisory_xact_lock" in sql and params == ("dataset_sync:d",)
+
+
+def test_dataset_lock_refuses_instead_of_waiting_when_another_sync_holds_it():
+    with fake_connect(fetchone={"locked": False}), pytest.raises(store.DatasetBusyError, match="already running"), store.dataset_lock("d"):
+        pytest.fail("the block must not run")
