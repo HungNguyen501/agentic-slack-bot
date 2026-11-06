@@ -9,6 +9,7 @@ from slack_sdk.errors import SlackApiError, SlackClientError
 
 from agent.access_control import review, submission
 from agent.agent import run_agent, summarize_answer
+from agent.dataset_sync.service import run_scheduled_sync
 from agent.history import record_thread_messages
 from agent.pr_reminders.service import run_reminder
 from connectors import slack
@@ -255,6 +256,14 @@ def process_pr_reminder(schedule_id: str, bot_id: str) -> None:
     It posts into the PRs' own threads, so there is no reply to return.
     """
     run_reminder(get_bot(bot_id), schedule_id)
+
+
+def process_dataset_sync(schedule_id: str, bot_id: str) -> None:
+    """Run one tick of the dataset sync in the `schedules` row `schedule_id`; see agent.dataset_sync.service.run_scheduled_sync.
+
+    It is silent on success and reports a failure in the schedule's channel, so there is no reply to return.
+    """
+    run_scheduled_sync(get_bot(bot_id), schedule_id)
 
 
 def notify_access_request_button_expired(bot_id: str, channel: str, thread_ts: str) -> None:

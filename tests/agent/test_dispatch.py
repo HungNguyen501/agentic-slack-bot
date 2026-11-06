@@ -47,3 +47,20 @@ def test_the_other_schedule_tools_still_use_the_schedule_handler():
 
     assert reply == "ok"
     handler.assert_called_once_with("remove_schedule", {"id": "s1"}, "bot-a")
+
+
+@pytest.mark.parametrize("name", ["list_synced_datasets", "sync_dataset", "schedule_dataset_sync"])
+def test_dataset_sync_tools_are_admin_only(name):
+    with patch("agent.dispatch.dispatch_dataset_sync_tool", autospec=True) as handler:
+        reply = call(name, "UOTHER")
+
+    assert reply == "You are not authorized to manage dataset syncs."
+    handler.assert_not_called()
+
+
+def test_dataset_sync_tools_go_to_their_handler_for_admins():
+    with patch("agent.dispatch.dispatch_dataset_sync_tool", autospec=True, return_value="ok") as handler:
+        reply = call("sync_dataset", "UADMIN")
+
+    assert reply == "ok"
+    handler.assert_called_once_with("sync_dataset", {"scope": "channel"}, "UADMIN", "C1", BOT)

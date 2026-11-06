@@ -24,8 +24,11 @@ def _schedule_key(entry: Schedule) -> str:
     Returns:
         A Redis key string in the form scheduler:last_fired:<16-char sha256 hex>.
     """
-    # A reminder is keyed on its id: its question is only a generated label, so two reminders in one channel could collide.
-    raw = f"pr_reminder:{entry.id}:{entry.cron}" if entry.kind == "pr_reminder" else f"{entry.cron}:{entry.channel}:{entry.question}"
+    # A reminder or sync is keyed on its id: its question is only a generated label, so two of them in one channel could collide.
+    if entry.kind in ("pr_reminder", "dataset_sync"):
+        raw = f"{entry.kind}:{entry.id}:{entry.cron}"
+    else:
+        raw = f"{entry.cron}:{entry.channel}:{entry.question}"
     return f"scheduler:last_fired:{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
 
 
@@ -70,6 +73,10 @@ def _enqueue(queue: rq.Queue, entry: Schedule) -> None:
         # No RQ retry: a reminder posts before it saves progress, so a retry after a late failure would repeat the
         # mentions. The next tick is the retry.
         queue.enqueue("worker.tasks.process_pr_reminder", schedule_id=entry.id, bot_id=bot_id, job_timeout=300)
+    elif entry.kind == "dataset_sync":
+        # No RQ retry either: the sync is idempotent but a failure is reported in Slack, so retries would repeat the report.
+        # The next tick is the retry.
+        queue.enqueue("worker.tasks.process_dataset_sync", schedule_id=entry.id, bot_id=bot_id, job_timeout=300)
     else:
         queue.enqueue(
             "worker.tasks.process_scheduled_question",
@@ -86,8 +93,8 @@ def run() -> None:
     """Start the scheduler loop — polls Supabase and enqueues due jobs until interrupted.
 
     Reads all active schedules from Supabase on every tick, evaluates each cron expression against
-    the current time, and pushes a process_scheduled_question (or, for a PR reminder,
-    process_pr_reminder) job onto the slack_events Redis queue for any entry that is due and has
+    the current time, and pushes a process_scheduled_question (or, for a PR reminder or a
+    dataset sync, process_pr_reminder / process_dataset_sync) job onto the slack_events Redis queue for any entry that is due and has
     not already been enqueued this cycle.
     Sleeps SCHEDULER_INTERVAL seconds between ticks; continues on Supabase read errors.
     """

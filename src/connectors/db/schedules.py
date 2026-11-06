@@ -204,6 +204,43 @@ def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, c
         return AddedReminder(_row_to_schedule(cur.fetchone()), created=True)
 
 
+class AddedDatasetSync(NamedTuple):
+    """The schedule `add_dataset_sync` returns: the new row, or the one that already syncs that dataset (`created` False)."""
+
+    schedule: Schedule
+    created: bool
+
+
+def add_dataset_sync(id: str, cron: str, channel: str, label: str, bot_id: str, config: dict) -> AddedDatasetSync:
+    """Insert a recurring dataset sync row, unless an active one for the same dataset already exists.
+
+    A dataset is workspace-wide, so one recurring sync per dataset is enough whichever bot scheduled it: a second one
+    would only run the same query twice. The lookup and the insert share one transaction under an advisory lock keyed
+    on the dataset, so two concurrent requests can't both create it.
+
+    `label` is stored in `question` and is never sent to the LLM for this kind; `config` is {"dataset": ..., "created_by": ...}.
+    """
+    dataset = config["dataset"]
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"dataset_sync:{dataset}",))
+        cur.execute(f"SELECT {_COLUMNS} FROM schedules WHERE kind = 'dataset_sync' AND status = 'active' AND config->>'dataset' = %s", (dataset,))
+        existing = cur.fetchone()
+        if existing:
+            return AddedDatasetSync(_row_to_schedule(existing), created=False)
+        cur.execute(
+            f"INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config) VALUES (%s, %s, %s, %s, %s, 'dataset_sync', %s) RETURNING {_COLUMNS}",
+            (id, cron, channel, label, bot_id, Jsonb(config)),
+        )
+        return AddedDatasetSync(_row_to_schedule(cur.fetchone()), created=True)
+
+
+def get_dataset_sync_schedules() -> dict[str, Schedule]:
+    """Active recurring dataset syncs by dataset name (one per dataset, see `add_dataset_sync`)."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT {_COLUMNS} FROM schedules WHERE kind = 'dataset_sync' AND status = 'active' ORDER BY created_at")
+        return {schedule.config.get("dataset", ""): schedule for schedule in (_row_to_schedule(row) for row in cur.fetchall())}
+
+
 def set_schedule_status(id: str, status: str) -> None:
     """End an active schedule by moving it to a terminal status ('completed' or 'expired'); the row is kept (soft delete)."""
     with connect() as conn, conn.cursor() as cur:

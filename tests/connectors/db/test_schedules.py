@@ -240,3 +240,22 @@ def test_merge_schedule_config_merges_top_level_keys_into_the_existing_config():
     assert sql == "UPDATE schedules SET config = config || %s WHERE id = %s"
     assert params[0].obj == {"has_reminded": True}
     assert params[1] == "s1"
+
+
+def test_add_dataset_sync_returns_the_existing_sync_without_inserting():
+    existing = ROW | {"kind": "dataset_sync", "config": {"dataset": "d"}}
+    with fake_connect(fetchone=existing) as cur:
+        added = schedules.add_dataset_sync("new", "0 2 * * *", "C1", "label", "bot-b", {"dataset": "d"})
+
+    assert (added.created, added.schedule.id) == (False, "s1")
+    assert not any("INSERT" in call.args[0] for call in cur.execute.call_args_list)
+
+
+def test_add_dataset_sync_inserts_when_the_dataset_has_none():
+    inserted = ROW | {"id": "new", "kind": "dataset_sync", "config": {"dataset": "d"}}
+    with fake_connect(fetchone=None) as cur:
+        cur.fetchone.side_effect = [None, inserted]
+        added = schedules.add_dataset_sync("new", "0 2 * * *", "C1", "label", "bot-b", {"dataset": "d"})
+
+    assert (added.created, added.schedule.id) == (True, "new")
+    assert "INSERT INTO schedules" in cur.execute.call_args_list[-1].args[0]

@@ -1,11 +1,14 @@
-"""Databricks connectors — SQL statements, job runs, SCIM, and service-principal OAuth secrets."""
+"""Databricks connectors — SQL statements (capped Slack results and full row fetches), job runs, SCIM, and service-principal OAuth secrets."""
 from .jobs import get_job_run
 from .scim import add_group_member, create_service_principal, list_scim_resources
 from .service_principal_secrets import create_secret
-from .sql import run_query
+from .sql import DatabricksQueryError, RowSet, fetch_rows, run_query
 
 __all__ = [
     "run_query",
+    "fetch_rows",
+    "RowSet",
+    "DatabricksQueryError",
     "get_job_run",
     "list_scim_resources",
     "create_service_principal",

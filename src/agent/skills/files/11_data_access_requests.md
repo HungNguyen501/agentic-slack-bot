@@ -20,4 +20,5 @@ Only one request type is currently configured: `table_row_filter_access`.
 
 - Call `request_data_access` with `request_type: "table_row_filter_access"` as soon as the user's intent is clear — don't collect form fields in the chat first.
 - If the tool reports the channel isn't eligible, relay that refusal politely and don't retry with a different channel or request_type.
+- The form's location, company and tag dropdowns are built from synced datasets (see [14_dataset_sync.md](14_dataset_sync.md)). If the tool says the form can't be opened because a dataset hasn't been synced, relay that: tell the user an admin needs to sync the data first, and if the user is an admin, offer to sync it.
 - After the tool posts the form button, tell the user to click it; don't repeat the form fields in your reply since they'll see them in the modal.
