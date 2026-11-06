@@ -62,10 +62,20 @@ reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETD
   → secret renders once, then is gone
 ```
 
+**Dataset sync** (reference data Databricks → Supabase, e.g. the data access form's locations and tags):
+```
+scheduler (schedules row kind = dataset_sync) → enqueue process_dataset_sync → worker
+  (agent/dataset_sync/service.py::run_scheduled_sync) → fetch_rows from Databricks
+  → fully replace synced_datasets.synced_rows (a failure or empty result keeps the old copy; failures are posted to the schedule's channel)
+admin asks the agent to sync / schedule → list_synced_datasets / sync_dataset / schedule_dataset_sync tools
+request_data_access → reads the synced datasets, snapshots the form's dropdown options into Redis (access_form_options:{token})
+  → receiver block_actions reads that snapshot (no Supabase) to open the modal
+```
+
 **Agent loop** (`src/agent/agent.py`):
 1. Router model (gpt-6.1-sol) picks skills from `src/agent/skills/files/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date
-3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
+3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret / list_synced_datasets / sync_dataset / schedule_dataset_sync (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
 4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
 
 ## Quick Commands
@@ -103,7 +113,7 @@ DB migrations run automatically from `.github/workflows/db-migrate.yaml` (Flyway
 ## Environment Variables
 
 See `.env.example`. Required:
-- `SUPABASE_DB_URL` — PostgreSQL connection (bots, schedules, access_request_categories, access_requests, service_principal_secrets tables)
+- `SUPABASE_DB_URL` — PostgreSQL connection (bots, schedules, access_request_categories, access_requests, service_principal_secrets, synced_datasets tables)
 - `OPENAI_API_KEY`
 - `DATABRICKS_HOST` — workspace URL
 - `DATABRICKS_WAREHOUSE_ID`
@@ -123,7 +133,7 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
-- `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`)
+- `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job; `dataset_sync` runs a dataset sync, `config.dataset` names it and `channel` is where failures are reported — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`)
 
 **Supabase `access_request_categories` table** — gates the `request_data_access` and `generate_service_principal_secret` tools per bot/channel/request_type:
 - `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject, or — for `service_principal_secret` — allowed to call the tool at all)
@@ -133,6 +143,10 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `service_principal_secrets` table** — cached Databricks service-principal OAuth secrets, shared across all bots in the workspace (one row per `email`, replaced on rotation — including when the service principal itself is deleted and recreated with a new `client_id`):
 - `id uuid`, `service_account` (svc-prefixed display name), `client_id`, `email` (bare address, unique, the lookup key), `dbx_secret_id`, `secret_hash`, `secret_encrypted bytea` (Fernet-encrypted), `status`, `dbx_create_time`, `dbx_update_time`, `dbx_expire_time`, `requested_by`
+
+**Supabase `synced_datasets` table** — reference data copied from Databricks, shared across all bots (see `.claude/rules/architecture.md` "Synced Datasets"):
+- `dataset text` (PK), `description`, `source_sql` (read-only Databricks query), `enabled`, `column_names text[]`, `synced_rows jsonb` (last good snapshot, replaced whole), `row_count`, `last_synced_at`, `last_status` (`ok` / `error`), `last_error`
+- Seeded by V11 with `store_locations` and `row_filter_tags`; both must be synced once after the first deploy or the data access form refuses to open.
 
 Bot is resolved at runtime: receiver uses `api_app_id` → `get_by_app_id()`; worker uses stored `bot_id` → `get_by_id()`.
 
@@ -166,8 +180,9 @@ src/
     dispatch.py              # Tool schema exposure + per-call routing
     history.py               # Per-thread conversation history (Redis)
     schedules.py             # Schedule-CRUD tool handlers
-    skills/                  # loader.py / router.py; files/ holds the agent (runtime) skill files (01–13) — NOT Claude Code skills
+    skills/                  # loader.py / router.py; files/ holds the agent (runtime) skill files (01–14) — NOT Claude Code skills
     forms/                   # Pure, no I/O — the receiver may import this
+      access_request_options.py    # FormOptions built from the synced datasets (pure); Redis key for the snapshot
       access_request_view.py       # Slack modal view + submission validation
       access_request_submission.py # VerifiedAccessRequest dataclass
     pr/
@@ -185,6 +200,10 @@ src/
     service_principal_secrets/
       store.py                     # Cached (encrypted) service-principal secret CRUD (Supabase)
       tools.py                     # generate_service_principal_secret tool handler
+    dataset_sync/
+      store.py                     # synced_datasets registry + snapshots (Supabase); get_rows() is what features read
+      service.py                   # sync_dataset (full replace, with empty/shrink guards) + run_scheduled_sync
+      tools.py                     # list_synced_datasets / sync_dataset / schedule_dataset_sync handlers
     pr_reminders/
       pr_links.py                  # PR links in Slack messages + the thread each lives in (pure)
       queries.py                   # GitHub GraphQL query + response parser (pure)
@@ -196,6 +215,7 @@ src/
   scheduler/app.py           # Cron polling loop
   common/
     configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas) + ReminderConfig (the `schedules.config` of a PR reminder) + ReminderMessages (the Vietnamese wording of PR reminder messages)
+    cron.py                  # Cron validation (malformed / too frequent) shared by recurring jobs
     crypto.py                # Fernet encrypt/decrypt for secrets cached at rest (service_principal_secrets)
   connectors/                # Generic clients for external tools — no task-specific logic
     db/                      # Supabase (Postgres) access — sync, psycopg
@@ -204,7 +224,7 @@ src/
       schedules.py               # Schedule CRUD (shared by the scheduler service and the agent's schedule tools)
     databricks/              # Statement API, Jobs API, SCIM, OAuth secrets
       client.py                  # Host/token/auth headers
-      sql.py                     # SELECT-only Statement API client
+      sql.py                     # SELECT-only Statement API client (run_query: capped, Slack-formatted; fetch_rows: every row, for dataset sync)
       jobs.py                    # Job run details
       scim.py                    # SCIM list / create service principal / add group member
       service_principal_secrets.py # OAuth client secret generation

@@ -11,6 +11,7 @@ from fastapi.responses import PlainTextResponse
 from redis import Redis
 from rq import Queue, Retry
 
+from agent.forms.access_request_options import FormOptions, options_redis_key
 from agent.forms.access_request_view import build_access_request_view, validate_submission
 from common.configs import Configs
 from connectors import slack
@@ -141,6 +142,23 @@ def _extract_view_submission_fields(view: dict) -> dict:
     return fields
 
 
+def _load_form_options(button_value: dict) -> FormOptions | None:
+    """The form's dropdown options for a clicked button, or None if there is no usable snapshot.
+
+    The worker snapshotted them into Redis when it posted the button (the receiver reads no Supabase). A button from
+    before that existed, one whose snapshot expired, and one whose snapshot this code can't read all count as expired.
+    """
+    token = button_value.get("options_token")
+    raw = redis_conn.get(options_redis_key(token)) if token else None
+    if raw is None:
+        return None
+    try:
+        return FormOptions.from_json(raw)
+    except ValueError:
+        log.warning("Unreadable form options snapshot for token %s", token)
+        return None
+
+
 @app.post("/slack/interactivity")
 async def slack_interactivity(request: Request) -> dict:
     """Verify signature and handle Slack interactive payloads (block_actions, view_submission).
@@ -166,9 +184,10 @@ async def slack_interactivity(request: Request) -> dict:
         action = payload["actions"][0]
         if action.get("action_id") == "open_access_request_form":
             value = json.loads(action["value"])
+            options = _load_form_options(value)
             # Missing expires_at means this button was posted before the TTL feature shipped —
             # default to 0 (always in the past) so those old buttons are refused, not grandfathered in.
-            if time.time() > value.get("expires_at", 0):
+            if time.time() > value.get("expires_at", 0) or options is None:
                 queue.enqueue(
                     "worker.tasks.notify_access_request_button_expired",
                     bot_id=bot.bot_id,
@@ -183,7 +202,7 @@ async def slack_interactivity(request: Request) -> dict:
             # views.open must be called within ~3s of the trigger_id being issued — the RQ
             # queue can't guarantee that latency under load, so this is called directly here
             # rather than enqueued (see architecture.md's documented exception for this route).
-            view = build_access_request_view(value["request_type"], private_metadata=json.dumps(value))
+            view = build_access_request_view(value["request_type"], private_metadata=json.dumps(value), options=options)
             slack.open_view(payload["trigger_id"], view, token=bot.bot_token)
         return {}
 

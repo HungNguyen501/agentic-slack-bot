@@ -91,12 +91,13 @@ sequenceDiagram
 
 - A user asks the bot for access in a Slack thread; the bot recognizes this as a data-access request.
 - The bot checks whether the requested category is authorized for the channel it was asked in — if not, it declines politely with no side effects.
-- If authorized, it posts a message with a button. The button carries just enough context (which category, which channel/thread, who asked, who the eligible reviewers are, and an expiry) to open the right form later — nothing is recorded as a request yet.
+- If authorized, it reads the synced form-option datasets, stores a snapshot of the resulting dropdown options in Redis (kept as long as the button lives), and posts a message with a button. The button carries just enough context (which category, which channel/thread, who asked, who the eligible reviewers are, an expiry, and the token of the options snapshot) to open the right form later — nothing is recorded as a request yet.
+- If a dataset the form needs has never been synced (or can't make a valid form), the bot declines without posting a button and says an admin must sync the data first.
 
 ## Entry Point 2 — Opening the Form
 
 - Handled directly by the always-on webhook layer — one of two narrowly-scoped exceptions to "the webhook layer contains no business logic," because Slack requires the form to open within a few seconds of the button click, a latency guarantee an asynchronous background queue can't reliably provide.
-- The webhook layer checks the button's expiry, attributes the request to whoever actually clicked it (not necessarily who it was originally posted for), and builds the form — no other lookups happen at this point.
+- The webhook layer checks the button's expiry, attributes the request to whoever actually clicked it (not necessarily who it was originally posted for), loads the options snapshot from Redis, and builds the form. It reads no database: the worker already did that when it posted the button. A button with no snapshot (posted before this change, or whose snapshot expired) is treated as expired.
 
 ## Form Fields
 
@@ -104,13 +105,46 @@ sequenceDiagram
 | --- | --- | --- |
 | Ticket ID | free text | Used in the resulting PR title |
 | User email(s) | free text (multiline) | One per line, no commas |
-| Filter column | dropdown | e.g. location, location market |
-| Allowed value | dropdown | "ALL" or a specific location |
-| Scope column | dropdown | e.g. company |
-| Scope value | dropdown | One of the company's business units/domains |
+| Filter column | dropdown | Fixed: location, location market |
+| Allowed value | dropdown | "ALL", a location (grouped by company) or a market code — **synced data** |
+| Scope column | dropdown | Fixed: company key |
+| Scope value | dropdown | One of the company keys — **synced data** |
 | Principal type | dropdown | Currently only "Service principal" |
-| Groups | multi-select | Groups to add the identity to |
-| Tags | multi-select | Governance tags |
+| Groups | multi-select | Fixed: groups to add the identity to |
+| Tags | multi-select | Governance tags — **synced data** |
+
+Fields marked **synced data** are not hard-coded: their options come from datasets copied from Databricks into the bot's database (see [Form Option Data](#form-option-data-synced-datasets)). Changing a location or tag needs no code change or deploy.
+
+## Form Option Data (synced datasets)
+
+The location, company and tag dropdowns used to be lists in the code, so every change meant a deploy. They now come from **synced datasets**: reference data copied from Databricks into Supabase on a schedule or on demand. We keep it in our own database so the bot never queries Databricks while someone is opening a form.
+
+The sync is a generic module, not form-specific; any feature that needs slowly-changing reference data can register a dataset and read it.
+
+| Dataset | Source query | Feeds |
+| --- | --- | --- |
+| `store_locations` | `company_key, company, location_market, location, id as location_id` from `vireox.ai_semantic.unified_dim_store_locations` | Allowed value (locations grouped by `company`, plus the distinct `location_market` codes) and scope value (distinct `company_key`) |
+| `row_filter_tags` | the distinct 4th entry of `target_columns` in `system.information_schema.row_filters`, as `tag_name` | Tags |
+
+### How a sync works
+
+- **Full replace.** A sync re-runs the dataset's query and replaces the stored copy as a whole in one statement; there is no diffing or merging, so readers never see a half-written dataset.
+- **Registry in Supabase.** The `synced_datasets` table holds one row per dataset: its name, description, the SQL, an enabled flag, the latest rows, and the outcome of the last attempt (`last_synced_at`, `last_status`, `last_error`, `row_count`). Adding a dataset is an INSERT, with no deploy. The SQL runs with the bot's Databricks token through a read-only guard (SELECT/WITH only, 50 s timeout), so write access to this table should be limited to the people who may already query Databricks through the bot.
+- **Safe on failure.** A failed or timed-out query, or an empty result, never replaces the stored copy; the previous data stays in use and the error is recorded on the dataset. A result that would shrink a dataset of 10 or more rows below half its size is also refused unless an admin forces it (a query that suddenly sees few rows usually means lost privileges, not removed data). An empty result can never be forced.
+- **Scheduled.** A recurring sync is a row in the existing `schedules` table with `kind = 'dataset_sync'` and `config = {"dataset": ...}`, picked up by the scheduler like any other schedule and run by the worker as `process_dataset_sync`. At most one active recurring sync exists per dataset, and the minimum interval is 60 minutes. Successful runs are silent; a failed run is posted in the schedule's channel.
+- **On demand.** Admins (the bot's `admin_users`) can ask the agent to list datasets and their sync state, sync one now, or schedule a recurring sync. The agent is instructed to ask which dataset (showing the list) and what cadence and failure channel when the request is unclear, and to relay a refusal rather than retry it.
+
+### Why a Redis snapshot instead of reading Supabase at click time
+
+Slack gives the receiver about three seconds from a button click to open the form, and the receiver is deliberately free of database access. So the worker, which is allowed to read Supabase, builds the dropdown options when it posts the button and stores them in Redis for the button's lifetime; the receiver only does a Redis read. The trade-off is that a form shows the data as of the moment the button was posted (at most an hour old).
+
+### Slack limits handled by the form builder
+
+A select menu allows 100 options, an option group 100, and option text 75 characters. A company with more than 100 locations is split into numbered groups ("Name (1/2)"), long text is shortened for display while the submitted value stays whole, and the synced data is refused with a clear message if the scope-value or tags dropdown would pass 100 options.
+
+### Known caveat
+
+`system.information_schema` only shows row filters the querying identity has privileges on. The tags dataset is therefore only complete if the bot's Databricks token can see every row filter; the shrink guard is a backstop for a sudden drop, not for a token that was never able to see them all.
 
 ## Submission Validation
 
@@ -147,6 +181,7 @@ Approval and rejection are handled as plain, deterministic logic — evaluated b
 erDiagram
     bots ||--o{ access_request_categories : "owns"
     bots ||--o{ access_requests : "owns"
+    synced_datasets ||..o{ access_requests : "feeds the form's options — no stored link"
     access_request_categories }o..o{ access_requests : "matched at request time by bot + type — no stored link"
 
     access_request_categories {
@@ -155,6 +190,21 @@ erDiagram
         text request_type "unique per bot"
         text_array channel_ids
         text_array reviewers
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    synced_datasets {
+        text dataset PK
+        text description
+        text source_sql
+        bool enabled
+        text_array column_names
+        jsonb synced_rows
+        int row_count
+        timestamp last_synced_at
+        text last_status "ok, error"
+        text last_error
         timestamp created_at
         timestamp updated_at
     }
@@ -221,11 +271,24 @@ erDiagram
 | expires_at | 24 hours after creation |
 | created_at / updated_at | Standard record timestamps |
 
+**Synced datasets** — reference data copied from Databricks (see [Form Option Data](#form-option-data-synced-datasets)); workspace-wide, not per bot. Recurring syncs are rows of the `schedules` table (`kind = 'dataset_sync'`), not a column here.
+
+| Field | Description |
+| --- | --- |
+| dataset | Name, the primary key (e.g. `store_locations`) |
+| description | What it is and what uses it |
+| source_sql | The read-only Databricks query that produces it |
+| enabled | A disabled dataset can't be synced |
+| column_names / synced_rows | Columns and rows of the last successful sync (values are strings) |
+| row_count | Rows in the last successful sync |
+| last_synced_at / last_status / last_error | Outcome of the latest attempt; a failure keeps the previous rows and `last_synced_at` |
+
 There is no stored link from a request to its category — they're matched at each stage by bot and request type and re-checked fresh every time, so a category change (e.g. revoking a channel or a reviewer) takes effect immediately on requests already in flight.
 
 # **External Systems Touched**
 
 - **Slack**: posting messages, opening the form, and updating/removing messages as the flow progresses.
+- **Databricks SQL warehouse**: the dataset sync's read-only queries (locations and row-filter tags).
 - **Databricks identity directory**: batched lookup of users/service principals by email, service-principal creation, and group membership updates.
 - **GitHub**: idempotent branch and pull-request creation against the data platform's governance repository, appending the new rule and regenerating the audit snapshot.
 
@@ -233,8 +296,18 @@ There is no stored link from a request to its category — they're matched at ea
 
 Already adopted and in production use for one bot and request category. Future request types are added purely as configuration — a new category record — with no code deploy required, unless the form itself needs new fields.
 
+Moving the dropdown data out of the code needs this order:
+
+1. Apply the migrations (they create `synced_datasets`, register the two datasets, and allow the new schedule kind). Do this before deploying the image.
+2. Deploy the image to the receiver and the worker together (one rollout). The button's `value` and the Redis snapshot are a contract between them: while an old receiver runs next to a new worker, a click on a new button fails to open the form (the old receiver doesn't pass the options), and a click on a button from before the deploy is treated as expired. Expect form clicks to fail for the length of the rollout. From this point the form also refuses to open until both datasets have been synced.
+3. Ask the bot as an admin to sync `store_locations` and `row_filter_tags`, check the row counts, then schedule each one (for example daily).
+
+Step 3 is only done once the synced lists have been compared with the ones that were in the code before.
+
 # **Discussions**
 
 - Only the service-principal path is exposed today; the user-identity path exists and is exercised during approval-time re-verification, but no live category currently lets a request originate as a plain user.
 - Reviewer authorization is deliberately per-category, separate from the bot's general admin list used for schedule management — worth confirming this separation stays intentional as more request categories are added.
+- The form's fixed lists (filter column, scope column, principal type, groups) are still in the code; only the data that changes with the business (locations, companies, tags) is synced. Groups could move to a synced dataset the same way if they start changing.
+- A submitted value is not re-checked against the synced data: Slack only lets the user pick from the dropdown it was shown, so a value can be at most one button-lifetime (an hour) out of date.
 - There's no automatic sweep for requests that pass their 24-hour expiry while still pending — expiry is only enforced reactively, at the moment someone tries to approve or reject.

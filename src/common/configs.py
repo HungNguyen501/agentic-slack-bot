@@ -63,7 +63,7 @@ class AgentTool:
     name: str
     description: str
     parameters: dict
-    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder"] = "core"
+    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder", "dataset_sync"] = "core"
 
     def to_openai_schema(self) -> dict:
         # Responses API tools are flat (no nested "function" key) and default to strict=True,
@@ -92,6 +92,14 @@ class AgentConfigs:
     # How long a one-time service-principal-secret view link stays valid in Redis before
     # it's treated as expired (see agent/service_principal_secrets/tools.py's secret_link:{token} key).
     SECRET_LINK_TTL_SECONDS: int = 600
+
+    # Datasets synced from Databricks into Supabase (agent/dataset_sync/).
+    DATASET_SYNC_MAX_ROWS: int = 50_000
+    DATASET_SYNC_MIN_INTERVAL_MINUTES: int = 60
+    # A sync that would shrink a dataset of at least MIN_ROWS rows to under RATIO of its size is refused unless forced:
+    # a query that suddenly sees few rows (lost privileges, a renamed table) would otherwise wipe the form's options.
+    DATASET_SYNC_SHRINK_GUARD_MIN_ROWS: int = 10
+    DATASET_SYNC_SHRINK_GUARD_RATIO: float = 0.5
 
     # PR review reminders (agent/pr_reminders/).
     PR_REMINDER_SCOPES: tuple[str, ...] = ("thread", "channel")
@@ -279,6 +287,53 @@ class AgentConfigs:
                 "required": ["request_type"],
             },
             category="data_access",
+        ),
+        AgentTool(
+            name="list_synced_datasets",
+            description=(
+                "List the reference datasets synced from Databricks into the bot's database (name, what it is for, "
+                "when it was last synced, whether the last sync worked, row count, and any recurring sync schedule). "
+                "Admin-only. Use it before syncing or scheduling when the user hasn't named a dataset, or asks what "
+                "can be synced or when something was last synced."
+            ),
+            parameters={"type": "object", "properties": {}},
+            category="dataset_sync",
+        ),
+        AgentTool(
+            name="sync_dataset",
+            description=(
+                "Run a sync of one dataset now: re-read it from Databricks and replace the stored copy. Admin-only. "
+                "Use when an admin asks to sync, refresh or update a dataset (e.g. store locations, row-filter tags). "
+                "A sync that would shrink the dataset sharply is refused; pass force=true only after the admin has "
+                "seen that refusal and explicitly confirmed."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "dataset": {"type": "string", "description": "Dataset name exactly as list_synced_datasets shows it, e.g. 'store_locations'."},
+                    "force": {"type": "boolean", "description": "Replace the stored copy even if the new one is much smaller. Only after explicit admin confirmation."},
+                },
+                "required": ["dataset"],
+            },
+            category="dataset_sync",
+        ),
+        AgentTool(
+            name="schedule_dataset_sync",
+            description=(
+                "Schedule a recurring sync of one dataset. Admin-only. Runs silently; a failed run is reported in the "
+                "channel. Only one recurring sync per dataset can exist: if one does, its id is returned instead. "
+                "Cron is UTC and has a minimum interval, stated in the tool result if it is too frequent."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "dataset": {"type": "string", "description": "Dataset name exactly as list_synced_datasets shows it."},
+                    "cron": {"type": "string", "description": "5-field cron expression in UTC, e.g. '0 2 * * *' for daily at 02:00 UTC."},
+                    "channel": {"type": "string", "description": "Slack channel ID that failed runs are reported in. Defaults to the channel of the request."},
+                },
+                "required": ["dataset", "cron"],
+            },
+            category="dataset_sync",
         ),
         AgentTool(
             name="generate_service_principal_secret",

@@ -54,3 +54,22 @@ def test_two_pr_reminders_in_one_channel_do_not_share_a_dedup_key():
     second = Schedule(id="s2", cron="*/15 * * * *", channel="C1", question="label", kind="pr_reminder")
 
     assert app._schedule_key(first) != app._schedule_key(second)
+
+
+def test_a_dataset_sync_enqueues_the_sync_job_with_its_schedule_id_and_no_retry():
+    queue = MagicMock()
+
+    app._enqueue(queue, entry(kind="dataset_sync"))
+
+    assert queue.enqueue.call_args.args == ("worker.tasks.process_dataset_sync",)
+    kwargs = queue.enqueue.call_args.kwargs
+    assert (kwargs["schedule_id"], kwargs["bot_id"]) == ("s1", "bot-a")
+    assert "retry" not in kwargs
+
+
+def test_dataset_syncs_are_keyed_on_their_id_so_two_in_one_channel_do_not_collide():
+    first = Schedule(id="s1", cron="0 2 * * *", channel="C1", question="label", kind="dataset_sync")
+    second = Schedule(id="s2", cron="0 2 * * *", channel="C1", question="label", kind="dataset_sync")
+
+    assert app._schedule_key(first) != app._schedule_key(second)
+    assert app._schedule_key(first) != app._schedule_key(Schedule(id="s1", cron="0 2 * * *", channel="C1", question="label", kind="pr_reminder"))
