@@ -97,7 +97,7 @@ sequenceDiagram
 ## Entry Point 2 — Opening the Form
 
 - Handled directly by the always-on webhook layer — one of two narrowly-scoped exceptions to "the webhook layer contains no business logic," because Slack requires the form to open within a few seconds of the button click, a latency guarantee an asynchronous background queue can't reliably provide.
-- The webhook layer checks the button's expiry, attributes the request to whoever actually clicked it (not necessarily who it was originally posted for), loads the options snapshot from Redis, and builds the form. It reads no database: the worker already did that when it posted the button. A button with no snapshot (posted before this change, or whose snapshot expired) is treated as expired.
+- The webhook layer checks the button's expiry, attributes the request to whoever actually clicked it (not necessarily who it was originally posted for), loads the options snapshot from Redis, and builds the form. It reads no database: the worker already did that when it posted the button. A button with no snapshot (posted before this change, or whose snapshot expired) is treated as expired. The lookup has a one-second overall deadline, far inside Slack's three seconds; if Redis is slow or unreachable the click is acknowledged and logged, nothing is queued, and the user can simply click again.
 
 ## Form Fields
 

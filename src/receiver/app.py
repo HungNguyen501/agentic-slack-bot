@@ -10,6 +10,9 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from redis import Redis
+from redis.backoff import NoBackoff
+from redis.exceptions import RedisError
+from redis.retry import Retry as RedisRetry
 from rq import Queue, Retry
 
 from agent.forms.access_request_options import FormOptions, options_redis_key
@@ -21,10 +24,18 @@ from connectors.db.bots import BotConfig, get_by_app_id
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
 
-# Slack gives the receiver about 3 s to answer or open a form, so a slow or unreachable Redis must fail fast, not hang.
-_REDIS_TIMEOUT_SECONDS = 2
+# Slack gives the receiver about 3 s from a button click to call views.open, so the form-options lookup gets a hard
+# overall deadline well inside that. Its own client: socket timeouts and no retries (which would add to the delay) so
+# the thread stops with the deadline instead of lingering; the shared client below keeps its defaults.
+_FORM_OPTIONS_DEADLINE_SECONDS = 1.0
 
-redis_conn = Redis.from_url(Configs.REDIS_URL, socket_timeout=_REDIS_TIMEOUT_SECONDS, socket_connect_timeout=_REDIS_TIMEOUT_SECONDS)
+form_redis = Redis.from_url(
+    Configs.REDIS_URL,
+    socket_timeout=_FORM_OPTIONS_DEADLINE_SECONDS,
+    socket_connect_timeout=_FORM_OPTIONS_DEADLINE_SECONDS,
+    retry=RedisRetry(NoBackoff(), 0),
+)
+redis_conn = Redis.from_url(Configs.REDIS_URL)
 queue = Queue(name="slack_events", connection=redis_conn)
 
 app = FastAPI()
@@ -146,14 +157,21 @@ def _extract_view_submission_fields(view: dict) -> dict:
     return fields
 
 
+class FormOptionsUnavailableError(Exception):
+    """The form's options snapshot couldn't be looked up in time (Redis slow, down or unreachable)."""
+
+
 def _load_form_options(button_value: dict) -> FormOptions | None:
     """The form's dropdown options for a clicked button, or None if there is no usable snapshot.
 
     The worker snapshotted them into Redis when it posted the button (the receiver reads no Supabase). A button from
     before that existed, one whose snapshot expired, and one whose snapshot this code can't read all count as expired.
+
+    Raises:
+        RedisError: Redis can't be reached or answers too slowly.
     """
     token = button_value.get("options_token")
-    raw = redis_conn.get(options_redis_key(token)) if token else None
+    raw = form_redis.get(options_redis_key(token)) if token else None
     if raw is None:
         return None
     try:
@@ -161,6 +179,18 @@ def _load_form_options(button_value: dict) -> FormOptions | None:
     except ValueError:
         log.warning("Unreadable form options snapshot for token %s", token)
         return None
+
+
+async def _form_options_within_deadline(button_value: dict) -> FormOptions | None:
+    """`_load_form_options` off the event loop and bounded by an overall deadline.
+
+    Raises:
+        FormOptionsUnavailableError: the lookup failed or ran past the deadline.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_load_form_options, button_value), timeout=_FORM_OPTIONS_DEADLINE_SECONDS)
+    except (TimeoutError, RedisError) as exc:
+        raise FormOptionsUnavailableError(str(exc) or type(exc).__name__) from exc
 
 
 @app.post("/slack/interactivity")
@@ -188,10 +218,17 @@ async def slack_interactivity(request: Request) -> dict:
         action = payload["actions"][0]
         if action.get("action_id") == "open_access_request_form":
             value = json.loads(action["value"])
-            options = await asyncio.to_thread(_load_form_options, value)
             # Missing expires_at means this button was posted before the TTL feature shipped —
             # default to 0 (always in the past) so those old buttons are refused, not grandfathered in.
-            if time.time() > value.get("expires_at", 0) or options is None:
+            expired = time.time() > value.get("expires_at", 0)
+            try:
+                options = None if expired else await _form_options_within_deadline(value)
+            except FormOptionsUnavailableError as exc:
+                # Don't enqueue the "button expired" notice either: Redis is what's failing, and the queue lives in it.
+                # Acknowledge so Slack doesn't retry; the user can click again.
+                log.error("Could not load the form options for %s in time: %s", value.get("channel"), exc)
+                return {}
+            if options is None:
                 queue.enqueue(
                     "worker.tasks.notify_access_request_button_expired",
                     bot_id=bot.bot_id,
