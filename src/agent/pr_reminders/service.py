@@ -155,24 +155,24 @@ def _post(bot: BotConfig, channel: str, thread_ts: str, text: str) -> bool:
     return True
 
 
-def _messages_to_mark(statuses: list[PrStatus], unchecked: set[tuple[str, str]]) -> list[tuple[str, str]]:
-    """The (channel, message_ts) of Slack messages that should get the approved reaction.
+def _messages_to_mark(statuses: list[PrStatus]) -> list[tuple[str, str]]:
+    """The (channel, message_ts) of Slack messages that should get the approved reaction, newest first.
 
     A message qualifies when every PR it links is approved, so a message with one approved and one waiting PR isn't
-    marked as done. Messages that already have the reaction, links that don't have a message of their own, and messages
-    in `unchecked` (one of their PRs was never checked, being over the limit) are left out.
+    marked as done. That is judged on all the PRs the message links (`PrLink.message_refs`), not only the ones whose
+    newest mention it is, and a PR that wasn't checked (over the limit) isn't approved. Messages that already have
+    the reaction, and links that don't have a message of their own, are left out.
     """
-    by_message: dict[tuple[str, str], list[PrStatus]] = {}
+    approved = {status.link.ref for status in statuses if status.bucket is Bucket.APPROVED}
+    messages: dict[tuple[str, str], None] = {}
     for status in statuses:
-        by_message.setdefault((status.link.channel, status.link.message_ts), []).append(status)
-    return [
-        message_key
-        for message_key, group in by_message.items()
-        if message_key not in unchecked and all(s.bucket is Bucket.APPROVED and s.link.reactable and not s.link.reacted for s in group)
-    ]
+        link = status.link
+        if link.reactable and not link.reacted and status.bucket is Bucket.APPROVED and all(ref in approved for ref in link.message_refs):
+            messages[(link.channel, link.message_ts)] = None
+    return list(messages)
 
 
-def _mark_approved(bot: BotConfig, statuses: list[PrStatus], unchecked: set[tuple[str, str]]) -> int:
+def _mark_approved(bot: BotConfig, statuses: list[PrStatus]) -> int:
     """React to the Slack message of each approved PR, once; returns how many messages got the reaction.
 
     Never raises: a reaction is a nicety, so a failure is logged and must not stop the reminders. An `already_reacted`
@@ -180,7 +180,7 @@ def _mark_approved(bot: BotConfig, statuses: list[PrStatus], unchecked: set[tupl
     run, since every remaining message would fail the same way; the next tick tries again.
     """
     marked = 0
-    for channel, message_ts in _messages_to_mark(statuses, unchecked)[: AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN]:
+    for channel, message_ts in _messages_to_mark(statuses)[: AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN]:
         try:
             slack.add_reaction(channel, message_ts, AgentConfigs.PR_REMINDER_APPROVED_REACTION, token=bot.bot_token)
         except SlackApiError as exc:
@@ -264,10 +264,7 @@ def check_and_remind(
     Raises:
         httpx.HTTPError, queries.GithubQueryError: GitHub couldn't be queried. Nothing is posted in that case.
     """
-    scanned = links
     links, truncated = limit_links(links, AgentConfigs.PR_REMINDER_MAX_PRS_CHECKED)
-    checked = set(links)
-    unchecked = {(link.channel, link.message_ts) for link in scanned if link not in checked}
     statuses = fetch_statuses(links)
     now = now or datetime.now(UTC)
 
@@ -282,7 +279,7 @@ def check_and_remind(
             result.posted.append((thread.channel, thread.thread_ts))
         else:
             result.failed_posts += 1
-    result.marked = _mark_approved(bot, statuses, unchecked)
+    result.marked = _mark_approved(bot, statuses)
     return result
 
 

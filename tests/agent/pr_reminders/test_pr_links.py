@@ -114,6 +114,18 @@ def test_links_from_messages_can_take_a_reaction_on_their_own_message():
     assert (found.reactable, found.reacted) == (True, False)
 
 
+def test_links_from_messages_remembers_every_pr_a_message_links_even_when_a_later_message_takes_one_over():
+    messages = [
+        {"ts": "1.0", "text": "https://github.com/org/repo/pull/1 https://github.com/org/repo/pull/2"},
+        {"ts": "2.0", "text": "https://github.com/org/repo/pull/2"},
+    ]
+
+    links = {found.ref.number: found for found in links_from_messages(messages, "C1", own_app_id=None)}
+
+    assert links[1].message_refs == (PrRef("org", "repo", 1), PrRef("org", "repo", 2))
+    assert (links[2].message_ts, links[2].message_refs) == ("2.0", (PrRef("org", "repo", 2),))
+
+
 @pytest.mark.parametrize(
     "reactions, reacted",
     [

@@ -32,7 +32,9 @@ class PrLink:
 
     `reactable` is set for a link read from a Slack message of its own, whose `message_ts` can carry a reaction; a link
     typed in the request isn't, since its message is the request. `reacted` says that message already has the approved
-    reaction, from anyone.
+    reaction, from anyone. `message_refs` is every PR that message links, kept whole even when a PR is also linked in a
+    later message (and so belongs to that message's link instead), so "all the PRs in this message are approved" can be
+    answered from the statuses.
     """
 
     ref: PrRef
@@ -41,6 +43,7 @@ class PrLink:
     message_ts: str
     reactable: bool = False
     reacted: bool = False
+    message_refs: tuple[PrRef, ...] = ()
 
 
 def _pr_number(digits: str) -> int | None:
@@ -89,10 +92,11 @@ def links_from_messages(messages: Iterable[dict], channel: str, *, own_app_id: s
             continue
         ts = message["ts"]
         reacted = approved_reaction is not None and _has_reaction(message, approved_reaction)
-        for ref in find_pr_refs(_message_blob(message)):
+        refs = find_pr_refs(_message_blob(message))
+        for ref in refs:
             current = latest.get(ref)
             if current is None or float(ts) > float(current.message_ts):
-                latest[ref] = PrLink(ref, channel, message.get("thread_ts") or ts, ts, reactable=True, reacted=reacted)
+                latest[ref] = PrLink(ref, channel, message.get("thread_ts") or ts, ts, reactable=True, reacted=reacted, message_refs=tuple(refs))
     return list(latest.values())
 
 
