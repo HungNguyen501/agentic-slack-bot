@@ -22,10 +22,11 @@ def dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
             schedules = get_schedules(bot_id, active_only=True)
             if not schedules:
                 return "No schedules configured."
-            header = f"{'ID':<36}  {'Cron':<20}  {'Channel':<12}  Question"
+            zone_width = max(len("Timezone"), *(len(s.timezone) for s in schedules))
+            header = f"{'ID':<36}  {'Cron':<20}  {'Timezone':<{zone_width}}  {'Channel':<12}  Question"
             divider = "-" * len(header)
             rows = [header, divider] + [
-                f"{s.id:<36}  {s.cron:<20}  {s.channel:<12}  {s.question}"
+                f"{s.id:<36}  {s.cron:<20}  {s.timezone:<{zone_width}}  {s.channel:<12}  {s.question}"
                 for s in schedules
             ]
             return f"```\n{chr(10).join(rows)}\n```"

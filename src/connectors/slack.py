@@ -34,6 +34,22 @@ def update_message(channel: str, ts: str, text: str, *, token: str) -> None:
     WebClient(token=token).chat_update(channel=channel, ts=ts, text=text)
 
 
+def add_reaction(channel: str, ts: str, name: str, *, token: str) -> None:
+    """Add an emoji reaction to a message as the bot.
+
+    Args:
+        channel: Slack channel ID containing the message.
+        ts: Timestamp of the message to react to.
+        name: Emoji name without colons (e.g. "white_check_mark").
+        token: Bot OAuth token (xoxb-...) to authenticate the request.
+
+    Raises:
+        SlackApiError: with error `already_reacted` when the bot already left this reaction, `missing_scope` when the app
+            lacks `reactions:write`, or another Slack error code.
+    """
+    WebClient(token=token).reactions_add(channel=channel, timestamp=ts, name=name)
+
+
 def delete_message(channel: str, ts: str, *, token: str) -> None:
     """Delete an existing Slack message (e.g. a "thinking..." placeholder no longer needed).
 

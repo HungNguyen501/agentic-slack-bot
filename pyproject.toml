@@ -17,6 +17,7 @@ dependencies = [
     "sqlfluff>=4.3.0",
     "slack-sdk>=3.44.1",
     "cryptography>=50.0.1",
+    "tzdata>=2026.2",
 ]
 
 [tool.flake8]

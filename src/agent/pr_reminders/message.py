@@ -9,7 +9,7 @@ mentions); everything that comes from GitHub is escaped first so a PR title can'
 from datetime import datetime, timedelta
 
 from agent.pr_reminders.status import PrStatus
-from common.configs import AgentConfigs, ReminderMessages
+from common.configs import ReminderMessages
 
 
 def escape(text: str) -> str:
@@ -26,15 +26,6 @@ def format_age(created_at: datetime | None, now: datetime) -> str:
     if minutes >= 60:
         return ReminderMessages.AGE_HOURS.format(n=minutes // 60)
     return ReminderMessages.AGE_MINUTES.format(n=minutes)
-
-
-def _hours_range() -> str:
-    return f"{AgentConfigs.PR_REMINDER_ACTIVE_START_HOUR:02d}:00–{AgentConfigs.PR_REMINDER_ACTIVE_END_HOUR:02d}:00"
-
-
-def active_hours_text() -> str:
-    """The window recurring reminders post in, for the agent (not posted to Slack): "07:00–22:00 Vietnam time (UTC+7)"."""
-    return ReminderMessages.ACTIVE_HOURS_FOR_AGENT.format(hours=_hours_range(), offset=AgentConfigs.PR_REMINDER_UTC_OFFSET_HOURS)
 
 
 def _header(who: str, count: int, now: datetime) -> str:
@@ -67,7 +58,7 @@ def render_thread_message(waiting: list[PrStatus], on_author: list[PrStatus], *,
     """Render the reminder for one thread, or None when it has no PR to talk about.
 
     The people in `mentions` are pinged only when a PR is in `waiting`; `on_author` PRs are listed without a ping.
-    `schedule_id` is set for a recurring reminder, so the message tells people how to stop it and when it runs.
+    `schedule_id` is set for a recurring reminder, so the message tells people how to stop it.
     """
     if not waiting and not on_author:
         return None
@@ -82,11 +73,7 @@ def render_thread_message(waiting: list[PrStatus], on_author: list[PrStatus], *,
         lines.append(ReminderMessages.AUTHOR_COURT_WITH_WAITING if waiting else ReminderMessages.AUTHOR_COURT_ALONE)
         lines.extend(_line(s, ReminderMessages.AUTHOR_LINE) for s in on_author)
     if schedule_id:
-        lines.append(
-            ReminderMessages.SCHEDULE_FOOTER.format(
-                schedule_id=schedule_id, hours=_hours_range(), offset=AgentConfigs.PR_REMINDER_UTC_OFFSET_HOURS
-            )
-        )
+        lines.append(ReminderMessages.SCHEDULE_FOOTER.format(schedule_id=schedule_id))
     return "\n".join(lines)
 
 

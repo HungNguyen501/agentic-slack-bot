@@ -108,10 +108,67 @@ def test_links_from_messages_skips_the_bots_own_messages():
     assert [link.ref.number for link in links] == [2]
 
 
+def test_links_from_messages_can_take_a_reaction_on_their_own_message():
+    [found] = links_from_messages([{"ts": "1.0", "text": "https://github.com/org/repo/pull/1"}], "C1", own_app_id=None)
+
+    assert (found.reactable, found.reacted) == (True, False)
+
+
+def test_links_from_messages_remembers_every_pr_a_message_links_even_when_a_later_message_takes_one_over():
+    messages = [
+        {"ts": "1.0", "text": "https://github.com/org/repo/pull/1 https://github.com/org/repo/pull/2"},
+        {"ts": "2.0", "text": "https://github.com/org/repo/pull/2"},
+    ]
+
+    links = {found.ref.number: found for found in links_from_messages(messages, "C1", own_app_id=None)}
+
+    assert links[1].message_refs == (PrRef("org", "repo", 1), PrRef("org", "repo", 2))
+    assert (links[2].message_ts, links[2].message_refs) == ("2.0", (PrRef("org", "repo", 2),))
+
+
+@pytest.mark.parametrize(
+    "reactions, reacted",
+    [
+        ([{"name": "white_check_mark", "count": 1}], True),
+        ([{"name": "eyes", "count": 2}, {"name": "white_check_mark", "count": 1}], True),
+        ([{"name": "eyes", "count": 2}], False),
+        ([], False),
+        (None, False),
+    ],
+    ids=["only-check", "among-others", "other-emoji", "none", "key-missing"],
+)
+def test_links_from_messages_notes_an_existing_approved_reaction_from_anyone(reactions, reacted):
+    message = {"ts": "1.0", "text": "https://github.com/org/repo/pull/1"} | ({"reactions": reactions} if reactions is not None else {})
+
+    [found] = links_from_messages([message], "C1", own_app_id=None, approved_reaction="white_check_mark")
+
+    assert found.reacted is reacted
+
+
+def test_links_from_messages_ignores_reactions_when_no_approved_reaction_is_given():
+    message = {"ts": "1.0", "text": "https://github.com/org/repo/pull/1", "reactions": [{"name": "white_check_mark", "count": 1}]}
+
+    [found] = links_from_messages([message], "C1", own_app_id=None)
+
+    assert found.reacted is False
+
+
+def test_links_from_messages_takes_the_reaction_state_of_the_latest_message_for_a_pr():
+    messages = [
+        {"ts": "1.0", "text": "https://github.com/org/repo/pull/1", "reactions": [{"name": "white_check_mark", "count": 1}]},
+        {"ts": "2.0", "text": "https://github.com/org/repo/pull/1"},
+    ]
+
+    [found] = links_from_messages(messages, "C1", own_app_id=None, approved_reaction="white_check_mark")
+
+    assert (found.message_ts, found.reacted) == ("2.0", False)
+
+
 def test_links_from_urls_puts_typed_links_in_the_request_thread():
     [typed] = links_from_urls(["https://github.com/org/repo/pull/1"], "C1", "4.0")
 
     assert typed == PrLink(PR, "C1", "4.0", "4.0")
+    assert typed.reactable is False  # its message is the request, not a message about the PR
 
 
 def test_merge_links_lets_a_later_group_replace_the_same_pr():

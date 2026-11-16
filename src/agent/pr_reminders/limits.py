@@ -1,12 +1,11 @@
 """Limits on PR reminders: how often one may run and how long it lives. Pure, no I/O."""
 import re
 from collections.abc import Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from common.configs import AgentConfigs
 from common.cron import CronError, validate_cron
-
-_REMINDER_TZ = timezone(timedelta(hours=AgentConfigs.PR_REMINDER_UTC_OFFSET_HOURS))
 
 # A user mention as Slack writes it (<@U123ABCDE> or <@U123ABCDE|name>) or a bare user ID. Channel, here and user-group
 # mentions don't match, so a request can't be used to broadcast. Real IDs are at least 9 characters; requiring that keeps
@@ -35,15 +34,22 @@ def is_reminder_expired(expires_at: float | None, now: datetime) -> bool:
     return expires_at is not None and now.timestamp() >= expires_at
 
 
-def is_within_active_hours(now: datetime) -> bool:
-    """Whether a recurring reminder may post at `now`: from the start hour up to, not including, the end hour, Vietnam time.
+def parse_timezone(value: object) -> str:
+    """The IANA timezone name a reminder's cron is written in, defaulting to Vietnam time when none is given.
 
     Raises:
-        ValueError: `now` is naive; `astimezone` would silently read it as the host's local time.
+        ReminderRequestError: the value isn't a known timezone name.
     """
-    if now.tzinfo is None:
-        raise ValueError("now must be timezone-aware")
-    return AgentConfigs.PR_REMINDER_ACTIVE_START_HOUR <= now.astimezone(_REMINDER_TZ).hour < AgentConfigs.PR_REMINDER_ACTIVE_END_HOUR
+    if value is None or value == "":
+        return AgentConfigs.PR_REMINDER_DEFAULT_TIMEZONE
+    unknown = ReminderRequestError(f"'{value}' is not a timezone name I know. Use an IANA name such as Asia/Ho_Chi_Minh or UTC.")
+    if not isinstance(value, str):
+        raise unknown
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+        raise unknown from exc
+    return value
 
 
 def parse_mentions(values: Iterable[object]) -> list[str]:

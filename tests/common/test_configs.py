@@ -108,10 +108,9 @@ def test_every_template_can_be_filled_with_the_values_message_py_passes():
     ReminderMessages.AGE_HOURS.format(n=5)
     ReminderMessages.AGE_DAYS.format(n=5)
     ReminderMessages.WAITING_LINE.format(age="5 phút", flair="")
-    ReminderMessages.SCHEDULE_FOOTER.format(schedule_id="3f2a", hours="07:00–22:00", offset=7)
+    ReminderMessages.SCHEDULE_FOOTER.format(schedule_id="3f2a")
     ReminderMessages.EXPIRED.format(schedule_id="3f2a")
     ReminderMessages.UNREADABLE.format(schedule_id="3f2a", error_code="not_in_channel")
-    ReminderMessages.ACTIVE_HOURS_FOR_AGENT.format(hours="07:00–22:00", offset=7)
     for header in ReminderMessages.HEADERS:
         header.format(who="<@U1>", subject="cái PR này", Subject="Cái PR này")
 

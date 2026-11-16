@@ -98,6 +98,16 @@ def test_a_pr_reminder_row_keeps_its_kind_status_and_config():
     assert (schedule.kind, schedule.status, schedule.config) == ("pr_reminder", "completed", {"scope": "thread"})
 
 
+def test_a_row_without_a_timezone_is_read_in_utc():
+    with fake_connect(fetchone=ROW):
+        assert schedules.get_schedule("s1").timezone == "UTC"
+
+
+def test_a_row_keeps_the_timezone_its_cron_is_written_in():
+    with fake_connect(fetchone=ROW | {"timezone": "Asia/Ho_Chi_Minh"}):
+        assert schedules.get_schedule("s1").timezone == "Asia/Ho_Chi_Minh"
+
+
 def test_get_schedule_returns_none_for_an_unknown_id():
     with fake_connect(fetchone=None):
         assert schedules.get_schedule("nope") is None
@@ -126,6 +136,17 @@ def test_add_pr_reminder_inserts_a_pr_reminder_with_the_given_id():
     assert params[5].obj == NEW_CONFIG
     assert added.created is True
     assert added.schedule.kind == "pr_reminder"
+
+
+def test_add_pr_reminder_stores_the_timezone_of_the_cron():
+    with fake_connect() as cur:
+        cur.fetchall.return_value = []
+        cur.fetchone.return_value = reminder_row(NEW_CONFIG, id="s-new")
+        schedules.add_pr_reminder("s-new", "*/30 7-21 * * *", "C1", "label", "bot-a", NEW_CONFIG, max_active=5, timezone="Asia/Ho_Chi_Minh")
+
+    sql, params = cur.execute.call_args.args
+    assert "timezone" in sql
+    assert params[-1] == "Asia/Ho_Chi_Minh"
 
 
 def test_add_pr_reminder_looks_up_and_inserts_in_one_transaction_under_a_lock_on_bot_and_channel():

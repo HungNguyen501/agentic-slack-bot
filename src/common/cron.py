@@ -1,6 +1,7 @@
 """Cron expression checks shared by the recurring jobs that admins schedule. Pure, no I/O."""
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
+from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
@@ -37,6 +38,23 @@ def _shortest_gap_minutes(cron: str, today: date) -> float:
     for earlier, later in pairwise(eligible):
         shortest = min(shortest, (later - earlier).days * 24 * 60 - times[-1] + times[0])
     return shortest
+
+
+def is_in_cron_window(cron: str, timezone_name: str, now: datetime) -> bool:
+    """Whether `now` falls in an hour, on a day, that the cron can fire in, ignoring its minute field.
+
+    The cron is read in `timezone_name` (an IANA name), so `now` is converted to that zone first. Used to tell if "now"
+    is inside the window an expression describes (e.g. `*/30 8-17 * * 1-5` is weekdays 08:00-17:59), so a job created
+    at night can wait for its first tick.
+
+    Raises:
+        ValueError: `now` is naive; `astimezone` would silently read it as the host's local time.
+    """
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    local_now = now.astimezone(ZoneInfo(timezone_name)).replace(tzinfo=None)
+    hour_day_month_weekday = " ".join(cron.split()[1:])
+    return croniter.match(f"* {hour_day_month_weekday}", local_now)
 
 
 def validate_cron(cron: str, min_interval_minutes: int, subject: str, now: datetime | None = None) -> None:

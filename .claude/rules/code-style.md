@@ -65,6 +65,7 @@ Tests live in `tests/`, mirroring `src/` (e.g. `src/connectors/slack.py` → `te
 - pytest is configured in `pyproject.toml` (`pythonpath = ["src"]`, `--import-mode=importlib`), so imports are rooted at `src/` and test files can share basenames. `tests/conftest.py` sets inert env defaults because the config classes read env vars at import time.
 - Prefer the pure modules (`src/agent/forms/`, `src/agent/pr/`, `common/crypto.py`, `connectors/slack.split_message`); mock Slack/Databricks/GitHub/Supabase/Redis/OpenAI at the boundary (patch where the name is looked up, with `autospec=True`), never hit real services.
 - Cover a bug fix with a test that fails on the old code.
+- A data migration that rewrites existing rows gets a test that runs the real SQL. `tests/migrations/` is the one place that does, and it is skipped unless `MIGRATION_TEST_DB_URL` points at a throwaway Postgres (see the docstring in `test_v12_schedules_timezone.py`); it never runs in `make test` against a shared database.
 
 ## Dependencies
 

@@ -1255,6 +1255,7 @@ dependencies = [
     { name = "ruff" },
     { name = "slack-sdk" },
     { name = "sqlfluff" },
+    { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1280,6 +1281,7 @@ requires-dist = [
     { name = "ruff", specifier = ">=0.15.14" },
     { name = "slack-sdk", specifier = ">=3.44.1" },
     { name = "sqlfluff", specifier = ">=4.3.0" },
+    { name = "tzdata", specifier = ">=2026.2" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.47.0" },
 ]
 
