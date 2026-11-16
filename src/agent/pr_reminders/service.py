@@ -37,6 +37,19 @@ _MAX_RETRY_AFTER_SECONDS = 30.0
 _RECENTLY_REMINDED_SECONDS = AgentConfigs.PR_REMINDER_MIN_INTERVAL_MINUTES * 60 / 2
 
 
+# reactions.add errors that no other message will escape: the app can't react at all.
+_STOP_REACTING_CODES = frozenset({"missing_scope", "invalid_auth", "not_authed", "account_inactive", "token_revoked"})
+
+
+def _error_code(exc: SlackApiError) -> str | None:
+    """The Slack error code of an API error, or None when Slack sent no response body."""
+    return exc.response.get("error") if exc.response is not None else None
+
+
+def _is_rate_limited(exc: SlackApiError) -> bool:
+    return exc.response is not None and exc.response.status_code == 429
+
+
 class ChannelReadError(Exception):
     """The bot can't read the channel it was asked to scan (not a member, missing history scope, …)."""
 
@@ -54,13 +67,16 @@ class ScanResult(NamedTuple):
 
 @dataclass
 class CheckResult:
-    """Outcome of a check. `truncated` PRs were never checked and `deferred_threads` had waiting PRs but no message this run."""
+    """Outcome of a check. `truncated` PRs were never checked and `deferred_threads` had waiting PRs but no message this run.
+
+    `marked` counts the Slack messages that got the approved reaction in this run."""
 
     statuses: list[PrStatus]
     truncated: int = 0
     posted: list[tuple[str, str]] = field(default_factory=list)
     failed_posts: int = 0
     deferred_threads: int = 0
+    marked: int = 0
 
     def count(self, bucket: Bucket) -> int:
         return sum(1 for status in self.statuses if status.bucket is bucket)
@@ -100,12 +116,12 @@ def collect_links(
                 channel, time.time() - lookback_hours * 3600, token=bot.bot_token, max_messages=AgentConfigs.PR_REMINDER_MAX_MESSAGES_SCANNED
             )
     except SlackApiError as exc:
-        code = exc.response.get("error") if exc.response is not None else None
+        code = _error_code(exc)
         if code in CHANNEL_READ_HELP:
             raise ChannelReadError(code) from exc
         raise
 
-    scanned = links_from_messages(messages, channel, own_app_id=bot.app_id)
+    scanned = links_from_messages(messages, channel, own_app_id=bot.app_id, approved_reaction=AgentConfigs.PR_REMINDER_APPROVED_REACTION)
     return ScanResult(merge_links(scanned, links_from_urls(typed_urls or [], channel, thread_ts)), truncated)
 
 
@@ -126,8 +142,7 @@ def _post(bot: BotConfig, channel: str, thread_ts: str, text: str) -> bool:
                 slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
                 break
             except SlackApiError as exc:
-                rate_limited = exc.response is not None and exc.response.status_code == 429
-                if rate_limited and attempt == 0:
+                if _is_rate_limited(exc) and attempt == 0:
                     time.sleep(min(float(exc.response.headers.get("Retry-After", 1)), _MAX_RETRY_AFTER_SECONDS))
                     continue
                 log.exception("Could not post a PR reminder to %s (thread %s)", channel, thread_ts)
@@ -138,6 +153,49 @@ def _post(bot: BotConfig, channel: str, thread_ts: str, text: str) -> bool:
                 log.exception("Could not reach Slack to post a PR reminder to %s (thread %s)", channel, thread_ts)
                 return False
     return True
+
+
+def _messages_to_mark(statuses: list[PrStatus], unchecked: set[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The (channel, message_ts) of Slack messages that should get the approved reaction.
+
+    A message qualifies when every PR it links is approved, so a message with one approved and one waiting PR isn't
+    marked as done. Messages that already have the reaction, links that don't have a message of their own, and messages
+    in `unchecked` (one of their PRs was never checked, being over the limit) are left out.
+    """
+    by_message: dict[tuple[str, str], list[PrStatus]] = {}
+    for status in statuses:
+        by_message.setdefault((status.link.channel, status.link.message_ts), []).append(status)
+    return [
+        message_key
+        for message_key, group in by_message.items()
+        if message_key not in unchecked and all(s.bucket is Bucket.APPROVED and s.link.reactable and not s.link.reacted for s in group)
+    ]
+
+
+def _mark_approved(bot: BotConfig, statuses: list[PrStatus], unchecked: set[tuple[str, str]]) -> int:
+    """React to the Slack message of each approved PR, once; returns how many messages got the reaction.
+
+    Never raises: a reaction is a nicety, so a failure is logged and must not stop the reminders. An `already_reacted`
+    answer means someone beat us to it. A missing scope, a rate limit or a dropped connection ends the attempt for this
+    run, since every remaining message would fail the same way; the next tick tries again.
+    """
+    marked = 0
+    for channel, message_ts in _messages_to_mark(statuses, unchecked)[: AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN]:
+        try:
+            slack.add_reaction(channel, message_ts, AgentConfigs.PR_REMINDER_APPROVED_REACTION, token=bot.bot_token)
+        except SlackApiError as exc:
+            code = _error_code(exc)
+            if code == "already_reacted":
+                continue
+            log.warning("Could not react to %s/%s (Slack error: %s)", channel, message_ts, code)
+            if code in _STOP_REACTING_CODES or _is_rate_limited(exc):
+                break
+            continue
+        except (SlackClientError, OSError):
+            log.exception("Could not reach Slack to react to %s/%s", channel, message_ts)
+            break
+        marked += 1
+    return marked
 
 
 class _ThreadReminder(NamedTuple):
@@ -188,11 +246,14 @@ def check_and_remind(
     last_reminded: dict[str, float] | None = None,
     now: datetime | None = None,
 ) -> CheckResult:
-    """Check the PRs on GitHub and post one reminder in each thread that has a PR waiting for review.
+    """Check the PRs on GitHub, post one reminder in each thread that has a PR waiting for review, and mark approved ones.
 
     Only the PR_REMINDER_MAX_PRS_CHECKED most recently mentioned PRs are checked (the rest are counted in
     `truncated`, so a caller can't conclude "nothing is waiting"), and only PR_REMINDER_MAX_THREADS_POSTED threads get
     a message per call (the rest are `deferred_threads`).
+
+    Approved PRs also get a reaction on their own Slack message (see `_messages_to_mark`), whether or not anything is
+    posted, so the thread shows at a glance which PRs are done.
 
     `mentions` are the Slack user IDs to ping. `schedule_id` is set for a recurring reminder, so the message says how
     to stop it. `include_author_only_threads` also posts, without a ping, in threads whose only news is "changes
@@ -203,7 +264,10 @@ def check_and_remind(
     Raises:
         httpx.HTTPError, queries.GithubQueryError: GitHub couldn't be queried. Nothing is posted in that case.
     """
+    scanned = links
     links, truncated = limit_links(links, AgentConfigs.PR_REMINDER_MAX_PRS_CHECKED)
+    checked = set(links)
+    unchecked = {(link.channel, link.message_ts) for link in scanned if link not in checked}
     statuses = fetch_statuses(links)
     now = now or datetime.now(UTC)
 
@@ -218,6 +282,7 @@ def check_and_remind(
             result.posted.append((thread.channel, thread.thread_ts))
         else:
             result.failed_posts += 1
+    result.marked = _mark_approved(bot, statuses, unchecked)
     return result
 
 
@@ -285,5 +350,8 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
     result = check_and_remind(
         bot, scan.links, mentions=list(config.mentions), schedule_id=schedule.id, last_reminded=config.last_reminded, now=now
     )
-    log.info("PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s)", schedule.id, len(result.statuses), result.waiting, len(result.posted))
+    log.info(
+        "PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s), marked %d approved",
+        schedule.id, len(result.statuses), result.waiting, len(result.posted), result.marked,
+    )
     save_progress(schedule.id, config, result, now)

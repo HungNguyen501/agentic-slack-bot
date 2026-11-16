@@ -15,9 +15,9 @@ LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
 A, B = "U01ABCDEF", "U02GHIJKL"  # realistic Slack user IDs: at least 9 characters
 
 
-def result(*buckets, posted=(), truncated=0, failed_posts=0):
+def result(*buckets, posted=(), truncated=0, failed_posts=0, marked=0):
     statuses = [PrStatus(LINK, bucket, "title", None) for bucket in buckets]
-    return CheckResult(statuses, truncated, list(posted), failed_posts)
+    return CheckResult(statuses, truncated, list(posted), failed_posts, marked=marked)
 
 
 @pytest.fixture
@@ -290,6 +290,20 @@ def test_check_pr_approvals_reports_threads_it_could_not_post_in(bot, collect, c
     check.return_value = result(Bucket.WAITING, failed_posts=2)
 
     assert "Could not post in 2 thread(s)." in run("check_pr_approvals", {"scope": "channel"}, bot)
+
+
+def test_check_pr_approvals_says_how_many_approved_messages_it_marked(bot, collect, check, slack):
+    check.return_value = result(Bucket.APPROVED, Bucket.APPROVED, marked=2)
+
+    reply = run("check_pr_approvals", {"scope": "channel"}, bot)
+
+    assert "Marked 2 approved PR message(s) with :white_check_mark:." in reply
+
+
+def test_check_pr_approvals_does_not_mention_marking_when_nothing_was_marked(bot, collect, check, slack):
+    check.return_value = result(Bucket.APPROVED)
+
+    assert "Marked" not in run("check_pr_approvals", {"scope": "channel"}, bot)
 
 
 # --- schedule_pr_reminder --------------------------------------------------------------------------

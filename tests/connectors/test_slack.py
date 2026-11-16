@@ -161,3 +161,11 @@ def test_get_bot_user_id_asks_slack_who_the_token_belongs_to():
         assert slack.get_bot_user_id("xoxb-1") == "UBOT123"
 
     web_client.assert_called_once_with(token="xoxb-1")
+
+
+def test_add_reaction_reacts_to_the_message_as_the_bot():
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        slack.add_reaction("C1", "1.5", "white_check_mark", token="xoxb-1")
+
+    client.assert_called_once_with(token="xoxb-1")
+    client.return_value.reactions_add.assert_called_once_with(channel="C1", timestamp="1.5", name="white_check_mark")

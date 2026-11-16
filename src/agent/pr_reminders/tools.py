@@ -100,6 +100,8 @@ def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str
         parts.append(f"{result.deferred_threads} more thread(s) were not reminded this time (limit {AgentConfigs.PR_REMINDER_MAX_THREADS_POSTED} per run).")
     if result.failed_posts:
         parts.append(f"Could not post in {result.failed_posts} thread(s).")
+    if result.marked:
+        parts.append(f"Marked {result.marked} approved PR message(s) with :{AgentConfigs.PR_REMINDER_APPROVED_REACTION}:.")
     if not waiting and not on_author:
         parts.append("I can't say nothing is waiting, because the check was incomplete." if notes else "Nothing is waiting for review :white_check_mark:")
     return " ".join(parts)

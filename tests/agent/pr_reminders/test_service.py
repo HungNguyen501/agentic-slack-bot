@@ -17,8 +17,8 @@ MENTIONS = ["U1", "U2"]
 CONFIG = {"scope": "channel", "origin_channel": "C9", "origin_thread_ts": "9.0", "lookback_hours": 72, "mentions": MENTIONS}
 
 
-def link(ref, thread_ts, message_ts=None, channel="C1"):
-    return PrLink(ref, channel, thread_ts, message_ts or thread_ts)
+def link(ref, thread_ts, message_ts=None, channel="C1", reactable=False, reacted=False):
+    return PrLink(ref, channel, thread_ts, message_ts or thread_ts, reactable=reactable, reacted=reacted)
 
 
 def graphql_payload(*nodes_by_number):
@@ -157,6 +157,154 @@ def test_check_and_remind_posts_author_only_threads_only_when_asked(bot, slack, 
     service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, include_author_only_threads=include_author_only, now=NOW)
 
     assert slack.post_message.call_count == posts
+
+
+# --- marking approved PRs --------------------------------------------------------------------------
+
+
+def approved(pr_node):
+    return pr_node(decision="APPROVED")
+
+
+def test_check_and_remind_reacts_to_the_message_of_an_approved_pr(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)))
+
+    result = service.check_and_remind(bot, [link(PR1, "1.0", message_ts="1.5", reactable=True)], mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_called_once_with("C1", "1.5", "white_check_mark", token=bot.bot_token)
+    assert result.marked == 1
+    slack.post_message.assert_not_called()
+
+
+def test_check_and_remind_skips_a_message_that_already_has_the_reaction(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)))
+
+    result = service.check_and_remind(bot, [link(PR1, "1.0", reactable=True, reacted=True)], mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_not_called()
+    assert result.marked == 0
+
+
+def test_check_and_remind_does_not_react_to_a_link_typed_in_the_request(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)))
+
+    service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "decision, state",
+    [("REVIEW_REQUIRED", "OPEN"), ("CHANGES_REQUESTED", "OPEN"), ("APPROVED", "MERGED")],
+    ids=["waiting", "changes-requested", "merged"],
+)
+def test_check_and_remind_only_reacts_to_pull_requests_that_are_approved(bot, slack, github, pr_node, decision, state):
+    github.graphql.return_value = graphql_payload((1, pr_node(decision=decision, state=state)))
+
+    service.check_and_remind(bot, [link(PR1, "1.0", reactable=True)], mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_not_called()
+
+
+def test_check_and_remind_does_not_mark_a_message_that_also_links_a_pr_still_waiting(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)), (2, pr_node()))
+
+    links = [link(PR1, "1.0", message_ts="1.5", reactable=True), link(PR2, "1.0", message_ts="1.5", reactable=True)]
+
+    service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_not_called()
+
+
+def test_check_and_remind_marks_a_message_once_when_all_its_prs_are_approved(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)), (2, approved(pr_node)))
+
+    links = [link(PR1, "1.0", message_ts="1.5", reactable=True), link(PR2, "1.0", message_ts="1.5", reactable=True)]
+
+    result = service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_called_once()
+    assert result.marked == 1
+
+
+def test_check_and_remind_does_not_mark_a_message_with_a_pr_left_unchecked_by_the_limit(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)))
+    links = [link(PR1, "1.0", message_ts="1.5", reactable=True), link(PR2, "1.0", message_ts="1.5", reactable=True)]
+
+    with patch.object(AgentConfigs, "PR_REMINDER_MAX_PRS_CHECKED", 1):
+        result = service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_not_called()
+    assert (result.truncated, result.marked) == (1, 0)
+
+
+def test_check_and_remind_does_not_count_a_reaction_somebody_added_first(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)), (2, approved(pr_node)))
+    slack.add_reaction.side_effect = [slack_error("already_reacted"), None]
+
+    links = [link(PR1, "1.0", message_ts="1.5", reactable=True), link(PR2, "2.0", message_ts="2.5", reactable=True)]
+
+    result = service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    assert slack.add_reaction.call_count == 2
+    assert result.marked == 1
+
+
+def test_check_and_remind_still_reminds_when_a_reaction_fails(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)), (2, pr_node()))
+    slack.add_reaction.side_effect = slack_error("message_not_found")
+
+    result = service.check_and_remind(bot, [link(PR1, "1.0", reactable=True), link(PR2, "2.0", reactable=True)], mentions=MENTIONS, now=NOW)
+
+    assert result.posted == [("C1", "2.0")]
+    assert result.marked == 0
+
+
+def test_check_and_remind_tries_the_next_message_after_a_failed_reaction(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)), (2, approved(pr_node)))
+    slack.add_reaction.side_effect = [slack_error("message_not_found"), None]
+
+    result = service.check_and_remind(bot, [link(PR1, "1.0", reactable=True), link(PR2, "2.0", reactable=True)], mentions=MENTIONS, now=NOW)
+
+    assert slack.add_reaction.call_count == 2
+    assert result.marked == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [slack_error("missing_scope"), slack_error(status=429, retry_after="5"), OSError("connection reset")],
+    ids=["no-scope", "rate-limited", "dropped"],
+)
+def test_check_and_remind_stops_reacting_when_every_message_would_fail_the_same_way(bot, slack, github, pr_node, error):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)), (2, approved(pr_node)))
+    slack.add_reaction.side_effect = error
+
+    result = service.check_and_remind(bot, [link(PR1, "1.0", reactable=True), link(PR2, "2.0", reactable=True)], mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_called_once()
+    assert result.marked == 0
+
+
+def test_check_and_remind_reacts_to_at_most_a_capped_number_of_messages_per_run(bot, slack, github, pr_node):
+    count = AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN + 5
+    github.graphql.return_value = graphql_payload(*[(n, approved(pr_node)) for n in range(1, count + 1)])
+    links = [link(PrRef("org", "repo", n), f"{n}.0", reactable=True) for n in range(1, count + 1)]
+
+    result = service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    assert slack.add_reaction.call_count == AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN
+    assert result.marked == AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN
+
+
+def test_collect_links_marks_links_whose_message_already_has_the_reaction(bot, slack):
+    slack.conversations_replies.return_value = [
+        {"ts": "1.0", "text": "https://github.com/org/repo/pull/1", "reactions": [{"name": "white_check_mark", "count": 1, "users": ["U9"]}]},
+        {"ts": "2.0", "text": "https://github.com/org/repo/pull/2", "reactions": [{"name": "eyes", "count": 1, "users": ["U9"]}]},
+    ]
+
+    scan = service.collect_links(bot, scope="thread", channel="C1", thread_ts="1.0", lookback_hours=None)
+
+    assert {found.ref.number: (found.reactable, found.reacted) for found in scan.links} == {1: (True, True), 2: (True, False)}
 
 
 def test_check_and_remind_does_not_call_github_without_links(bot, slack, github):

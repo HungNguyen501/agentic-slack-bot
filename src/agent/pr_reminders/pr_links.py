@@ -28,12 +28,19 @@ class PrRef:
 
 @dataclass(frozen=True)
 class PrLink:
-    """A PR, the Slack message that mentions it, and the thread a reminder for it goes to."""
+    """A PR, the Slack message that mentions it, and the thread a reminder for it goes to.
+
+    `reactable` is set for a link read from a Slack message of its own, whose `message_ts` can carry a reaction; a link
+    typed in the request isn't, since its message is the request. `reacted` says that message already has the approved
+    reaction, from anyone.
+    """
 
     ref: PrRef
     channel: str
     thread_ts: str
     message_ts: str
+    reactable: bool = False
+    reacted: bool = False
 
 
 def _pr_number(digits: str) -> int | None:
@@ -65,21 +72,27 @@ def _message_blob(message: dict) -> str:
     return " ".join([message.get("text") or "", json.dumps(message.get("attachments") or []), json.dumps(message.get("blocks") or [])])
 
 
-def links_from_messages(messages: Iterable[dict], channel: str, *, own_app_id: str | None) -> list[PrLink]:
+def _has_reaction(message: dict, name: str) -> bool:
+    return any(reaction.get("name") == name for reaction in message.get("reactions") or [])
+
+
+def links_from_messages(messages: Iterable[dict], channel: str, *, own_app_id: str | None, approved_reaction: str | None = None) -> list[PrLink]:
     """Collect PR links from Slack messages, keeping the most recent message for a PR linked more than once.
 
     The reminder thread is the message's own thread, or the thread that replying to it starts. Messages from
     `own_app_id` (this bot) are skipped: its reminders repeat the PR links and would keep old PRs in the window.
+    `approved_reaction` is the emoji name that marks an approved PR; a link whose message already has it is `reacted`.
     """
     latest: dict[PrRef, PrLink] = {}
     for message in messages:
         if own_app_id and message.get("app_id") == own_app_id:
             continue
         ts = message["ts"]
+        reacted = approved_reaction is not None and _has_reaction(message, approved_reaction)
         for ref in find_pr_refs(_message_blob(message)):
             current = latest.get(ref)
             if current is None or float(ts) > float(current.message_ts):
-                latest[ref] = PrLink(ref, channel, message.get("thread_ts") or ts, ts)
+                latest[ref] = PrLink(ref, channel, message.get("thread_ts") or ts, ts, reactable=True, reacted=reacted)
     return list(latest.values())
 
 
