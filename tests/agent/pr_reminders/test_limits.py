@@ -1,8 +1,8 @@
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from agent.pr_reminders.limits import ReminderRequestError, is_reminder_expired, is_within_active_hours, parse_mentions, validate_reminder_cron
+from agent.pr_reminders.limits import ReminderRequestError, is_reminder_expired, parse_mentions, parse_timezone, validate_reminder_cron
 from common.configs import AgentConfigs
 
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
@@ -64,31 +64,20 @@ def test_a_reminder_without_a_time_limit_never_expires():
     assert is_reminder_expired(None, NOW) is False
 
 
-@pytest.mark.parametrize(
-    "utc, allowed",
-    [
-        (datetime(2026, 11, 3, 23, 59, tzinfo=UTC), False),  # 06:59 Vietnam
-        (datetime(2026, 11, 4, 0, 0, tzinfo=UTC), True),  # 07:00 Vietnam, start is inclusive
-        (datetime(2026, 11, 4, 5, 0, tzinfo=UTC), True),  # 12:00
-        (datetime(2026, 11, 4, 14, 59, tzinfo=UTC), True),  # 21:59
-        (datetime(2026, 11, 4, 15, 0, tzinfo=UTC), False),  # 22:00 Vietnam, end is exclusive
-        (datetime(2026, 11, 4, 20, 0, tzinfo=UTC), False),  # 03:00 the next day
-    ],
-    ids=["06:59", "07:00", "12:00", "21:59", "22:00", "03:00"],
-)
-def test_is_within_active_hours_uses_vietnam_time(utc, allowed):
-    assert is_within_active_hours(utc) is allowed
+@pytest.mark.parametrize("value", [None, ""], ids=["missing", "empty"])
+def test_parse_timezone_defaults_to_vietnam_time(value):
+    assert parse_timezone(value) == "Asia/Ho_Chi_Minh"
 
 
-def test_is_within_active_hours_converts_from_any_timezone():
-    noon_in_new_york = datetime(2026, 11, 4, 12, 0, tzinfo=timezone(timedelta(hours=-5)))  # 00:00 in Vietnam the next day
+@pytest.mark.parametrize("value", ["UTC", "Asia/Singapore", "America/New_York"])
+def test_parse_timezone_accepts_iana_names(value):
+    assert parse_timezone(value) == value
 
-    assert is_within_active_hours(noon_in_new_york) is False
 
-
-def test_is_within_active_hours_rejects_a_naive_datetime():
-    with pytest.raises(ValueError, match="timezone-aware"):
-        is_within_active_hours(datetime(2026, 11, 4, 12, 0))
+@pytest.mark.parametrize("value", ["Mars/Olympus", "UTC+7", "../etc/passwd", "America", 7], ids=["unknown", "offset", "path", "directory", "not-a-string"])
+def test_parse_timezone_rejects_anything_else(value):
+    with pytest.raises(ReminderRequestError, match="timezone"):
+        parse_timezone(value)
 
 
 @pytest.mark.parametrize(

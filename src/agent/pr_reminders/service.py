@@ -8,7 +8,7 @@ from typing import NamedTuple
 from slack_sdk.errors import SlackApiError, SlackClientError
 
 from agent.pr_reminders import message, queries
-from agent.pr_reminders.limits import is_reminder_expired, is_within_active_hours
+from agent.pr_reminders.limits import is_reminder_expired
 from agent.pr_reminders.pr_links import PrLink, limit_links, links_from_messages, links_from_urls, merge_links
 from agent.pr_reminders.status import Bucket, PrStatus, build_status
 from common.configs import AgentConfigs, ReminderConfig
@@ -254,18 +254,15 @@ def _load_reminder(schedule_id: str) -> tuple[Schedule, ReminderConfig] | None:
 def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) -> None:
     """Run one tick of a recurring PR reminder: remind in the threads of PRs waiting for review, or end the reminder.
 
-    A tick outside the active hours does nothing at all (no reads, no posts, reminder not ended), so it resumes in the
-    morning. The reminder ends (soft delete) only when the time limit the requester asked for has passed, when its config
-    is malformed, or when the bot can no longer read the channel. Otherwise it keeps watching, even when nothing is
-    waiting, since a PR can be shared later.
+    When it may run is the schedule's cron (hours and days included, in the row's timezone), so every tick that gets
+    here posts. The reminder ends (soft delete) only when the time limit the requester asked for has passed, when its
+    config is malformed, or when the bot can no longer read the channel. Otherwise it keeps watching, even when nothing
+    is waiting, since a PR can be shared later.
 
     A transient GitHub or Slack read failure propagates and fails the job; the reminder stays active and the next tick
     tries again. The scheduler doesn't retry reminder jobs: a retry after posting would repeat the mentions.
     """
     now = now or datetime.now(UTC)
-    if not is_within_active_hours(now):
-        log.info("PR reminder %s: outside active hours — skipping this tick", schedule_id)
-        return
 
     loaded = _load_reminder(schedule_id)
     if loaded is None:

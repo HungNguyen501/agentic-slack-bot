@@ -19,9 +19,10 @@ class Schedule:
     kind: str = "question"
     status: str = "active"
     config: dict = field(default_factory=dict)
+    timezone: str = "UTC"
 
 
-_COLUMNS = "id, cron, channel, question, bot_id, kind, status, config, created_at"
+_COLUMNS = "id, cron, channel, question, bot_id, kind, status, config, timezone, created_at"
 
 
 def _row_to_schedule(row: Any) -> Schedule:
@@ -36,6 +37,7 @@ def _row_to_schedule(row: Any) -> Schedule:
         kind=row.get("kind") or "question",
         status=row.get("status") or "active",
         config=row.get("config") or {},
+        timezone=row.get("timezone") or "UTC",
     )
 
 
@@ -172,7 +174,9 @@ def _same_reminder(existing: dict, new: dict) -> bool:
     )
 
 
-def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, config: dict, *, max_active: int) -> AddedReminder | None:
+def add_pr_reminder(
+    id: str, cron: str, channel: str, label: str, bot_id: str, config: dict, *, max_active: int, timezone: str = "UTC"
+) -> AddedReminder | None:
     """Insert a PR review reminder row, unless it already exists or the quota is used.
 
     Returns the new row; or, if the bot already has an active reminder on `channel` that is the same job (see
@@ -183,7 +187,8 @@ def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, c
     requests (the worker runs several replicas) can't both create the reminder or both pass the quota.
 
     `id` is chosen by the caller so the first reminder can show it. `label` is stored in `question` and is never sent
-    to the LLM for this kind; `config` is a common.configs.ReminderConfig as a dict.
+    to the LLM for this kind; `config` is a common.configs.ReminderConfig as a dict. `timezone` is the IANA zone `cron`
+    is written in.
     """
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"pr_reminder:{bot_id}:{channel}",))
@@ -198,8 +203,9 @@ def add_pr_reminder(id: str, cron: str, channel: str, label: str, bot_id: str, c
         if len(active) >= max_active:
             return None
         cur.execute(
-            f"INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config) VALUES (%s, %s, %s, %s, %s, 'pr_reminder', %s) RETURNING {_COLUMNS}",
-            (id, cron, channel, label, bot_id, Jsonb(config)),
+            "INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config, timezone) "
+            f"VALUES (%s, %s, %s, %s, %s, 'pr_reminder', %s, %s) RETURNING {_COLUMNS}",
+            (id, cron, channel, label, bot_id, Jsonb(config), timezone),
         )
         return AddedReminder(_row_to_schedule(cur.fetchone()), created=True)
 

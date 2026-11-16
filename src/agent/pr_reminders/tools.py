@@ -7,11 +7,11 @@ from typing import NamedTuple
 
 from slack_sdk.errors import SlackApiError
 
-from agent.pr_reminders.limits import ReminderRequestError, is_within_active_hours, parse_mentions, validate_reminder_cron
-from agent.pr_reminders.message import active_hours_text
+from agent.pr_reminders.limits import ReminderRequestError, parse_mentions, parse_timezone, validate_reminder_cron
 from agent.pr_reminders.service import CHANNEL_READ_HELP, ChannelReadError, CheckResult, check_and_remind, collect_links, save_progress
 from agent.pr_reminders.status import Bucket
 from common.configs import AgentConfigs, ReminderConfig
+from common.cron import is_in_cron_window
 from connectors import slack
 from connectors.db.bots import BotConfig
 from connectors.db.schedules import Schedule, add_pr_reminder, remove_schedule
@@ -131,6 +131,7 @@ class _ScheduleRequest(NamedTuple):
     lookback_hours: int | None
     mentions: list[str]
     expires_in_hours: int | None
+    timezone: str
 
 
 def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
@@ -139,28 +140,31 @@ def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
     mentions = _parse_mentions(args)
     cron = str(args.get("cron") or "").strip()
     validate_reminder_cron(cron)
+    timezone = parse_timezone(args.get("timezone"))
 
     target_channel = args.get("channel") or channel
     if target_channel != channel and not _CHANNEL_ID_RE.fullmatch(target_channel):
         raise ReminderRequestError(f"'{target_channel}' is not a Slack channel ID.")
     if scope == "thread" and target_channel != channel:
         raise ReminderRequestError("A thread-scope reminder watches the thread it was requested in, so it can't target another channel.")
-    return _ScheduleRequest(scope, cron, target_channel, _parse_lookback(args) if scope == "channel" else None, mentions, _parse_expires_in_hours(args))
+    return _ScheduleRequest(
+        scope, cron, target_channel, _parse_lookback(args) if scope == "channel" else None, mentions, _parse_expires_in_hours(args), timezone
+    )
 
 
 def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConfig, schedule_id: str, thread_ts: str) -> str:
     """Run the check that follows scheduling, post any first reminders, and describe what happened.
 
-    Outside the active hours nothing is read or posted: the first tick inside the window does it, so scheduling at
-    night doesn't ping anyone.
+    Outside the hours and days the cron describes nothing is read or posted: the first tick inside them does it, so
+    scheduling at night doesn't ping anyone.
 
     Raises only before anything is posted (Slack can't be read, GitHub can't be queried): `check_and_remind` handles
     its own post failures. A failure to save progress afterwards is reported in the text instead, because by then
     reminders may be out and the schedule they name must stay.
     """
     now = datetime.now(UTC)
-    if not is_within_active_hours(now):
-        return "It's outside the hours reminders are sent, so the first check waits for the first tick inside them."
+    if not is_in_cron_window(request.cron, request.timezone, now):
+        return "It's outside the hours the schedule runs in, so the first check waits for its first tick."
 
     scan = collect_links(bot, scope=request.scope, channel=request.channel, thread_ts=thread_ts, lookback_hours=request.lookback_hours)
     result = check_and_remind(bot, scan.links, mentions=request.mentions, schedule_id=schedule_id)
@@ -184,11 +188,11 @@ def _already_scheduled(existing: Schedule, request: _ScheduleRequest) -> str:
     """Reply to a request for a reminder that already exists: nothing is created, posted or checked, so repeating a
     request can't double the pings."""
     reply = (
-        f"That PR reminder already exists (same channel, scope and people) — id: `{existing.id}`, repeating on `{existing.cron}` (UTC). "
-        "I didn't create another."
+        f"That PR reminder already exists (same channel, scope and people) — id: `{existing.id}`, repeating on `{existing.cron}` "
+        f"({existing.timezone}). I didn't create another."
     )
-    if existing.cron != request.cron:
-        reply += f" You asked for `{request.cron}`; to change it, ask me to remove schedule `{existing.id}` and set it up again."
+    if (existing.cron, existing.timezone) != (request.cron, request.timezone):
+        reply += f" You asked for `{request.cron}` ({request.timezone}); to change it, ask me to remove schedule `{existing.id}` and set it up again."
     return reply
 
 
@@ -201,7 +205,9 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
     # first check posts, so the schedule id in those messages is real, and comes out again if that check fails.
     schedule_id = str(uuid.uuid4())
     quota = AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL
-    added = add_pr_reminder(schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict(), max_active=quota)
+    added = add_pr_reminder(
+        schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict(), max_active=quota, timezone=request.timezone
+    )
     if added is None:
         raise ReminderRequestError(f"This channel already has {quota} active PR reminders. Remove one first.")
     if not added.created:
@@ -217,7 +223,7 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
         if request.expires_in_hours
         else f"keeps running, even when nothing is waiting, until it is removed. Ask me to remove schedule `{schedule_id}` to stop it."
     )
-    return f"PR reminder scheduled — id: `{schedule_id}`. {first} It repeats on `{request.cron}` (UTC) but only sends reminders {active_hours_text()}, and {ends}"
+    return f"PR reminder scheduled — id: `{schedule_id}`. {first} It runs on cron `{request.cron}` ({request.timezone}), and {ends}"
 
 
 def dispatch_pr_reminder_tool(name: str, args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:

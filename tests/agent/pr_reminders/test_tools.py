@@ -56,9 +56,9 @@ def db(save):
 
 
 @pytest.fixture(autouse=True)
-def within_hours():
-    """Creating a reminder reads the clock; by default it is inside the hours reminders are sent."""
-    with patch("agent.pr_reminders.tools.is_within_active_hours", autospec=True, return_value=True) as within:
+def in_cron_window():
+    """Creating a reminder reads the clock; by default it is inside the hours the cron describes."""
+    with patch("agent.pr_reminders.tools.is_in_cron_window", autospec=True, return_value=True) as within:
         yield within
 
 
@@ -122,6 +122,30 @@ def test_schedule_pr_reminder_stores_and_posts_with_the_mentioned_people(bot, co
 
     assert check.call_args.kwargs["mentions"] == ["U05MNOPQR", "U06STUVWX"]
     assert add.call_args.args[5]["mentions"] == ["U05MNOPQR", "U06STUVWX"]
+
+
+def test_schedule_pr_reminder_stores_the_timezone_the_cron_is_written_in(bot, collect, check, db):
+    add, _ = db
+
+    run("schedule_pr_reminder", {"cron": "*/30 9-17 * * 1-5", "scope": "channel", "timezone": "Asia/Singapore"}, bot)
+
+    assert add.call_args.kwargs["timezone"] == "Asia/Singapore"
+
+
+def test_schedule_pr_reminder_checks_the_window_in_the_cron_and_timezone_it_was_given(bot, collect, check, db, in_cron_window):
+    run("schedule_pr_reminder", {"cron": "*/30 9-17 * * 1-5", "scope": "channel", "timezone": "Asia/Singapore"}, bot)
+
+    assert in_cron_window.call_args.args[:2] == ("*/30 9-17 * * 1-5", "Asia/Singapore")
+
+
+def test_schedule_pr_reminder_rejects_an_unknown_timezone_before_touching_slack(bot, collect, check, db):
+    add, _ = db
+
+    reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel", "timezone": "Mars/Olympus"}, bot)
+
+    assert "not a timezone name I know" in reply
+    add.assert_not_called()
+    collect.assert_not_called()
 
 
 # --- check_pr_approvals ----------------------------------------------------------------------------
@@ -294,11 +318,12 @@ def test_schedule_pr_reminder_stores_the_reminder_under_the_id_shown_in_the_firs
             "last_reminded": {},
         },
         max_active=5,
+        timezone="Asia/Ho_Chi_Minh",
     )
     assert f"id: `{schedule_id}`" in reply
     assert "until it is removed" in reply
     assert "ends by itself" not in reply
-    assert "only sends reminders 07:00–22:00 Vietnam time (UTC+7)" in reply
+    assert "It runs on cron `*/30 * * * *` (Asia/Ho_Chi_Minh)" in reply
     remove.assert_not_called()
 
 
@@ -399,9 +424,9 @@ def test_schedule_pr_reminder_keeps_the_schedule_even_when_there_are_no_pr_links
     assert "I'll remind when a PR is." in reply
 
 
-def test_schedule_pr_reminder_created_at_night_keeps_the_schedule_but_posts_and_reads_nothing(bot, collect, check, db, within_hours, save):
+def test_schedule_pr_reminder_created_at_night_keeps_the_schedule_but_posts_and_reads_nothing(bot, collect, check, db, in_cron_window, save):
     add, remove = db
-    within_hours.return_value = False
+    in_cron_window.return_value = False
 
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
 
@@ -410,19 +435,18 @@ def test_schedule_pr_reminder_created_at_night_keeps_the_schedule_but_posts_and_
     collect.assert_not_called()
     check.assert_not_called()
     save.assert_not_called()
-    assert "It's outside the hours reminders are sent, so the first check waits for the first tick inside them." in reply
-    assert "(07:00–22:00 Vietnam time (UTC+7))" not in reply  # the hours are given once, in the closing sentence
+    assert "It's outside the hours the schedule runs in, so the first check waits for its first tick." in reply
     assert f"id: `{add.call_args.args[0]}`" in reply
 
 
-def test_a_one_off_check_still_runs_at_night(bot, collect, check, slack, within_hours):
-    within_hours.return_value = False
+def test_a_one_off_check_still_runs_at_night(bot, collect, check, slack, in_cron_window):
+    in_cron_window.return_value = False
 
     reply = run("check_pr_approvals", {"scope": "channel"}, bot)
 
     check.assert_called_once()
     assert "Posted reminders in 1 thread(s)" in reply
-    within_hours.assert_not_called()
+    in_cron_window.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -487,8 +511,10 @@ def test_schedule_pr_reminder_still_removes_the_row_when_github_fails_before_any
     remove.assert_called_once_with(add.call_args.args[0], bot_id="bot-a")
 
 
-def existing_reminder(cron="*/30 * * * *"):
-    return AddedReminder(Schedule(id="s-existing", cron=cron, channel="C1", question="label", bot_id="bot-a", kind="pr_reminder"), created=False)
+def existing_reminder(cron="*/30 * * * *", timezone="Asia/Ho_Chi_Minh"):
+    return AddedReminder(
+        Schedule(id="s-existing", cron=cron, channel="C1", question="label", bot_id="bot-a", kind="pr_reminder", timezone=timezone), created=False
+    )
 
 
 def test_repeating_a_schedule_request_returns_the_existing_reminder_and_creates_nothing(bot, collect, check, db, save):
@@ -498,7 +524,7 @@ def test_repeating_a_schedule_request_returns_the_existing_reminder_and_creates_
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
 
     assert reply == (
-        "That PR reminder already exists (same channel, scope and people) — id: `s-existing`, repeating on `*/30 * * * *` (UTC). "
+        "That PR reminder already exists (same channel, scope and people) — id: `s-existing`, repeating on `*/30 * * * *` (Asia/Ho_Chi_Minh). "
         "I didn't create another."
     )
     collect.assert_not_called()  # nothing is read, posted or saved, so repeating a request can't double the pings
@@ -513,15 +539,15 @@ def test_repeating_a_request_with_another_cron_says_how_to_change_the_schedule(b
 
     reply = run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
 
-    assert "id: `s-existing`, repeating on `0 9 * * 1-5` (UTC)" in reply
-    assert "You asked for `*/30 * * * *`; to change it, ask me to remove schedule `s-existing` and set it up again." in reply
+    assert "id: `s-existing`, repeating on `0 9 * * 1-5` (Asia/Ho_Chi_Minh)" in reply
+    assert "You asked for `*/30 * * * *` (Asia/Ho_Chi_Minh); to change it, ask me to remove schedule `s-existing` and set it up again." in reply
     check.assert_not_called()
 
 
-def test_a_duplicate_request_is_answered_even_at_night(bot, collect, check, db, within_hours):
+def test_a_duplicate_request_is_answered_even_at_night(bot, collect, check, db, in_cron_window):
     add, _ = db
     add.return_value = existing_reminder()
-    within_hours.return_value = False
+    in_cron_window.return_value = False
 
     assert "already exists" in run("schedule_pr_reminder", {"cron": "*/30 * * * *", "scope": "channel"}, bot)
 
@@ -583,7 +609,7 @@ def test_schedule_pr_reminder_enforces_the_per_channel_limit_through_the_atomic_
 
     assert "already has 5 active PR reminders" in reply
     assert add.call_args.args[2] == "C2OTHER99"
-    assert add.call_args.kwargs == {"max_active": 5}
+    assert add.call_args.kwargs == {"max_active": 5, "timezone": "Asia/Ho_Chi_Minh"}
     collect.assert_not_called()
     check.assert_not_called()
     remove.assert_not_called()

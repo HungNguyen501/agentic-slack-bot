@@ -11,8 +11,7 @@ from common.configs import AgentConfigs
 from connectors.db.schedules import Schedule
 PR1, PR2, PR3 = (PrRef("org", "repo", n) for n in (1, 2, 3))
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
-# 12:00 in Vietnam: inside the hours recurring reminders are allowed to post.
-IN_HOURS = datetime(2026, 11, 4, 5, 0, tzinfo=UTC)
+IN_HOURS = datetime(2026, 11, 4, 5, 0, tzinfo=UTC)  # 12:00 in Vietnam
 NIGHT = datetime(2026, 11, 4, 18, 0, tzinfo=UTC)  # 01:00 in Vietnam
 MENTIONS = ["U1", "U2"]
 CONFIG = {"scope": "channel", "origin_channel": "C9", "origin_thread_ts": "9.0", "lookback_hours": 72, "mentions": MENTIONS}
@@ -158,16 +157,6 @@ def test_check_and_remind_posts_author_only_threads_only_when_asked(bot, slack, 
     service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, include_author_only_threads=include_author_only, now=NOW)
 
     assert slack.post_message.call_count == posts
-
-
-def test_check_and_remind_posts_at_any_hour_because_active_hours_only_gate_scheduled_ticks(bot, slack, github, pr_node):
-    github.graphql.return_value = graphql_payload((1, pr_node()))
-
-    with patch("agent.pr_reminders.service.is_within_active_hours", autospec=True, return_value=False) as within:
-        result = service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, now=NIGHT)
-
-    assert result.posted == [("C1", "1.0")]
-    within.assert_not_called()
 
 
 def test_check_and_remind_does_not_call_github_without_links(bot, slack, github):
@@ -413,25 +402,15 @@ def collect():
         yield collect
 
 
-@pytest.mark.parametrize("now", [NIGHT, datetime(2026, 11, 4, 15, 0, tzinfo=UTC)], ids=["01:00", "22:00-sharp"])
-def test_run_reminder_does_nothing_outside_the_active_hours(bot, db, collect, slack, github, now):
-    get, set_status = db
-
-    service.run_reminder(bot, "s1", now)
-
-    get.assert_not_called()
-    collect.assert_not_called()
-    github.graphql.assert_not_called()
-    slack.post_message.assert_not_called()
-    set_status.assert_not_called()
-
-
-def test_run_reminder_does_not_end_a_reminder_just_because_it_is_night(bot, db, collect, slack):
+def test_run_reminder_does_not_look_at_the_clock_because_the_cron_decides_when_it_runs(bot, db, collect, slack, github, pr_node):
     get, set_status = db
     get.return_value = schedule()
+    github.graphql.return_value = graphql_payload((1, pr_node()))
 
     service.run_reminder(bot, "s1", NIGHT)
 
+    collect.assert_called_once()
+    slack.post_message.assert_called_once()
     set_status.assert_not_called()
 
 

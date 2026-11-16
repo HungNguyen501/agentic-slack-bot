@@ -4,7 +4,6 @@ from unittest.mock import patch
 import pytest
 
 from agent.pr_reminders.message import (
-    active_hours_text,
     escape,
     format_age,
     render_expired_note,
@@ -44,10 +43,6 @@ def test_format_age_without_a_creation_time():
 
 def test_escape_neutralises_slack_control_characters():
     assert escape("<!channel> & <@U1>") == "&lt;!channel&gt; &amp; &lt;@U1&gt;"
-
-
-def test_active_hours_text_stays_in_english_because_the_agent_reads_it():
-    assert active_hours_text() == "07:00–22:00 Vietnam time (UTC+7)"
 
 
 def test_render_thread_message_mentions_the_people_and_lists_waiting_prs():
@@ -143,13 +138,10 @@ def test_render_thread_message_without_waiting_prs_does_not_ping():
     assert text.splitlines()[0] == ":tennis: PR này bị yêu cầu sửa lại, bóng đang ở sân tác giả nha"
 
 
-def test_render_thread_message_for_a_recurring_reminder_shows_only_the_schedule_id_and_the_hours():
+def test_render_thread_message_for_a_recurring_reminder_shows_only_how_to_stop_it():
     text = render_thread_message([status(1)], [], mentions=MENTIONS, now=NOW, schedule_id="3f2a")
 
-    assert text.splitlines()[-1] == (
-        'Lịch nhắc `3f2a` — nhắn "xoá lịch nhắc 3f2a" để tui hết làm phiền nha. '
-        "Tui chỉ nhắc từ 07:00–22:00 giờ Việt Nam (UTC+7) thôi, tối còn đi ngủ :zzz:"
-    )
+    assert text.splitlines()[-1] == 'Lịch nhắc `3f2a` — nhắn "xoá lịch nhắc 3f2a" để tui hết làm phiền nha.'
 
 
 def test_render_thread_message_for_a_one_off_check_does_not_mention_the_schedule_or_hours():
@@ -191,7 +183,7 @@ def test_the_wording_comes_from_the_config_class_so_it_can_be_retuned_there():
         patch.object(ReminderMessages, "FLAIR_STALE", " STALE"),
         patch.object(ReminderMessages, "AUTHOR_COURT_WITH_WAITING", "COURT"),
         patch.object(ReminderMessages, "AUTHOR_LINE", "FIX"),
-        patch.object(ReminderMessages, "SCHEDULE_FOOTER", "FOOT {schedule_id} {hours} {offset}"),
+        patch.object(ReminderMessages, "SCHEDULE_FOOTER", "FOOT {schedule_id}"),
     ):
         text = render_thread_message([pr], [changes], mentions=MENTIONS, now=NOW, schedule_id="3f2a")
 
@@ -199,7 +191,7 @@ def test_the_wording_comes_from_the_config_class_so_it_can_be_retuned_there():
     assert text.splitlines()[1].endswith("— WAITED 4D STALE")
     assert text.splitlines()[2] == "COURT"
     assert text.splitlines()[3].endswith("— FIX")
-    assert text.splitlines()[4] == "FOOT 3f2a 07:00–22:00 7"
+    assert text.splitlines()[4] == "FOOT 3f2a"
 
 
 def test_the_closing_notes_also_come_from_the_config_class():

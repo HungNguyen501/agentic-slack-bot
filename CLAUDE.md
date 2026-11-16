@@ -133,7 +133,7 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
-- `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job; `dataset_sync` runs a dataset sync, `config.dataset` names it and `channel` is where failures are reported — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`)
+- `timezone` (IANA name the `cron` is read in; default `UTC`, a PR reminder is created in `Asia/Ho_Chi_Minh` unless the request names another), `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job; `dataset_sync` runs a dataset sync, `config.dataset` names it and `channel` is where failures are reported — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`)
 
 **Supabase `access_request_categories` table** — gates the `request_data_access` and `generate_service_principal_secret` tools per bot/channel/request_type:
 - `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject, or — for `service_principal_secret` — allowed to call the tool at all)
@@ -209,7 +209,7 @@ src/
       queries.py                   # GitHub GraphQL query + response parser (pure)
       status.py                    # reviewDecision -> waiting / approved / ... bucket (pure)
       message.py                   # Picks and fills in the reminder templates; the only live mentions are the validated user IDs it is given (pure)
-      limits.py                    # Cron minimum interval, optional expiry check, 07:00-22:00 Vietnam-time window for scheduled ticks, mention parsing, ReminderRequestError (pure)
+      limits.py                    # Cron minimum interval, optional expiry check, cron-window and timezone checks, mention parsing, ReminderRequestError (pure)
       service.py                   # Collect links, check GitHub, post reminders, run one reminder tick
       tools.py                     # check_pr_approvals / schedule_pr_reminder handlers
   scheduler/app.py           # Cron polling loop

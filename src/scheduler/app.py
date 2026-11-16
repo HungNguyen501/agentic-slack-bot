@@ -3,6 +3,7 @@ import hashlib
 import logging
 import time
 from datetime import datetime, UTC
+from zoneinfo import ZoneInfo
 
 import redis
 import rq
@@ -35,6 +36,9 @@ def _schedule_key(entry: Schedule) -> str:
 def _should_fire(entry: Schedule, now: datetime, redis_client: redis.Redis) -> bool:
     """Decide whether a schedule entry is due and has not yet been enqueued for this firing.
 
+    The cron is read in the entry's timezone (UTC unless the row says otherwise). The last-fired timestamp in Redis stays
+    naive UTC whatever the zone, so a row's key and dedup behave the same for every timezone.
+
     Args:
         entry: Schedule record.
         now: Current UTC time as a naive datetime (timezone info stripped by the caller).
@@ -45,20 +49,20 @@ def _should_fire(entry: Schedule, now: datetime, redis_client: redis.Redis) -> b
         enqueue has been recorded for that firing; False otherwise.
     """
     try:
-        cron = croniter(entry.cron, now)
-        last_expected: datetime = cron.get_prev(datetime)
+        local_now = now.replace(tzinfo=UTC).astimezone(ZoneInfo(entry.timezone))
+        last_expected: datetime = croniter(entry.cron, local_now).get_prev(datetime)
     except Exception as exc:
-        log.warning("Invalid cron expression %r: %s", entry.cron, exc)
+        log.warning("Invalid cron expression %r or timezone %r: %s", entry.cron, entry.timezone, exc)
         return False
 
-    if (now - last_expected).total_seconds() > Configs.SCHEDULER_INTERVAL:
+    if (local_now - last_expected).total_seconds() > Configs.SCHEDULER_INTERVAL:
         return False
 
     key = _schedule_key(entry)
     last_fired_raw = redis_client.get(key)
     if last_fired_raw:
         last_fired = datetime.fromisoformat(last_fired_raw.decode())
-        if last_fired >= last_expected.replace(tzinfo=None):
+        if last_fired >= last_expected.astimezone(UTC).replace(tzinfo=None):
             return False
 
     return True

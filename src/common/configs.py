@@ -113,11 +113,9 @@ class AgentConfigs:
     PR_REMINDER_MAX_MENTIONS: int = 10
     PR_REMINDER_MIN_INTERVAL_MINUTES: int = 30
     PR_REMINDER_MAX_EXPIRY_HOURS: int = 8760
-    # Recurring reminders post from START (inclusive) to END (exclusive), local hour in Vietnam. Vietnam has no DST, so a
-    # fixed UTC offset is enough and needs no tz database in the image.
-    PR_REMINDER_ACTIVE_START_HOUR: int = 7
-    PR_REMINDER_ACTIVE_END_HOUR: int = 22
-    PR_REMINDER_UTC_OFFSET_HOURS: int = 7
+    # The zone a reminder's cron is written in when the request names none. When reminders may fire is part of the cron
+    # itself (e.g. `*/30 8-17 * * 1-5`), written by the agent following the pr-reminders skill.
+    PR_REMINDER_DEFAULT_TIMEZONE: str = "Asia/Ho_Chi_Minh"
 
     TOOLS: tuple[AgentTool, ...] = (
         AgentTool(
@@ -237,8 +235,8 @@ class AgentConfigs:
                 "review. It keeps running until an admin removes it, even when nothing is waiting, since a PR can be shared later; "
                 "set expires_in_hours only when the user asks for a time limit. Channel scope reads top-level messages only. "
                 "Needs the people to remind: take them from the @mentions in the user's message, and if there are none, "
-                "ask the user who to remind instead of calling this. Reminders are only sent between "
-                f"{PR_REMINDER_ACTIVE_START_HOUR:02d}:00 and {PR_REMINDER_ACTIVE_END_HOUR:02d}:00 Vietnam time (UTC+{PR_REMINDER_UTC_OFFSET_HOURS}). "
+                "ask the user who to remind instead of calling this. Reminders go out whenever the cron fires, so the cron "
+                "must carry the hours and days they are allowed (see its description). "
                 "Use this, not add_schedule, for recurring PR review reminders."
             ),
             parameters={
@@ -246,7 +244,19 @@ class AgentConfigs:
                 "properties": {
                     "cron": {
                         "type": "string",
-                        "description": f"Cron expression (5 fields, UTC), at most every {PR_REMINDER_MIN_INTERVAL_MINUTES} minutes. E.g. '*/30 * * * *'.",
+                        "description": (
+                            f"Cron expression (5 fields) in `timezone`, at most every {PR_REMINDER_MIN_INTERVAL_MINUTES} minutes. It also sets when "
+                            "reminders may go out. Unless the user names other hours or days, limit it to weekdays 08:00-17:59 so nobody is pinged "
+                            "at night or at the weekend: every 30 minutes is '*/30 8-17 * * 1-5', hourly is '0 8-17 * * 1-5'. "
+                            "Use '*' for the day of week only when the user asks for weekends or every day."
+                        ),
+                    },
+                    "timezone": {
+                        "type": "string",
+                        "description": (
+                            f"IANA timezone the cron is written in, e.g. 'Asia/Ho_Chi_Minh' or 'UTC'. Default {PR_REMINDER_DEFAULT_TIMEZONE}. "
+                            "Pass it only when the user names another timezone; write the cron in that zone's local time, not converted."
+                        ),
                     },
                     "scope": {"type": "string", "enum": ["thread", "channel"], "description": "Where to look for PR links on every run."},
                     "lookback_hours": {"type": "integer", "description": "Channel scope only. Default 72, max 336."},
@@ -399,11 +409,8 @@ class ReminderMessages:
     AUTHOR_COURT_ALONE: str = ":tennis: PR này bị yêu cầu sửa lại, bóng đang ở sân tác giả nha"
     AUTHOR_LINE: str = "bị yêu cầu sửa lại"
 
-    # The last line of a recurring reminder: how to stop it, and when it runs. {hours} is e.g. "07:00–22:00".
-    SCHEDULE_FOOTER: str = (
-        'Lịch nhắc `{schedule_id}` — nhắn "xoá lịch nhắc {schedule_id}" để tui hết làm phiền nha. '
-        "Tui chỉ nhắc từ {hours} giờ Việt Nam (UTC+{offset}) thôi, tối còn đi ngủ :zzz:"
-    )
+    # The last line of a recurring reminder: how to stop it.
+    SCHEDULE_FOOTER: str = 'Lịch nhắc `{schedule_id}` — nhắn "xoá lịch nhắc {schedule_id}" để tui hết làm phiền nha.'
 
     # Notes posted in the thread the reminder was requested in.
     EXPIRED: str = ":hourglass: Lịch nhắc `{schedule_id}` đã hết hạn như cả nhà đặt, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!"
@@ -411,9 +418,6 @@ class ReminderMessages:
         ":warning: Ủa, tui không thấy channel của lịch nhắc `{schedule_id}` nữa (lỗi Slack: `{error_code}`), nên tui treo giày nghỉ nhắc luôn. "
         "Kiểm tra giúp tui coi tui còn ở trong channel và có quyền đọc lịch sử (history scopes) không nha."
     )
-
-    # Read by the agent, not posted to Slack, so it stays in English.
-    ACTIVE_HOURS_FOR_AGENT: str = "{hours} Vietnam time (UTC+{offset})"
 
 
 @dataclass(frozen=True)
