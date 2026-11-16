@@ -123,3 +123,17 @@ def test_the_recorded_time_of_an_earlier_firing_does_not_block_the_next_one_in_a
     client.get.return_value = datetime(2026, 11, 3, 5, 0).isoformat().encode()  # yesterday's firing
 
     assert app._should_fire(entry(cron="0 12 * * *", timezone="Asia/Ho_Chi_Minh"), now, client) is True
+
+
+def test_a_firing_before_a_dst_fall_back_is_not_mistaken_for_a_recent_one_in_the_repeated_hour():
+    # New York leaves daylight time on 2026-11-01: 01:00-01:59 happens twice. "59 0 * * *" last fired at 00:59 EDT (04:59 UTC);
+    # at 01:01 EST (06:01 UTC) the wall clocks are two minutes apart but a full hour and two minutes really passed.
+    reminder = entry(cron="59 0 * * *", timezone="America/New_York")
+
+    assert app._should_fire(reminder, datetime(2026, 11, 1, 6, 1), redis_without_history()) is False
+
+
+def test_a_firing_just_before_a_dst_fall_back_is_still_due_right_after_it():
+    reminder = entry(cron="59 0 * * *", timezone="America/New_York")
+
+    assert app._should_fire(reminder, datetime(2026, 11, 1, 4, 59, 30), redis_without_history()) is True

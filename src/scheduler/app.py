@@ -55,14 +55,17 @@ def _should_fire(entry: Schedule, now: datetime, redis_client: redis.Redis) -> b
         log.warning("Invalid cron expression %r or timezone %r: %s", entry.cron, entry.timezone, exc)
         return False
 
-    if (local_now - last_expected).total_seconds() > Configs.SCHEDULER_INTERVAL:
+    # Two datetimes with the same tzinfo subtract as wall-clock times, which is wrong across a DST fall-back (a firing in
+    # the first pass of the repeated hour would look recent during the second), so compare real elapsed time in UTC.
+    last_expected_utc = last_expected.astimezone(UTC)
+    if (now.replace(tzinfo=UTC) - last_expected_utc).total_seconds() > Configs.SCHEDULER_INTERVAL:
         return False
 
     key = _schedule_key(entry)
     last_fired_raw = redis_client.get(key)
     if last_fired_raw:
         last_fired = datetime.fromisoformat(last_fired_raw.decode())
-        if last_fired >= last_expected.astimezone(UTC).replace(tzinfo=None):
+        if last_fired >= last_expected_utc.replace(tzinfo=None):
             return False
 
     return True
