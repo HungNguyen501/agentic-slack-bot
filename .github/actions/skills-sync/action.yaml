@@ -1,0 +1,14 @@
+name: Sync agent skills
+description: Replace the Supabase agent_skills table with src/agent/skills/files/ (make skills-sync). Expects SUPABASE_DB_URL in the job env and the repository already checked out; run it after the migrations so the table exists.
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        python-version: "3.12"
+
+    - name: Sync skills to Supabase
+      shell: bash
+      run: make skills-sync

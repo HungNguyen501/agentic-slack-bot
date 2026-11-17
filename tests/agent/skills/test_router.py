@@ -4,10 +4,11 @@ from unittest.mock import patch
 import pytest
 
 from agent.skills.router import _parse_selection, select_skills
+from connectors.db.agent_skills import AgentSkill
 
 SELECTABLE = [
-    {"name": "metadata", "description": "catalogs and tables"},
-    {"name": "jobs", "description": "job runs"},
+    AgentSkill(name="metadata", filename="03_metadata.md", body="b", description="catalogs and tables"),
+    AgentSkill(name="jobs", filename="04_jobs.md", body="b", description="job runs"),
 ]
 ALL_NAMES = {"metadata", "jobs"}
 

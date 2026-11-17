@@ -1,5 +1,5 @@
 """Supabase schedules table — schedule CRUD."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, NamedTuple
 
 from psycopg.types.json import Jsonb
@@ -22,22 +22,21 @@ class Schedule:
     timezone: str = "UTC"
 
 
-_COLUMNS = "id, cron, channel, question, bot_id, kind, status, config, timezone, created_at"
+def _columns() -> str:
+    """The SELECT / RETURNING list: every field of Schedule, so a query always yields a full row."""
+    return ", ".join(f.name for f in fields(Schedule))
 
 
 def _row_to_schedule(row: Any) -> Schedule:
+    """Build a Schedule from a row that has every column in _columns() (the ones the dataclass defaults are for are NOT NULL in the table)."""
     return Schedule(
-        id=str(row["id"]),
-        cron=row["cron"],
-        channel=row["channel"],
-        question=row["question"],
-        bot_id=str(row["bot_id"]) if row.get("bot_id") else None,
-        created_at=str(row["created_at"]) if row.get("created_at") else None,
-        updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
-        kind=row.get("kind") or "question",
-        status=row.get("status") or "active",
-        config=row.get("config") or {},
-        timezone=row.get("timezone") or "UTC",
+        **{
+            **row,
+            "id": str(row["id"]),
+            "bot_id": str(row["bot_id"]) if row["bot_id"] else None,
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
     )
 
 
@@ -59,14 +58,14 @@ def get_schedules(bot_id: str | None = None, *, active_only: bool = False) -> li
         conditions.append("status = 'active'")
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT {_COLUMNS} FROM schedules{where} ORDER BY created_at", params)
+        cur.execute(f"SELECT {_columns()} FROM schedules{where} ORDER BY created_at", params)
         return [_row_to_schedule(r) for r in cur.fetchall()]
 
 
 def get_schedule(id: str) -> Schedule | None:
     """Fetch one schedule by its UUID, whatever its kind or status, or None if it doesn't exist."""
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT {_COLUMNS} FROM schedules WHERE id = %s", (id,))
+        cur.execute(f"SELECT {_columns()} FROM schedules WHERE id = %s", (id,))
         row = cur.fetchone()
         return _row_to_schedule(row) if row else None
 
@@ -85,8 +84,7 @@ def add_schedule(cron: str, channel: str, question: str, bot_id: str | None = No
     """
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO schedules (cron, channel, question, bot_id) VALUES (%s, %s, %s, %s) "
-            "RETURNING id, cron, channel, question, bot_id, created_at",
+            f"INSERT INTO schedules (cron, channel, question, bot_id) VALUES (%s, %s, %s, %s) RETURNING {_columns()}",
             (cron, channel, question, bot_id),
         )
         return _row_to_schedule(cur.fetchone())
@@ -114,27 +112,27 @@ def update_schedule(
         The updated Schedule record on success, or None if no fields were provided or the id
         was not found for this bot.
     """
-    fields, params = [], []
+    assignments, params = [], []
 
     if cron is not None:
-        fields.append("cron = %s")
+        assignments.append("cron = %s")
         params.append(cron)
 
     if channel is not None:
-        fields.append("channel = %s")
+        assignments.append("channel = %s")
         params.append(channel)
 
     if question is not None:
-        fields.append("question = %s")
+        assignments.append("question = %s")
         params.append(question)
 
-    if not fields:
+    if not assignments:
         return None
 
     params.extend([id, bot_id])
     sql = (
-        f"UPDATE schedules SET {', '.join(fields)} WHERE id = %s AND (bot_id = %s OR bot_id IS NULL) AND kind = 'question' "
-        "RETURNING id, cron, channel, question, bot_id, updated_at"
+        f"UPDATE schedules SET {', '.join(assignments)} WHERE id = %s AND (bot_id = %s OR bot_id IS NULL) AND kind = 'question' "
+        f"RETURNING {_columns()}"
     )
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
@@ -193,7 +191,7 @@ def add_pr_reminder(
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"pr_reminder:{bot_id}:{channel}",))
         cur.execute(
-            f"SELECT {_COLUMNS} FROM schedules WHERE kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s ORDER BY created_at",
+            f"SELECT {_columns()} FROM schedules WHERE kind = 'pr_reminder' AND status = 'active' AND bot_id = %s AND channel = %s ORDER BY created_at",
             (bot_id, channel),
         )
         active = [_row_to_schedule(row) for row in cur.fetchall()]
@@ -204,7 +202,7 @@ def add_pr_reminder(
             return None
         cur.execute(
             "INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config, timezone) "
-            f"VALUES (%s, %s, %s, %s, %s, 'pr_reminder', %s, %s) RETURNING {_COLUMNS}",
+            f"VALUES (%s, %s, %s, %s, %s, 'pr_reminder', %s, %s) RETURNING {_columns()}",
             (id, cron, channel, label, bot_id, Jsonb(config), timezone),
         )
         return AddedReminder(_row_to_schedule(cur.fetchone()), created=True)
@@ -229,12 +227,12 @@ def add_dataset_sync(id: str, cron: str, channel: str, label: str, bot_id: str, 
     dataset = config["dataset"]
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"dataset_sync:{dataset}",))
-        cur.execute(f"SELECT {_COLUMNS} FROM schedules WHERE kind = 'dataset_sync' AND status = 'active' AND config->>'dataset' = %s", (dataset,))
+        cur.execute(f"SELECT {_columns()} FROM schedules WHERE kind = 'dataset_sync' AND status = 'active' AND config->>'dataset' = %s", (dataset,))
         existing = cur.fetchone()
         if existing:
             return AddedDatasetSync(_row_to_schedule(existing), created=False)
         cur.execute(
-            f"INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config) VALUES (%s, %s, %s, %s, %s, 'dataset_sync', %s) RETURNING {_COLUMNS}",
+            f"INSERT INTO schedules (id, cron, channel, question, bot_id, kind, config) VALUES (%s, %s, %s, %s, %s, 'dataset_sync', %s) RETURNING {_columns()}",
             (id, cron, channel, label, bot_id, Jsonb(config)),
         )
         return AddedDatasetSync(_row_to_schedule(cur.fetchone()), created=True)
@@ -243,7 +241,7 @@ def add_dataset_sync(id: str, cron: str, channel: str, label: str, bot_id: str, 
 def get_dataset_sync_schedules() -> dict[str, Schedule]:
     """Active recurring dataset syncs by dataset name (one per dataset, see `add_dataset_sync`)."""
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT {_COLUMNS} FROM schedules WHERE kind = 'dataset_sync' AND status = 'active' ORDER BY created_at")
+        cur.execute(f"SELECT {_columns()} FROM schedules WHERE kind = 'dataset_sync' AND status = 'active' ORDER BY created_at")
         return {schedule.config.get("dataset", ""): schedule for schedule in (_row_to_schedule(row) for row in cur.fetchall())}
 
 

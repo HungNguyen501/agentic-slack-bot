@@ -54,6 +54,8 @@ description: <one sentence starting with "Use when...">
 
 ## Updating Skills
 
-Skills are mounted as a volume in docker-compose (`./src/agent/skills/files:/app/agent/skills/files`). Editing a skill file takes effect on the next request without rebuilding the image.
+Git is the source of truth, but running services read only the Supabase `agent_skills` table (`agent/skills/loader.py`), one SELECT per request. There is no fallback to the files in the image: if the table is empty the request fails, so the table must be synced before a deploy that needs it.
 
-That applies to local `docker compose` only. Deployed environments run the published image with the skills baked in (no volume mount), so a skill edit reaches them only via a new image tag and a redeploy from the `ansible-infra` repo.
+- **Deployed:** merge to `master` — the *DB Migrate* workflow runs `make skills-sync` on `development`, then `staging`, replacing the table with the files (deleting rows whose file is gone). No image tag, no redeploy. Revert the commit to roll back.
+- **Local:** edit the file, then run `make skills-sync` with `SUPABASE_DB_URL` pointing at the database your local services use. The edit applies on the next request. (docker-compose no longer mounts the skills folder.) Use your own Supabase project for this: a sync replaces the whole table, so running it against the shared `development` database changes the skills for everyone there until CI's next sync.
+- The sync refuses to run with no files, a duplicate `name`, a file without a frontmatter `name`, or a routed (`always: false`) skill without a `description`.

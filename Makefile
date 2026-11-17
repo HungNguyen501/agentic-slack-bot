@@ -14,6 +14,11 @@ lint:
 test:
 	@pytest --disable-warnings -vv --cov src --cov-report term-missing --cov-fail-under=0
 
+# SUPABASE_DB_URL comes from the environment (CI) or, when unset, from ./.env, so SUPABASE_DB_URL=... make skills-sync targets another database.
+skills-sync:
+	@if [ -z "$$SUPABASE_DB_URL" ] && [ -f ./.env ]; then set -a; . ./.env; set +a; fi; \
+		PYTHONPATH=src uv run python -m agent.skills.sync
+
 lint-sql:
 	@sqlfluff lint src/migrations/ src/databricks/metric_views/
 
@@ -69,6 +74,10 @@ help:
 	@echo "                                 without running its migration, for a DB whose"
 	@echo "                                 tables predate Flyway adoption"
 	@echo "                                 e.g. make db-migrate-baseline VERSION=4"
+	@echo ""
+	@echo "Agent skills:"
+	@echo "  make skills-sync             Replace the Supabase agent_skills table with src/agent/skills/files/"
+	@echo "                                 (SUPABASE_DB_URL from the env or .env; CI runs it on merge)"
 	@echo ""
 	@echo "Image publishing:"
 	@echo "  make docker-login         docker login -u hungwnguyen"

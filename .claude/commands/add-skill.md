@@ -26,7 +26,7 @@ Scaffold a new **agent** skill file in `src/agent/skills/files/` (not a Claude C
 
 4. If the new skill should be available only to specific bots, note that the `enabled_skills` array in the Supabase `bots` table must be updated for those bots.
 
-5. No image rebuild needed — skills are volume-mounted in docker-compose.
+5. No image rebuild needed, but the file alone does nothing: services read the Supabase `agent_skills` table. Merging to `master` syncs it (CI runs `make skills-sync` after the migrations); to try it earlier, run `make skills-sync` against your own database.
 
 ## Example
 

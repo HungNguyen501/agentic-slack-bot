@@ -93,6 +93,7 @@ make compose-down-clean  # + remove volumes
 
 make db-migrate       # apply pending Flyway migrations in src/migrations/ (reads SUPABASE_DB_URL)
 make db-migrate-info  # show applied/pending migration status
+make skills-sync      # replace the Supabase agent_skills table with src/agent/skills/files/ (reads SUPABASE_DB_URL)
 
 docker compose logs -f receiver   # tail service logs
 docker compose logs -f worker
@@ -105,11 +106,13 @@ WORKER_COUNT=5 docker compose up -d  # scale workers
 
 ## Deployment
 
-Remote deployment is not in this repo. Pushing a tag matching `agentic-slack-bot-vYYYY.MM.DD.<sha>` runs `.github/workflows/image-deploy.yaml`, which builds and pushes the image to Docker Hub. The image is then rolled out by the `slack_bot_deploy` role in the separate `ansible-infra` repo (`make check` / `make deploy ENV=staging IMAGE_TAG=<tag>`; also restart and stop playbooks). That repo owns the production compose file (a copy of `docker-compose.yml` with the pre-built image) and the `.env` handling — keep it in sync when `docker-compose.yml` or required env vars change. Skills are baked into the image in deployed environments, so a skill edit reaches them only through a new image tag and redeploy.
+Remote deployment is not in this repo. Pushing a tag matching `agentic-slack-bot-vYYYY.MM.DD.<sha>` runs `.github/workflows/image-deploy.yaml`, which builds and pushes the image to Docker Hub. The image is then rolled out by the `slack_bot_deploy` role in the separate `ansible-infra` repo (`make check` / `make deploy ENV=staging IMAGE_TAG=<tag>`; also restart and stop playbooks). That repo owns the production compose file (a copy of `docker-compose.yml` with the pre-built image) and the `.env` handling — keep it in sync when `docker-compose.yml` or required env vars change. Agent skills do not need an image: the loader reads them from the Supabase `agent_skills` table, which the next section keeps in step with the files.
 
 Image tags are created with the *Create Tag* workflow (`.github/workflows/create-tag.yaml`, run from `master`; pick the `type`, currently only `agentic-slack-bot`). A tag is `<type>-vYYYY.MM.DD.<sha>`, so a second tag of the same type for the same commit on the same day can't be created — to retry a failed run, use "Re-run jobs" on it instead.
 
 DB migrations run automatically from `.github/workflows/db-migrate.yaml` (Flyway via `make db-migrate`) on every push to `master`. A `dorny/paths-filter` job checks whether the push touched `src/migrations/**`; if so, `migrate-dev` migrates the `development` database and then `migrate-staging` migrates `staging` (it needs `migrate-dev` to succeed). Each job reads the `SUPABASE_DB_URL` secret of the GitHub Environment of the same name. Flyway applies only the pending versions, so re-running is safe.
+
+The same workflow syncs agent skills: a second path filter watches `src/agent/skills/files/**`, and when either filter matches, the same two jobs run `make skills-sync` (via `.github/actions/skills-sync`) *after* Flyway, replacing that environment's `agent_skills` table with the files. Running services pick the change up on their next request — no image tag or redeploy. The push that adds V13 runs the sync too, so the table is filled before the image that reads it is rolled out; if a sync fails, re-run the job or run `make skills-sync` by hand (until the table is filled every request fails).
 
 ## Environment Variables
 
@@ -145,6 +148,8 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 **Supabase `service_principal_secrets` table** — cached Databricks service-principal OAuth secrets, shared across all bots in the workspace (one row per `email`, replaced on rotation — including when the service principal itself is deleted and recreated with a new `client_id`):
 - `id uuid`, `service_account` (svc-prefixed display name), `client_id`, `email` (bare address, unique, the lookup key), `dbx_secret_id`, `secret_hash`, `secret_encrypted bytea` (Fernet-encrypted), `status`, `dbx_create_time`, `dbx_update_time`, `dbx_expire_time`, `requested_by`
 
+**Supabase `agent_skills` table** — the skill files copied into the database by `make skills-sync` (`name` PK, `filename`, `always`, `description`, `body`); workspace-wide, replaced whole on each sync.
+
 **Supabase `synced_datasets` table** — reference data copied from Databricks, shared across all bots (see `.claude/rules/architecture.md` "Synced Datasets"):
 - `dataset text` (PK), `description`, `source_sql` (read-only Databricks query), `enabled`, `column_names text[]`, `synced_rows jsonb` (last good snapshot, replaced whole), `row_count`, `last_synced_at`, `last_status` (`ok` / `error`), `last_error`
 - Seeded by V11 with `store_locations` and `row_filter_tags`; both must be synced once after the first deploy or the data access form refuses to open.
@@ -166,6 +171,7 @@ description: Use when the user asks about catalogs, schemas, tables, or column d
 - `always: true` → included in every request (core, filters, formatting)
 - `always: false` → router model picks based on description + conversation context
 - Per-bot `enabled_skills` array in Supabase gates which skills are available (empty = all)
+- Git holds the files; the loader (`agent/skills/loader.py`) reads only the Supabase `agent_skills` table, on every request — there is no fallback to the files in the image, and an empty table fails the request. Run `make skills-sync` to publish an edit (CI does it on merge to `master`).
 
 See `.claude/rules/skills.md` for authoring guidelines.
 
@@ -181,7 +187,7 @@ src/
     dispatch.py              # Tool schema exposure + per-call routing
     history.py               # Per-thread conversation history (Redis)
     schedules.py             # Schedule-CRUD tool handlers
-    skills/                  # loader.py / router.py; files/ holds the agent (runtime) skill files (01–14) — NOT Claude Code skills
+    skills/                  # loader.py (Supabase) / router.py / source.py (parsing) / sync.py (`make skills-sync`); files/ holds the agent (runtime) skill files (01–14) — NOT Claude Code skills
     forms/                   # Pure, no I/O — the receiver may import this
       access_request_options.py    # FormOptions built from the synced datasets (pure); Redis key for the snapshot
       access_request_view.py       # Slack modal view + submission validation
@@ -222,6 +228,7 @@ src/
     db/                      # Supabase (Postgres) access — sync, psycopg
       connection.py              # psycopg connection helper
       bots.py                    # Bot registry
+      agent_skills.py            # AgentSkill model + agent_skills table read / full replace (loader + `make skills-sync`)
       schedules.py               # Schedule CRUD (shared by the scheduler service and the agent's schedule tools)
     databricks/              # Statement API, Jobs API, SCIM, OAuth secrets
       client.py                  # Host/token/auth headers
@@ -248,6 +255,7 @@ Detailed guidelines in `.claude/rules/`:
 - [architecture.md](.claude/rules/architecture.md) — service boundaries and invariants
 - [code-style.md](.claude/rules/code-style.md) — Python style, linting, dependencies
 - [skills.md](.claude/rules/skills.md) — agent skill file authoring (`src/agent/skills/files/`)
+- [database.md](.claude/rules/database.md) — Supabase access: row dataclasses, where DB modules live, queries, migrations, tests
 
 ## Development Skills
 
