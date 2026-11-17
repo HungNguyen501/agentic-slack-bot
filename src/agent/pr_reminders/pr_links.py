@@ -1,7 +1,7 @@
 """Find GitHub pull request links in Slack messages and work out which thread each one lives in. Pure, no I/O."""
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
 _PR_URL_RE = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)")
@@ -31,10 +31,10 @@ class PrLink:
     """A PR, the Slack message that mentions it, and the thread a reminder for it goes to.
 
     `reactable` is set for a link read from a Slack message of its own, whose `message_ts` can carry a reaction; a link
-    typed in the request isn't, since its message is the request. `reacted` says that message already has the approved
-    reaction, from anyone. `message_refs` is every PR that message links, kept whole even when a PR is also linked in a
-    later message (and so belongs to that message's link instead), so "all the PRs in this message are approved" can be
-    answered from the statuses.
+    typed in the request isn't, since its message is the request. `reacted` says that message already has one of the
+    finished reactions (approved or closed), from anyone. `message_refs` is every PR that message links, kept whole even
+    when a PR is also linked in a later message (and so belongs to that message's link instead), so "all the PRs in
+    this message are finished" can be answered from the statuses.
     """
 
     ref: PrRef
@@ -75,23 +75,23 @@ def _message_blob(message: dict) -> str:
     return " ".join([message.get("text") or "", json.dumps(message.get("attachments") or []), json.dumps(message.get("blocks") or [])])
 
 
-def _has_reaction(message: dict, name: str) -> bool:
-    return any(reaction.get("name") == name for reaction in message.get("reactions") or [])
+def _has_any_reaction(message: dict, names: Collection[str]) -> bool:
+    return any(reaction.get("name") in names for reaction in message.get("reactions") or [])
 
 
-def links_from_messages(messages: Iterable[dict], channel: str, *, own_app_id: str | None, approved_reaction: str | None = None) -> list[PrLink]:
+def links_from_messages(messages: Iterable[dict], channel: str, *, own_app_id: str | None, finished_reactions: Collection[str] = ()) -> list[PrLink]:
     """Collect PR links from Slack messages, keeping the most recent message for a PR linked more than once.
 
     The reminder thread is the message's own thread, or the thread that replying to it starts. Messages from
     `own_app_id` (this bot) are skipped: its reminders repeat the PR links and would keep old PRs in the window.
-    `approved_reaction` is the emoji name that marks an approved PR; a link whose message already has it is `reacted`.
+    `finished_reactions` are the emoji names that mark a finished PR; a link whose message already has any of them is `reacted`.
     """
     latest: dict[PrRef, PrLink] = {}
     for message in messages:
         if own_app_id and message.get("app_id") == own_app_id:
             continue
         ts = message["ts"]
-        reacted = approved_reaction is not None and _has_reaction(message, approved_reaction)
+        reacted = _has_any_reaction(message, finished_reactions)
         refs = find_pr_refs(_message_blob(message))
         for ref in refs:
             current = latest.get(ref)

@@ -44,7 +44,7 @@ This document describes the approved design. It is implemented on the `hungnguye
 - Repeat the check on a schedule.
 - Run until an admin removes the schedule, and end it automatically only when the requester asked for a time limit (`expires_in_hours`).
 - Judge "approved" the way GitHub's Merge button does.
-- Mark approved PRs with a :white_check_mark: reaction on the Slack message that shared them, once.
+- Mark finished PRs on the Slack message that shared them, once: :white_check_mark: for approved or merged, :x: for closed without merging.
 
 ## Non-goals
 
@@ -55,8 +55,8 @@ This document describes the approved design. It is implemented on the `hungnguye
 # **Requirements**
 
 - The GitHub credentials (App installation or PAT) define which repos the bot can read. A PR it can't see is reported as "can't access" with its link only.
-- "Approved" is GitHub's `reviewDecision`: `APPROVED` is approved, `REVIEW_REQUIRED` is waiting for review, `CHANGES_REQUESTED` is waiting on the author (noted, no ping). Merged, closed and draft PRs are ignored.
-- **Approved PRs get a :white_check_mark:.** Every check, one-off or scheduled, reacts with `white_check_mark` (`AgentConfigs.PR_REMINDER_APPROVED_REACTION`) to the Slack message that shared an approved PR, whether or not anything else is posted, so a thread shows at a glance which PRs are done. It reacts once: a message that already has that emoji from anyone, human or bot, is skipped, and an `already_reacted` answer from Slack (a race with another check) counts as done. Only `APPROVED` counts, not merged, closed or draft PRs. A message is marked only when every PR it links is approved, so one with an approved and a waiting PR is left alone. That counts every PR the message links (`PrLink.message_refs`), including one whose newest mention is in a later message, and a PR that went unchecked (over the 100-PR limit) counts as not approved. When a PR is linked in several messages, only the newest one is marked: an earlier message whose PRs were all linked again later is left alone. A PR typed in a request (`pr_urls`) has no message of its own and is never marked; the next scan of the thread or channel marks the message that shared it. At most 25 messages are marked per run (`PR_REMINDER_MAX_REACTIONS_PER_RUN`); the rest wait for the next tick. Reacting never blocks the reminders: a failure is logged, and a missing scope, a rate limit or a dropped connection ends the reacting for that run. The one-off tool's summary says how many messages it marked.
+- "Approved" is GitHub's `reviewDecision`: `APPROVED` is approved, `REVIEW_REQUIRED` is waiting for review, `CHANGES_REQUESTED` is waiting on the author (noted, no ping). Merged, closed and draft PRs get no reminder.
+- **Finished PRs get a :white_check_mark: or an :x:.** Every check, one-off or scheduled, reacts to the Slack message that shared a finished PR, whether or not anything else is posted, so a thread shows at a glance which PRs are done. `white_check_mark` (`AgentConfigs.PR_REMINDER_APPROVED_REACTION`) means approved or merged; `x` (`AgentConfigs.PR_REMINDER_CLOSED_REACTION`) means closed without merging. It reacts once: a message that already has either emoji from anyone, human or bot, is skipped, and an `already_reacted` answer from Slack (a race with another check) counts as done. Drafts and PRs still open and unapproved get nothing. A message is marked only when every PR it links finished the same way: all approved or merged gets the ✅, all closed gets the ❌, and any other mix (one waiting, one unchecked, or one merged and one closed) is left alone. That counts every PR the message links (`PrLink.message_refs`), including one whose newest mention is in a later message, and a PR that went unchecked (over the 100-PR limit) counts as not finished. When a PR is linked in several messages, only the newest one is marked: an earlier message whose PRs were all linked again later is left alone. A PR typed in a request (`pr_urls`) has no message of its own and is never marked; the next scan of the thread or channel marks the message that shared it. At most 25 messages are marked per run (`PR_REMINDER_MAX_REACTIONS_PER_RUN`); the rest wait for the next tick. Reacting never blocks the reminders: a failure is logged, and a missing scope, a rate limit or a dropped connection ends the reacting for that run. The one-off tool's summary says how many messages it marked.
 - If a repo has no required-review rule, `reviewDecision` is null. The bot then looks at each reviewer's latest review: at least one `APPROVED` and no `CHANGES_REQUESTED` counts as approved; any `CHANGES_REQUESTED` means waiting on the author; otherwise it is waiting for review.
 - A one-off check only reads the channel it was asked in (the tool takes no channel argument), so a request in one channel can't pull another channel's messages into the reply.
 - A reminder needs at least one person to remind. When a request names nobody, the tool refuses with "Who should I remind?" before reading Slack or GitHub, and the agent asks the user.
@@ -185,9 +185,10 @@ A pure function in `agent/pr_reminders/status.py` maps each PR to one bucket:
 
 | GitHub state | Bucket | Pings the mentioned people? |
 | --- | --- | --- |
-| `MERGED` / `CLOSED` | done (ignored) | no |
+| `MERGED` | merged (✅ on its Slack message) | no |
+| `CLOSED` | closed without merging (❌ on its Slack message) | no |
 | draft | skipped | no |
-| `APPROVED` | approved | no |
+| `APPROVED` | approved (✅ on its Slack message) | no |
 | `CHANGES_REQUESTED` | waiting on author | no (listed only) |
 | `REVIEW_REQUIRED` | waiting for review | yes |
 | null decision, fallback rule says not approved | waiting for review | yes |

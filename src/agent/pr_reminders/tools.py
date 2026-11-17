@@ -87,8 +87,8 @@ def _incomplete_notes(result: CheckResult, scan_truncated: bool) -> list[str]:
 def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str:
     waiting = result.waiting
     on_author = result.count(Bucket.WAITING_ON_AUTHOR)
-    done = sum(result.count(bucket) for bucket in (Bucket.APPROVED, Bucket.DONE, Bucket.DRAFT))
-    parts = [f"Checked {len(result.statuses)} PR(s): {waiting} waiting for review, {on_author} waiting on the author, {done} approved, closed or draft."]
+    done = sum(result.count(bucket) for bucket in (Bucket.APPROVED, Bucket.MERGED, Bucket.CLOSED, Bucket.DRAFT))
+    parts = [f"Checked {len(result.statuses)} PR(s): {waiting} waiting for review, {on_author} waiting on the author, {done} approved, merged, closed or draft."]
 
     notes = _incomplete_notes(result, scan_truncated)
     parts += notes
@@ -101,7 +101,8 @@ def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str
     if result.failed_posts:
         parts.append(f"Could not post in {result.failed_posts} thread(s).")
     if result.marked:
-        parts.append(f"Marked {result.marked} approved PR message(s) with :{AgentConfigs.PR_REMINDER_APPROVED_REACTION}:.")
+        emojis = f":{AgentConfigs.PR_REMINDER_APPROVED_REACTION}: or :{AgentConfigs.PR_REMINDER_CLOSED_REACTION}:"
+        parts.append(f"Marked {result.marked} finished PR message(s) with {emojis}.")
     if not waiting and not on_author:
         parts.append("I can't say nothing is waiting, because the check was incomplete." if notes else "Nothing is waiting for review :white_check_mark:")
     return " ".join(parts)

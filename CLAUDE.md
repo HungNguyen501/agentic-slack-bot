@@ -33,8 +33,8 @@ scheduler (croniter eval, Redis last-fired dedup)
 ```
 user asks agent to check PR approval → check_pr_approvals tool reads the thread / channel history,
   finds GitHub PR links, asks GitHub for reviewDecision, posts "<@people> waiting for review"
-  as a reply in the thread of each PR still waiting (no LLM rewrites the text), and reacts :white_check_mark:
-  to the Slack message of each approved PR (skipped if it already has it)
+  as a reply in the thread of each PR still waiting (no LLM rewrites the text), and reacts
+  to the Slack message of each finished PR (:white_check_mark: approved or merged, :x: closed unmerged; skipped if it already has either)
 admin asks for a recurring check → schedule_pr_reminder checks once, then stores a schedules row (kind = pr_reminder)
 scheduler → enqueue process_pr_reminder → worker (agent/pr_reminders/service.py::run_reminder, no LLM)
   → reminds in PR threads; soft-deletes the row (status != active) only once its optional time limit passes
