@@ -5,6 +5,7 @@ import traceback
 
 from common.configs import Configs
 from connectors import openai_client
+from connectors.db.agent_skills import AgentSkill
 
 log = logging.getLogger("agent.skills.router")
 
@@ -19,8 +20,8 @@ def _format_history(history: list[dict] | None) -> str:
     return "\n\nPrior conversation (for context only):\n" + "\n".join(lines) if lines else ""
 
 
-def _router_prompt(selectable: list[dict], history: list[dict] | None) -> str:
-    skill_menu = "\n".join(f'- "{s["name"]}": {s["description"]}' for s in selectable)
+def _router_prompt(selectable: list[AgentSkill], history: list[dict] | None) -> str:
+    skill_menu = "\n".join(f'- "{s.name}": {s.description}' for s in selectable)
     return (
         "You are a skill router for a Databricks data assistant. "
         "Given a user question, return a JSON object with key \"skills\" "
@@ -51,12 +52,12 @@ def _parse_selection(content: str, available: set[str]) -> set[str]:
     return {s.strip().lower() for s in skills if isinstance(s, str)} & available
 
 
-def select_skills(question: str, selectable: list[dict], history: list[dict] | None = None) -> set[str]:
+def select_skills(question: str, selectable: list[AgentSkill], history: list[dict] | None = None) -> set[str]:
     """Use a lightweight router LLM call to pick which domain skills are relevant for this question.
 
     Args:
         question: The user's question, with @mention prefix already stripped.
-        selectable: Routed (non-always) skill dicts to choose from.
+        selectable: Routed (non-always) skills to choose from.
         history: Recent conversation messages used to resolve vague follow-up questions.
 
     Returns:
@@ -66,7 +67,7 @@ def select_skills(question: str, selectable: list[dict], history: list[dict] | N
     if not selectable:
         return set()
 
-    available = {s["name"].lower() for s in selectable}
+    available = {s.name.lower() for s in selectable}
     try:
         content = openai_client.chat_completion(
             [

@@ -14,7 +14,7 @@ A third exception, unrelated to Slack payloads entirely: `GET /secrets/{token}` 
 
 **Agent** (`src/agent/`) owns all agent logic, organised by task:
 - `agent.py` (loop), `dispatch.py` (tool routing), `history.py` (thread history in Redis)
-- `skills/` — loader, router, and the skill files in `skills/files/`
+- `skills/` — loader (reads the Supabase `agent_skills` table), router, `source.py` (file parsing), `sync.py` (`make skills-sync`, run by the DB Migrate workflow), and the skill files in `skills/files/`
 - `forms/` — Slack modal view, form options built from synced datasets, submission validation, `VerifiedAccessRequest` (pure, no I/O)
 - `pr/` — `rules_v2.yaml`/PR-template rendering (pure) and `data_platform_repo.py` (the access-control branch/PR workflow on top of `connectors.github`)
 - `access_control/` — access-request categories and requests (Supabase), principal lookups, submission, review, and the `request_data_access` tool
@@ -23,7 +23,7 @@ A third exception, unrelated to Slack payloads entirely: `GET /secrets/{token}` 
 - `schedules.py` — the schedule-CRUD tool handlers
 - `dataset_sync/` — generic Databricks → Supabase dataset sync: `store.py` (the `synced_datasets` registry + snapshots, and `get_rows` for readers), `service.py` (`sync_dataset`, `run_scheduled_sync`), `tools.py` (`list_synced_datasets` / `sync_dataset` / `schedule_dataset_sync`)
 
-**Connectors** (`src/connectors/`) are generic clients for external tools (Slack, Databricks, GitHub, OpenAI, Redis, Supabase connection/bots/schedules). They expose raw primitives and carry no task-specific logic — anything that knows about access requests, rules files, or skills belongs in `src/agent/`. `db/schedules.py` stays here because the scheduler service reads it directly.
+**Connectors** (`src/connectors/`) are generic clients for external tools (Slack, Databricks, GitHub, OpenAI, Redis, Supabase connection/bots/schedules/agent_skills). Supabase table modules in `connectors/db/` own their row dataclass and queries (see [database.md](database.md)). They expose raw primitives and carry no task-specific logic — anything that knows about access requests, rules files, or skills belongs in `src/agent/`. `db/schedules.py` stays here because the scheduler service reads it directly.
 
 **Scheduler** (`src/scheduler/`) only evaluates cron schedules and enqueues jobs. It must not run the agent itself or post to Slack directly.
 
@@ -75,6 +75,8 @@ Note: the data access request button's TTL (`AgentConfigs.ACCESS_REQUEST_BUTTON_
 New OpenAI tool schemas go in `AgentConfigs.TOOLS` (`src/common/configs.py`) as an `AgentTool(...)` entry with a `category` (`"core"`, `"schedule"`, `"data_access"`, `"secrets"`, `"pr_reminder"`, or `"dataset_sync"`). The corresponding dispatch branch goes in `dispatch_tool()` in `src/agent/dispatch.py` (which routes by category to `dispatch_schedule_tool()` in `agent/schedules.py` / `dispatch_data_access_tool()` in `agent/access_control/tools.py` / `dispatch_secret_generation_tool()` in `agent/service_principal_secrets/tools.py` / `dispatch_pr_reminder_tool()` in `agent/pr_reminders/tools.py` (also reached from the `schedule` category for `schedule_pr_reminder`) / `dispatch_dataset_sync_tool()` in `agent/dataset_sync/tools.py` / inline core handling). OpenAI calls go through `src/connectors/openai_client.py`. Keep tool names snake_case and match them exactly between the `AgentTool` entry and the dispatch branch.
 
 ## Skill Routing
+
+Skill text is loaded by `load_all_skills()` from Supabase only (`connectors/db/agent_skills.py`); the files in the image are just the input to `make skills-sync`, and an empty table fails the request. `skills/sync.py` imports only `source` and the `agent_skills` connector (not the router/OpenAI) so CI can run it without an OpenAI key.
 
 Router calls must use `response_format={"type": "json_object"}` so the response is always parseable. If the router call fails for any reason, fall back to loading all enabled skills — never block the request.
 

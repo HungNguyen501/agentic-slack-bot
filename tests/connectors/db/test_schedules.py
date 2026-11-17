@@ -1,11 +1,26 @@
 from contextlib import contextmanager
+from dataclasses import fields
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pytest
 
 from connectors.db import schedules
 
-ROW = {"id": "s1", "cron": "0 9 * * *", "channel": "C1", "question": "q", "bot_id": "bot-a"}
+ROW = {
+    "id": "s1",
+    "cron": "0 9 * * *",
+    "channel": "C1",
+    "question": "q",
+    "bot_id": "bot-a",
+    "kind": "question",
+    "status": "active",
+    "config": {},
+    "timezone": "UTC",
+    "created_at": "2026-11-01 00:00:00+00:00",
+    "updated_at": "2026-11-01 00:00:00+00:00",
+}
 
 
 @contextmanager
@@ -82,7 +97,7 @@ def test_get_schedules_for_a_bot_keeps_the_legacy_unowned_rows():
     assert params == ["bot-a"]
 
 
-def test_a_row_without_the_new_columns_is_a_live_question_schedule():
+def test_a_question_row_is_a_live_schedule():
     with fake_connect() as cur:
         cur.fetchall.return_value = [ROW]
         [schedule] = schedules.get_schedules()
@@ -98,9 +113,28 @@ def test_a_pr_reminder_row_keeps_its_kind_status_and_config():
     assert (schedule.kind, schedule.status, schedule.config) == ("pr_reminder", "completed", {"scope": "thread"})
 
 
-def test_a_row_without_a_timezone_is_read_in_utc():
-    with fake_connect(fetchone=ROW):
-        assert schedules.get_schedule("s1").timezone == "UTC"
+def test_database_types_are_converted_to_the_strings_the_dataclass_declares():
+    row = ROW | {"id": UUID(int=1), "bot_id": None, "created_at": datetime(2026, 11, 1, tzinfo=UTC)}
+    with fake_connect(fetchone=row):
+        schedule = schedules.get_schedule("s1")
+
+    assert (schedule.id, schedule.bot_id, schedule.created_at) == (str(UUID(int=1)), None, "2026-11-01 00:00:00+00:00")
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda: schedules.add_schedule("0 9 * * *", "C1", "q", "bot-a"),
+        lambda: schedules.update_schedule("s1", cron="0 10 * * *", bot_id="bot-a"),
+    ],
+    ids=["add", "update"],
+)
+def test_writes_return_every_column_of_the_schedule(write):
+    with fake_connect(fetchone=ROW) as cur:
+        write()
+
+    sql = cur.execute.call_args.args[0]
+    assert all(f.name in sql.split("RETURNING")[1] for f in fields(schedules.Schedule))
 
 
 def test_a_row_keeps_the_timezone_its_cron_is_written_in():

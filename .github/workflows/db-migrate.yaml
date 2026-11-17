@@ -10,11 +10,12 @@ permissions:
 
 jobs:
   changes:
-    name: Detect migration changes
+    name: Detect migration and skill changes
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       migrations: ${{ steps.filter.outputs.migrations }}
+      skills: ${{ steps.filter.outputs.skills }}
 
     steps:
       - name: Checkout repository
@@ -27,11 +28,13 @@ jobs:
           filters: |
             migrations:
               - 'src/migrations/**'
+            skills:
+              - 'src/agent/skills/files/**'
 
   migrate-dev:
     name: Flyway migrate (development)
     needs: changes
-    if: needs.changes.outputs.migrations == 'true'
+    if: needs.changes.outputs.migrations == 'true' || needs.changes.outputs.skills == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     environment: development
@@ -48,10 +51,15 @@ jobs:
       - name: Flyway migrate
         uses: ./.github/actions/db-migrate
 
+      # After the migrations, so the table exists. Runs whenever the job does (a migration or a skill changed): the sync is
+      # idempotent, and the push that creates agent_skills touches no skill file but must still fill it.
+      - name: Sync agent skills
+        uses: ./.github/actions/skills-sync
+
   migrate-staging:
     name: Flyway migrate (staging)
     needs: [changes, migrate-dev]
-    if: needs.changes.outputs.migrations == 'true'
+    if: needs.changes.outputs.migrations == 'true' || needs.changes.outputs.skills == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     environment: staging
@@ -67,3 +75,8 @@ jobs:
 
       - name: Flyway migrate
         uses: ./.github/actions/db-migrate
+
+      # After the migrations, so the table exists. Runs whenever the job does (a migration or a skill changed): the sync is
+      # idempotent, and the push that creates agent_skills touches no skill file but must still fill it.
+      - name: Sync agent skills
+        uses: ./.github/actions/skills-sync
