@@ -10,7 +10,8 @@ class Bucket(Enum):
     WAITING = auto()  # open, needs a review
     WAITING_ON_AUTHOR = auto()  # changes requested
     APPROVED = auto()
-    DONE = auto()  # merged or closed
+    MERGED = auto()
+    CLOSED = auto()  # closed without merging
     DRAFT = auto()
     INACCESSIBLE = auto()  # GitHub returned null: the credentials can't see the repo, or the PR doesn't exist
 
@@ -44,8 +45,10 @@ def classify(pr: dict | None) -> Bucket:
     """
     if pr is None:
         return Bucket.INACCESSIBLE
+    if pr["state"] == "MERGED":
+        return Bucket.MERGED
     if pr["state"] != "OPEN":
-        return Bucket.DONE
+        return Bucket.CLOSED
     if pr["isDraft"]:
         return Bucket.DRAFT
 

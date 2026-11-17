@@ -113,9 +113,11 @@ class AgentConfigs:
     PR_REMINDER_MAX_MENTIONS: int = 10
     PR_REMINDER_MIN_INTERVAL_MINUTES: int = 30
     PR_REMINDER_MAX_EXPIRY_HOURS: int = 8760
-    # The emoji the bot leaves on a Slack message whose PR is approved, and how many it adds in one run: a first run over a
-    # long backlog would otherwise burst past Slack's reactions.add rate limit; the next ticks finish the rest.
+    # The emoji the bot leaves on a Slack message whose PRs are all approved or merged, or all closed without merging, and
+    # how many it adds in one run: a first run over a long backlog would otherwise burst past Slack's reactions.add rate
+    # limit; the next ticks finish the rest.
     PR_REMINDER_APPROVED_REACTION: str = "white_check_mark"
+    PR_REMINDER_CLOSED_REACTION: str = "x"
     PR_REMINDER_MAX_REACTIONS_PER_RUN: int = 25
     # The zone a reminder's cron is written in when the request names none. When reminders may fire is part of the cron
     # itself (e.g. `*/30 8-17 * * 1-5`), written by the agent following the pr-reminders skill.

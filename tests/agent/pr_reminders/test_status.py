@@ -15,8 +15,8 @@ def test_classify_marks_a_pr_the_token_cannot_see_as_inaccessible():
 @pytest.mark.parametrize(
     "fields, expected",
     [
-        ({"state": "MERGED"}, Bucket.DONE),
-        ({"state": "CLOSED"}, Bucket.DONE),
+        ({"state": "MERGED"}, Bucket.MERGED),
+        ({"state": "CLOSED"}, Bucket.CLOSED),
         ({"is_draft": True}, Bucket.DRAFT),
         ({"decision": "APPROVED"}, Bucket.APPROVED),
         ({"decision": "CHANGES_REQUESTED"}, Bucket.WAITING_ON_AUTHOR),

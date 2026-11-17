@@ -208,16 +208,16 @@ def test_check_pr_approvals_summarizes_what_was_checked_and_where_it_posted(bot,
 
     reply = run("check_pr_approvals", {"scope": "channel"}, bot)
 
-    assert "Checked 4 PR(s): 1 waiting for review, 1 waiting on the author, 1 approved, closed or draft." in reply
+    assert "Checked 4 PR(s): 1 waiting for review, 1 waiting on the author, 1 approved, merged, closed or draft." in reply
     assert "1 PR(s) could not be read from GitHub" in reply
     assert "2 older PR(s) were not checked (limit 100)." in reply
     assert "Posted reminders in 1 thread(s): <https://slack.test/p1|thread>" in reply
 
 
-def test_check_pr_approvals_counts_every_finished_bucket_as_approved_closed_or_draft(bot, collect, check, slack):
-    check.return_value = result(Bucket.APPROVED, Bucket.DONE, Bucket.DRAFT, Bucket.WAITING)
+def test_check_pr_approvals_counts_every_finished_bucket_as_approved_merged_closed_or_draft(bot, collect, check, slack):
+    check.return_value = result(Bucket.APPROVED, Bucket.MERGED, Bucket.CLOSED, Bucket.DRAFT, Bucket.WAITING)
 
-    assert "1 waiting for review, 0 waiting on the author, 3 approved, closed or draft." in run("check_pr_approvals", {"scope": "channel"}, bot)
+    assert "1 waiting for review, 0 waiting on the author, 4 approved, merged, closed or draft." in run("check_pr_approvals", {"scope": "channel"}, bot)
 
 
 def test_check_pr_approvals_fetches_only_a_few_permalinks_and_counts_the_rest(bot, collect, check, slack):
@@ -232,7 +232,7 @@ def test_check_pr_approvals_fetches_only_a_few_permalinks_and_counts_the_rest(bo
 
 
 def test_check_pr_approvals_says_nothing_is_waiting_when_everything_was_checked_and_is_done(bot, collect, check, slack):
-    check.return_value = result(Bucket.APPROVED, Bucket.DONE)
+    check.return_value = result(Bucket.APPROVED, Bucket.MERGED, Bucket.CLOSED)
 
     reply = run("check_pr_approvals", {"scope": "channel"}, bot)
 
@@ -292,12 +292,12 @@ def test_check_pr_approvals_reports_threads_it_could_not_post_in(bot, collect, c
     assert "Could not post in 2 thread(s)." in run("check_pr_approvals", {"scope": "channel"}, bot)
 
 
-def test_check_pr_approvals_says_how_many_approved_messages_it_marked(bot, collect, check, slack):
+def test_check_pr_approvals_says_how_many_finished_messages_it_marked(bot, collect, check, slack):
     check.return_value = result(Bucket.APPROVED, Bucket.APPROVED, marked=2)
 
     reply = run("check_pr_approvals", {"scope": "channel"}, bot)
 
-    assert "Marked 2 approved PR message(s) with :white_check_mark:." in reply
+    assert "Marked 2 finished PR message(s) with :white_check_mark: or :x:." in reply
 
 
 def test_check_pr_approvals_does_not_mention_marking_when_nothing_was_marked(bot, collect, check, slack):

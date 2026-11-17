@@ -7,6 +7,7 @@ from slack_sdk.errors import SlackApiError, SlackRequestError
 from agent.pr_reminders import service
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.queries import GithubQueryError
+from agent.pr_reminders.status import Bucket, PrStatus
 from common.configs import AgentConfigs
 from connectors.db.schedules import Schedule
 PR1, PR2, PR3 = (PrRef("org", "repo", n) for n in (1, 2, 3))
@@ -199,15 +200,71 @@ def test_check_and_remind_does_not_react_to_a_link_typed_in_the_request(bot, sla
 
 @pytest.mark.parametrize(
     "decision, state",
-    [("REVIEW_REQUIRED", "OPEN"), ("CHANGES_REQUESTED", "OPEN"), ("APPROVED", "MERGED")],
-    ids=["waiting", "changes-requested", "merged"],
+    [("REVIEW_REQUIRED", "OPEN"), ("CHANGES_REQUESTED", "OPEN")],
+    ids=["waiting", "changes-requested"],
 )
-def test_check_and_remind_only_reacts_to_pull_requests_that_are_approved(bot, slack, github, pr_node, decision, state):
+def test_check_and_remind_does_not_react_to_pull_requests_still_open_and_unapproved(bot, slack, github, pr_node, decision, state):
     github.graphql.return_value = graphql_payload((1, pr_node(decision=decision, state=state)))
 
     service.check_and_remind(bot, [link(PR1, "1.0", reactable=True)], mentions=MENTIONS, now=NOW)
 
     slack.add_reaction.assert_not_called()
+
+
+def test_check_and_remind_does_not_react_to_a_draft(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, pr_node(is_draft=True)))
+
+    service.check_and_remind(bot, [link(PR1, "1.0", reactable=True)], mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "decision, state, emoji",
+    [
+        ("APPROVED", "OPEN", "white_check_mark"),
+        ("APPROVED", "MERGED", "white_check_mark"),
+        ("REVIEW_REQUIRED", "MERGED", "white_check_mark"),
+        ("REVIEW_REQUIRED", "CLOSED", "x"),
+    ],
+    ids=["approved", "approved-and-merged", "merged-unreviewed", "closed"],
+)
+def test_check_and_remind_reacts_with_the_emoji_that_matches_how_the_pr_finished(bot, slack, github, pr_node, decision, state, emoji):
+    github.graphql.return_value = graphql_payload((1, pr_node(decision=decision, state=state)))
+
+    result = service.check_and_remind(bot, [link(PR1, "1.0", message_ts="1.5", reactable=True)], mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_called_once_with("C1", "1.5", emoji, token=bot.bot_token)
+    assert result.marked == 1
+    slack.post_message.assert_not_called()
+
+
+def test_check_and_remind_marks_a_message_with_an_approved_and_a_merged_pr(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, approved(pr_node)), (2, pr_node(state="MERGED")))
+    links = [link(PR1, "1.0", message_ts="1.5", reactable=True, message_refs=BOTH), link(PR2, "1.0", message_ts="1.5", reactable=True, message_refs=BOTH)]
+
+    service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_called_once_with("C1", "1.5", "white_check_mark", token=bot.bot_token)
+
+
+def test_check_and_remind_marks_a_message_whose_prs_were_all_closed_once(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, pr_node(state="CLOSED")), (2, pr_node(state="CLOSED")))
+    links = [link(PR1, "1.0", message_ts="1.5", reactable=True, message_refs=BOTH), link(PR2, "1.0", message_ts="1.5", reactable=True, message_refs=BOTH)]
+
+    service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_called_once_with("C1", "1.5", "x", token=bot.bot_token)
+
+
+def test_check_and_remind_leaves_a_message_alone_when_its_prs_were_closed_and_merged(bot, slack, github, pr_node):
+    github.graphql.return_value = graphql_payload((1, pr_node(state="CLOSED")), (2, pr_node(state="MERGED")))
+    links = [link(PR1, "1.0", message_ts="1.5", reactable=True, message_refs=BOTH), link(PR2, "1.0", message_ts="1.5", reactable=True, message_refs=BOTH)]
+
+    result = service.check_and_remind(bot, links, mentions=MENTIONS, now=NOW)
+
+    slack.add_reaction.assert_not_called()
+    assert result.marked == 0
 
 
 def test_check_and_remind_does_not_mark_a_message_that_also_links_a_pr_still_waiting(bot, slack, github, pr_node):
@@ -326,11 +383,19 @@ def test_collect_links_marks_links_whose_message_already_has_the_reaction(bot, s
     slack.conversations_replies.return_value = [
         {"ts": "1.0", "text": "https://github.com/org/repo/pull/1", "reactions": [{"name": "white_check_mark", "count": 1, "users": ["U9"]}]},
         {"ts": "2.0", "text": "https://github.com/org/repo/pull/2", "reactions": [{"name": "eyes", "count": 1, "users": ["U9"]}]},
+        {"ts": "3.0", "text": "https://github.com/org/repo/pull/3", "reactions": [{"name": "x", "count": 1, "users": ["U9"]}]},
     ]
 
     scan = service.collect_links(bot, scope="thread", channel="C1", thread_ts="1.0", lookback_hours=None)
 
-    assert {found.ref.number: (found.reactable, found.reacted) for found in scan.links} == {1: (True, True), 2: (True, False)}
+    assert {found.ref.number: (found.reactable, found.reacted) for found in scan.links} == {1: (True, True), 2: (True, False), 3: (True, True)}
+
+
+def test_check_result_summarizes_its_buckets_in_bucket_order():
+    statuses = [PrStatus(link(PR1, "1.0"), bucket, "t", None) for bucket in (Bucket.MERGED, Bucket.WAITING, Bucket.MERGED)]
+
+    assert service.CheckResult(statuses).bucket_summary() == "waiting=1, merged=2"
+    assert service.CheckResult([]).bucket_summary() == ""
 
 
 def test_check_and_remind_does_not_call_github_without_links(bot, slack, github):

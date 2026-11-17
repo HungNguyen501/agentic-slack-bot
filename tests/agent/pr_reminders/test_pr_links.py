@@ -131,21 +131,22 @@ def test_links_from_messages_remembers_every_pr_a_message_links_even_when_a_late
     [
         ([{"name": "white_check_mark", "count": 1}], True),
         ([{"name": "eyes", "count": 2}, {"name": "white_check_mark", "count": 1}], True),
+        ([{"name": "x", "count": 1}], True),
         ([{"name": "eyes", "count": 2}], False),
         ([], False),
         (None, False),
     ],
-    ids=["only-check", "among-others", "other-emoji", "none", "key-missing"],
+    ids=["only-check", "among-others", "closed-emoji", "other-emoji", "none", "key-missing"],
 )
-def test_links_from_messages_notes_an_existing_approved_reaction_from_anyone(reactions, reacted):
+def test_links_from_messages_notes_an_existing_finished_reaction_from_anyone(reactions, reacted):
     message = {"ts": "1.0", "text": "https://github.com/org/repo/pull/1"} | ({"reactions": reactions} if reactions is not None else {})
 
-    [found] = links_from_messages([message], "C1", own_app_id=None, approved_reaction="white_check_mark")
+    [found] = links_from_messages([message], "C1", own_app_id=None, finished_reactions=("white_check_mark", "x"))
 
     assert found.reacted is reacted
 
 
-def test_links_from_messages_ignores_reactions_when_no_approved_reaction_is_given():
+def test_links_from_messages_ignores_reactions_when_no_finished_reactions_are_given():
     message = {"ts": "1.0", "text": "https://github.com/org/repo/pull/1", "reactions": [{"name": "white_check_mark", "count": 1}]}
 
     [found] = links_from_messages([message], "C1", own_app_id=None)
@@ -159,7 +160,7 @@ def test_links_from_messages_takes_the_reaction_state_of_the_latest_message_for_
         {"ts": "2.0", "text": "https://github.com/org/repo/pull/1"},
     ]
 
-    [found] = links_from_messages(messages, "C1", own_app_id=None, approved_reaction="white_check_mark")
+    [found] = links_from_messages(messages, "C1", own_app_id=None, finished_reactions=("white_check_mark", "x"))
 
     assert (found.message_ts, found.reacted) == ("2.0", False)
 

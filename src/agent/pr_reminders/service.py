@@ -40,6 +40,8 @@ _RECENTLY_REMINDED_SECONDS = AgentConfigs.PR_REMINDER_MIN_INTERVAL_MINUTES * 60 
 # reactions.add errors that no other message will escape: the app can't react at all.
 _STOP_REACTING_CODES = frozenset({"missing_scope", "invalid_auth", "not_authed", "account_inactive", "token_revoked"})
 
+_APPROVED_OR_MERGED = frozenset({Bucket.APPROVED, Bucket.MERGED})
+
 
 def _error_code(exc: SlackApiError) -> str | None:
     """The Slack error code of an API error, or None when Slack sent no response body."""
@@ -69,7 +71,7 @@ class ScanResult(NamedTuple):
 class CheckResult:
     """Outcome of a check. `truncated` PRs were never checked and `deferred_threads` had waiting PRs but no message this run.
 
-    `marked` counts the Slack messages that got the approved reaction in this run."""
+    `marked` counts the Slack messages that got a finished reaction (approved or closed) in this run."""
 
     statuses: list[PrStatus]
     truncated: int = 0
@@ -80,6 +82,10 @@ class CheckResult:
 
     def count(self, bucket: Bucket) -> int:
         return sum(1 for status in self.statuses if status.bucket is bucket)
+
+    def bucket_summary(self) -> str:
+        """The PR count of each bucket that has any, e.g. `waiting=2, merged=5`, for logs."""
+        return ", ".join(f"{bucket.name.lower()}={n}" for bucket in Bucket if (n := self.count(bucket)))
 
     @property
     def waiting(self) -> int:
@@ -121,7 +127,8 @@ def collect_links(
             raise ChannelReadError(code) from exc
         raise
 
-    scanned = links_from_messages(messages, channel, own_app_id=bot.app_id, approved_reaction=AgentConfigs.PR_REMINDER_APPROVED_REACTION)
+    finished_reactions = (AgentConfigs.PR_REMINDER_APPROVED_REACTION, AgentConfigs.PR_REMINDER_CLOSED_REACTION)
+    scanned = links_from_messages(messages, channel, own_app_id=bot.app_id, finished_reactions=finished_reactions)
     return ScanResult(merge_links(scanned, links_from_urls(typed_urls or [], channel, thread_ts)), truncated)
 
 
@@ -155,34 +162,50 @@ def _post(bot: BotConfig, channel: str, thread_ts: str, text: str) -> bool:
     return True
 
 
-def _messages_to_mark(statuses: list[PrStatus]) -> list[tuple[str, str]]:
-    """The (channel, message_ts) of Slack messages that should get the approved reaction, newest first.
+def _reaction_for(buckets: list[Bucket | None]) -> str | None:
+    """The reaction a message gets given the buckets of every PR it links, or None while it isn't finished.
 
-    A message qualifies when every PR it links is approved, so a message with one approved and one waiting PR isn't
-    marked as done. That is judged on all the PRs the message links (`PrLink.message_refs`), not only the ones whose
-    newest mention it is, and a PR that wasn't checked (over the limit) isn't approved. Messages that already have
-    the reaction, and links that don't have a message of their own, are left out.
+    All approved or merged is the approved reaction; all closed without merging is the closed one. A mix of the two (or
+    any PR still open, unchecked or unreadable) leaves the message alone, since no single emoji would be true of it.
     """
-    approved = {status.link.ref for status in statuses if status.bucket is Bucket.APPROVED}
-    messages: dict[tuple[str, str], None] = {}
+    if all(bucket in _APPROVED_OR_MERGED for bucket in buckets):
+        return AgentConfigs.PR_REMINDER_APPROVED_REACTION
+    if all(bucket is Bucket.CLOSED for bucket in buckets):
+        return AgentConfigs.PR_REMINDER_CLOSED_REACTION
+    return None
+
+
+def _messages_to_mark(statuses: list[PrStatus]) -> list[tuple[str, str, str]]:
+    """The (channel, message_ts, emoji) of Slack messages that should get a finished reaction, newest first.
+
+    A message qualifies when every PR it links is finished the same way (see `_reaction_for`), so a message with one
+    approved and one waiting PR isn't marked as done. That is judged on all the PRs the message links
+    (`PrLink.message_refs`), not only the ones whose newest mention it is, and a PR that wasn't checked (over the limit)
+    isn't finished. Messages that already have either reaction, and links that don't have a message of their own, are
+    left out.
+    """
+    bucket_of = {status.link.ref: status.bucket for status in statuses}
+    messages: dict[tuple[str, str], str] = {}
     for status in statuses:
         link = status.link
-        if link.reactable and not link.reacted and status.bucket is Bucket.APPROVED and all(ref in approved for ref in link.message_refs):
-            messages[(link.channel, link.message_ts)] = None
-    return list(messages)
+        if link.reactable and not link.reacted and link.message_refs:
+            emoji = _reaction_for([bucket_of.get(ref) for ref in link.message_refs])
+            if emoji:
+                messages[(link.channel, link.message_ts)] = emoji
+    return [(channel, message_ts, emoji) for (channel, message_ts), emoji in messages.items()]
 
 
-def _mark_approved(bot: BotConfig, statuses: list[PrStatus]) -> int:
-    """React to the Slack message of each approved PR, once; returns how many messages got the reaction.
+def _mark_finished(bot: BotConfig, statuses: list[PrStatus]) -> int:
+    """React to the Slack message of each finished PR, once; returns how many messages got a reaction.
 
     Never raises: a reaction is a nicety, so a failure is logged and must not stop the reminders. An `already_reacted`
     answer means someone beat us to it. A missing scope, a rate limit or a dropped connection ends the attempt for this
     run, since every remaining message would fail the same way; the next tick tries again.
     """
     marked = 0
-    for channel, message_ts in _messages_to_mark(statuses)[: AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN]:
+    for channel, message_ts, emoji in _messages_to_mark(statuses)[: AgentConfigs.PR_REMINDER_MAX_REACTIONS_PER_RUN]:
         try:
-            slack.add_reaction(channel, message_ts, AgentConfigs.PR_REMINDER_APPROVED_REACTION, token=bot.bot_token)
+            slack.add_reaction(channel, message_ts, emoji, token=bot.bot_token)
         except SlackApiError as exc:
             code = _error_code(exc)
             if code == "already_reacted":
@@ -246,14 +269,14 @@ def check_and_remind(
     last_reminded: dict[str, float] | None = None,
     now: datetime | None = None,
 ) -> CheckResult:
-    """Check the PRs on GitHub, post one reminder in each thread that has a PR waiting for review, and mark approved ones.
+    """Check the PRs on GitHub, post one reminder in each thread that has a PR waiting for review, and mark finished ones.
 
     Only the PR_REMINDER_MAX_PRS_CHECKED most recently mentioned PRs are checked (the rest are counted in
     `truncated`, so a caller can't conclude "nothing is waiting"), and only PR_REMINDER_MAX_THREADS_POSTED threads get
     a message per call (the rest are `deferred_threads`).
 
-    Approved PRs also get a reaction on their own Slack message (see `_messages_to_mark`), whether or not anything is
-    posted, so the thread shows at a glance which PRs are done.
+    Finished PRs (approved or merged, or closed without merging) also get a reaction on their own Slack message (see
+    `_messages_to_mark`), whether or not anything is posted, so the thread shows at a glance which PRs are done.
 
     `mentions` are the Slack user IDs to ping. `schedule_id` is set for a recurring reminder, so the message says how
     to stop it. `include_author_only_threads` also posts, without a ping, in threads whose only news is "changes
@@ -279,7 +302,7 @@ def check_and_remind(
             result.posted.append((thread.channel, thread.thread_ts))
         else:
             result.failed_posts += 1
-    result.marked = _mark_approved(bot, statuses)
+    result.marked = _mark_finished(bot, statuses)
     return result
 
 
@@ -348,7 +371,7 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
         bot, scan.links, mentions=list(config.mentions), schedule_id=schedule.id, last_reminded=config.last_reminded, now=now
     )
     log.info(
-        "PR reminder %s: %d PR(s) checked, %d waiting, posted in %d thread(s), marked %d approved",
-        schedule.id, len(result.statuses), result.waiting, len(result.posted), result.marked,
+        "PR reminder %s: %d PR(s) checked (%s), posted in %d thread(s), marked %d finished",
+        schedule.id, len(result.statuses), result.bucket_summary() or "none", len(result.posted), result.marked,
     )
     save_progress(schedule.id, config, result, now)
