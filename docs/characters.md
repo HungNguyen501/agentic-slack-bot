@@ -360,7 +360,7 @@ The agent skill `15_characters.md` has `always: false`. Its description is "Use 
 
 # **Database Schema**
 
-Migration `V14__characters.sql` creates one workspace-wide table, like `agent_skills` and `synced_datasets`.
+Migration `V14__characters.sql` creates one workspace-wide table, like `agent_skills` and `synced_datasets`. `V15__characters_shape_checks.sql` adds the two check constraints below. They are separate because V14 had already been applied to a database when the constraints were designed, and Flyway refuses a migration whose file changed after it ran.
 
 ```mermaid
 erDiagram
@@ -380,7 +380,7 @@ erDiagram
     }
 ```
 
-- `voices` holds the voice blocks as written. Two check constraints keep a hand-edited row readable: `voices` must be a JSON object (`jsonb_typeof(voices) = 'object'`), and `bindings` must be empty or a one-dimensional array with no null elements. `core/validation.py` stays the gate for everything else and runs on every read. It also reports a wrong shape as a problem, so a row that predates a constraint is skipped and listed as invalid and never raises.
+- `voices` holds the voice blocks as written. Two check constraints (V15) keep a hand-edited row readable: `voices` must be a JSON object (`jsonb_typeof(voices) = 'object'`), and `bindings` must be empty or a one-dimensional array with no null elements. `core/validation.py` stays the gate for everything else and runs on every read. It also reports a wrong shape as a problem, so a row that predates a constraint is skipped and listed as invalid and never raises.
 - The `_set_updated_at()` trigger maintains `updated_at`.
 - `CLAUDE.md` "Data Models" has a `characters` entry.
 
@@ -424,7 +424,7 @@ Unchanged: the receiver, the scheduler, the reminder cron rules, the PR status l
 
 # **Rollout Plan**
 
-1. Merge the migration `V14`. The DB Migrate workflow applies it to development and staging. It is safe ahead of the code because nothing reads the table yet.
+1. Merge the migrations `V14` and `V15`. The DB Migrate workflow applies them to development and staging. They are safe ahead of the code because nothing reads the table yet. V15 checks the rows already stored, so a hand-edited row that breaks a constraint stops it until the row is fixed.
 2. Add `chat:write.customize` to the dev bot's Slack app and reinstall it. Repeat for the other bots when each is ready.
 3. Ship the code with an `agentic-slack-bot-v…` tag, and sync the `15_characters` skill with `make skills-sync` (CI does it on merge). Reminders and replies keep today's voice, because the table is empty and the service falls back.
 4. Run the dev checks listed under Testing in a dev workspace.
@@ -453,7 +453,7 @@ Tests mirror `src/` under `tests/characters/{core,infra,presentation}/`, followi
   - A bot without `chat:write.customize` still posts.
   - `chat.update` leaves the sender of the placeholder unchanged, which is the reason for the delete and repost.
   - A set of five metadata questions answered with and without a persona returns the same SQL.
-- **Migration**: `tests/migrations/test_v14_characters.py` runs the real SQL and checks that `voices` that is not an object, and `bindings` with a null element or more than one dimension, are refused, and that valid and default rows are accepted. It is skipped unless `MIGRATION_TEST_DB_URL` points at a throwaway Postgres.
+- **Migration**: `tests/migrations/test_v15_characters_shape_checks.py` runs the real SQL of V14 and then V15, and checks that `voices` that is not an object, and `bindings` with a null element or more than one dimension, are refused, and that valid and default rows are accepted. It is skipped unless `MIGRATION_TEST_DB_URL` points at a throwaway Postgres.
 
 # **Discussions**
 
