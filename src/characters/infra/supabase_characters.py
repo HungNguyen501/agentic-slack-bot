@@ -8,6 +8,10 @@ from connectors.db.connection import connect
 
 _COLUMNS = "name, display_name, song, artist, enabled, bindings, icon_emoji, icon_url, persona, voices, updated_at"
 
+# The columns a character's fields are written to, in the order `_values` returns them. `name` and `updated_at` are not
+# among them: they identify the row, and each query places them itself.
+_FIELD_COLUMNS = ("display_name", "song", "artist", "enabled", "bindings", "icon_emoji", "icon_url", "persona", "voices")
+
 
 def _row_to_character(row: dict) -> Character:
     return Character(
@@ -22,6 +26,21 @@ def _row_to_character(row: dict) -> Character:
         icon_emoji=row["icon_emoji"],
         icon_url=row["icon_url"],
         updated_at=row["updated_at"],
+    )
+
+
+def _values(character: Character) -> tuple:
+    """The character's fields as query parameters, in `_FIELD_COLUMNS` order."""
+    return (
+        character.display_name,
+        character.song,
+        character.artist,
+        character.enabled,
+        list(character.bindings),
+        character.icon_emoji,
+        character.icon_url,
+        character.persona,
+        Jsonb(dict(character.voices)),
     )
 
 
@@ -59,27 +78,12 @@ class SupabaseCharacterRepository:
         Raises:
             CharacterStorageError: the table couldn't be written.
         """
+        assignments = ", ".join(f"{column} = %s" for column in _FIELD_COLUMNS)
         try:
             with connect() as conn, conn.cursor() as cur:
                 cur.execute(
-                    """
-                    UPDATE characters SET display_name = %s, song = %s, artist = %s, enabled = %s, bindings = %s,
-                        icon_emoji = %s, icon_url = %s, persona = %s, voices = %s
-                    WHERE name = %s AND updated_at = %s
-                    """,
-                    (
-                        character.display_name,
-                        character.song,
-                        character.artist,
-                        character.enabled,
-                        list(character.bindings),
-                        character.icon_emoji,
-                        character.icon_url,
-                        character.persona,
-                        Jsonb(dict(character.voices)),
-                        character.name,
-                        character.updated_at,
-                    ),
+                    f"UPDATE characters SET {assignments} WHERE name = %s AND updated_at = %s",
+                    (*_values(character), character.name, character.updated_at),
                 )
                 return cur.rowcount > 0
         except psycopg.Error as exc:
@@ -104,32 +108,16 @@ class SupabaseCharacterRepository:
         Raises:
             CharacterStorageError: the table couldn't be written, so nothing was added.
         """
+        columns = ", ".join(("name", *_FIELD_COLUMNS))
+        placeholders = ", ".join("%s" for _ in range(len(_FIELD_COLUMNS) + 1))
+        insert = f"INSERT INTO characters ({columns}) VALUES ({placeholders}) ON CONFLICT (name) DO NOTHING RETURNING name"
         added = []
         try:
             with connect() as conn, conn.cursor() as cur:
                 # One INSERT per character could cross psycopg's auto-prepare threshold, which a transaction-mode pooler can reject.
                 conn.prepare_threshold = None
                 for character in characters:
-                    cur.execute(
-                        """
-                        INSERT INTO characters (name, display_name, song, artist, enabled, bindings, icon_emoji, icon_url, persona, voices)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (name) DO NOTHING
-                        RETURNING name
-                        """,
-                        (
-                            character.name,
-                            character.display_name,
-                            character.song,
-                            character.artist,
-                            character.enabled,
-                            list(character.bindings),
-                            character.icon_emoji,
-                            character.icon_url,
-                            character.persona,
-                            Jsonb(dict(character.voices)),
-                        ),
-                    )
+                    cur.execute(insert, (character.name, *_values(character)))
                     if cur.fetchone() is not None:
                         added.append(character.name)
         except psycopg.Error as exc:

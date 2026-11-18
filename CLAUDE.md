@@ -168,7 +168,7 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `characters` table** — voices the bot speaks in, shared across all bots (see `.claude/rules/architecture.md` "Characters"):
 - `name text` (PK, slug), `display_name` (Slack sender name), `song`, `artist`, `enabled`, `bindings text[]` (`feature:<name>` / `skill:<name>`), `icon_emoji`, `icon_url` (nullable), `persona` (appended to the system prompt of an agent reply), `voices jsonb` (one block per feature, e.g. `{"pr_reminder": {"headers": [...]}}`)
-- Filled from the seed files when a worker starts (insert-only, `worker/seed_characters.py`); after that added, changed and removed through the agent's character tools or in Supabase. Every read re-validates a row, so an invalid one is skipped, not fatal.
+- Filled from the seed files when a worker starts (insert-only, `worker/seed_characters.py`); after that added, changed and removed through the agent's character tools or in Supabase. Every read re-validates a row, so an invalid one is skipped, not fatal; check constraints keep `voices` a JSON object and `bindings` a flat array without nulls.
 
 Bot is resolved at runtime: receiver uses `api_app_id` → `get_by_app_id()`; worker uses stored `bot_id` → `get_by_id()`.
 

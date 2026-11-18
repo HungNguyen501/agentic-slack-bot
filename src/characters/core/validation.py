@@ -21,6 +21,10 @@ MAX_ICON_URL_LENGTH = 500
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _EMOJI_RE = re.compile(r":[a-z0-9_+'-]{1,60}:")
 _BROADCAST_RE = re.compile(r"@(channel|here|everyone)\b", re.IGNORECASE)
+# Slack turns a URL into a live link even without angle brackets, so a template can't carry one with a scheme, `www.` or
+# `mailto:`. A bare domain such as `example.com` is not caught: telling it from ordinary text would need a list of top-level
+# domains, and the writers of this table are trusted admins.
+_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://|\bwww\.|\bmailto:", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -45,9 +49,8 @@ class VoiceSpec:
     mandatory: frozenset[str] = frozenset()
 
 
-def _template_problems(template: Any, spec: TemplateField) -> list[str]:
-    if not isinstance(template, str) or not template.strip():
-        return ["must be a non-empty text"]
+def _text_problems(template: str) -> list[str]:
+    """The rules about the text itself: its length, and nothing that makes Slack mention or link."""
     problems = []
     if len(template) > MAX_TEMPLATE_LENGTH:
         problems.append(f"is {len(template)} characters, over the limit of {MAX_TEMPLATE_LENGTH}")
@@ -55,11 +58,19 @@ def _template_problems(template: Any, spec: TemplateField) -> list[str]:
         problems.append("must not contain < or >")
     if _BROADCAST_RE.search(template):
         problems.append("must not contain @channel, @here or @everyone")
+    if _URL_RE.search(template):
+        problems.append("must not contain a link (http://, https://, any scheme://, www. or mailto:)")
+    return problems
+
+
+def _placeholder_problems(template: str, spec: TemplateField) -> list[str]:
+    """The rules about the `{placeholders}`: a malformed template, plain names only, and the field's allowed and required set."""
     try:
         parsed = list(string.Formatter().parse(template))
     except ValueError as exc:
-        return [*problems, f"is not a valid template ({exc})"]
+        return [f"is not a valid template ({exc})"]
 
+    problems = []
     names = set()
     for _, name, format_spec, conversion in parsed:
         if name is None:
@@ -75,6 +86,12 @@ def _template_problems(template: Any, spec: TemplateField) -> list[str]:
     if spec.one_of and not names & spec.one_of:
         problems.append("needs one of " + ", ".join(f"{{{name}}}" for name in sorted(spec.one_of)))
     return problems
+
+
+def _template_problems(template: Any, spec: TemplateField) -> list[str]:
+    if not isinstance(template, str) or not template.strip():
+        return ["must be a non-empty text"]
+    return _text_problems(template) + _placeholder_problems(template, spec)
 
 
 def _voice_problems(feature: str, block: Any, spec: VoiceSpec) -> list[str]:
@@ -110,10 +127,29 @@ def _identity_problems(character: Character) -> list[str]:
     return problems
 
 
+def _binding_problems(character: Character, voices: Mapping[str, Any], specs: Mapping[str, VoiceSpec]) -> list[str]:
+    problems = []
+    for binding in character.bindings:
+        if not isinstance(binding, str):
+            problems.append(f"bindings: {binding!r} must be a text")
+        elif binding.startswith(FEATURE_PREFIX):
+            feature = binding.removeprefix(FEATURE_PREFIX)
+            if feature not in specs:
+                problems.append(f"bindings: {binding} is not a known feature ({', '.join(sorted(specs)) or 'none'})")
+            elif feature not in voices:
+                problems.append(f"bindings: {binding} needs a voices.{feature} block")
+        elif not binding.startswith(SKILL_PREFIX) or binding == SKILL_PREFIX:
+            problems.append(f"bindings: {binding!r} must be feature:<name> or skill:<name>")
+    if any(isinstance(b, str) and b.startswith(SKILL_PREFIX) for b in character.bindings) and not character.persona.strip():
+        problems.append("persona: is required by a skill binding")
+    return problems
+
+
 def character_problems(character: Character, specs: Mapping[str, VoiceSpec]) -> list[str]:
     """Everything wrong with a character, one line per problem; empty when the bot can use it.
 
-    `specs` maps each known feature to the voice fields it accepts.
+    `specs` maps each known feature to the voice fields it accepts. A row edited by hand can hold any JSON in `voices` and
+    any elements in `bindings`, so neither is trusted: a wrong shape is a problem here, never an exception.
     """
     problems = []
     if not _NAME_RE.fullmatch(character.name):
@@ -122,19 +158,12 @@ def character_problems(character: Character, specs: Mapping[str, VoiceSpec]) -> 
     if len(character.persona) > MAX_PERSONA_LENGTH:
         problems.append(f"persona: is {len(character.persona)} characters, over the limit of {MAX_PERSONA_LENGTH}")
 
-    for binding in character.bindings:
-        if binding.startswith(FEATURE_PREFIX):
-            feature = binding.removeprefix(FEATURE_PREFIX)
-            if feature not in specs:
-                problems.append(f"bindings: {binding} is not a known feature ({', '.join(sorted(specs)) or 'none'})")
-            elif feature not in character.voices:
-                problems.append(f"bindings: {binding} needs a voices.{feature} block")
-        elif not binding.startswith(SKILL_PREFIX) or binding == SKILL_PREFIX:
-            problems.append(f"bindings: {binding!r} must be feature:<name> or skill:<name>")
-    if any(b.startswith(SKILL_PREFIX) for b in character.bindings) and not character.persona.strip():
-        problems.append("persona: is required by a skill binding")
-
-    for feature, block in character.voices.items():
+    voices = character.voices
+    if not isinstance(voices, Mapping):
+        problems.append("voices: must be an object with one block per feature")
+        voices = {}
+    problems += _binding_problems(character, voices, specs)
+    for feature, block in voices.items():
         if feature in specs:
             problems += _voice_problems(feature, block, specs[feature])
         else:

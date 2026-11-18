@@ -31,6 +31,13 @@ def test_a_character_with_only_a_skill_binding_and_a_persona_is_valid():
         ("{who} {subject} <!channel>", "must not contain < or >"),
         ("{who} {subject} <@U123456789>", "must not contain < or >"),
         ("{who} {subject} <https://x.test|link>", "must not contain < or >"),
+        ("{who} {subject} http://example.com", "must not contain a link"),
+        ("{who} {subject} https://example.com/pull/1", "must not contain a link"),
+        ("{who} {subject} HTTPS://EXAMPLE.COM", "must not contain a link"),
+        ("{who} {subject} www.example.com", "must not contain a link"),
+        ("{who} {subject} see (www.example.com)", "must not contain a link"),
+        ("{who} {subject} ftp://files.example.com", "must not contain a link"),
+        ("{who} {subject} mailto:someone@example.com", "must not contain a link"),
         ("{who} {subject} @channel", "@channel, @here or @everyone"),
         ("{who} {subject} @Here please", "@channel, @here or @everyone"),
         ("{who} {subject} @everyone", "@channel, @here or @everyone"),
@@ -175,3 +182,43 @@ def test_a_spec_without_features_accepts_a_character_bound_only_to_skills():
 
 def test_template_field_defaults_allow_no_placeholders():
     assert TemplateField().placeholders == frozenset()
+
+
+# --- rows edited by hand ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("voices", [[1], ["pr_reminder"], "pr_reminder", 5, 1.5, True], ids=["list", "list-of-name", "text", "number", "float", "bool"])
+def test_voices_that_are_not_an_object_are_a_problem_not_an_exception(voices):
+    found = problems(bindings=("skill:core",), voices=voices)
+
+    assert found == ["voices: must be an object with one block per feature"]
+
+
+def test_a_feature_binding_with_voices_that_are_not_an_object_reports_both_problems():
+    found = problems(voices=[1])
+
+    assert "voices: must be an object with one block per feature" in found
+    assert "bindings: feature:pr_reminder needs a voices.pr_reminder block" in found
+
+
+@pytest.mark.parametrize("element", [None, 5, ["skill:core"], {"a": 1}], ids=["null", "number", "list", "object"])
+def test_a_binding_that_is_not_a_text_is_a_problem_not_an_exception(element):
+    found = problems(bindings=("skill:core", element), voices={})
+
+    assert any("must be a text" in problem for problem in found)
+
+
+def test_a_null_binding_does_not_hide_the_other_problems_of_the_row():
+    found = problems(bindings=(None, "skill:nope-prefix"), voices={}, persona="")
+
+    assert any("must be a text" in problem for problem in found)
+    assert "persona: is required by a skill binding" in found
+
+
+@pytest.mark.parametrize("text", ["github.com", "see example.com/pull/1", "TP.HCM", "v1.2.3"])
+def test_a_bare_domain_is_not_caught_because_it_cannot_be_told_from_ordinary_text(text):
+    assert problems(voices={"pr_reminder": {"headers": [f"{{who}} {{subject}} {text}"]}}) == []
+
+
+def test_a_url_in_the_persona_is_not_a_template_problem():
+    assert problems(bindings=("skill:core",), voices={}, persona="See https://example.com for the style guide.") == []

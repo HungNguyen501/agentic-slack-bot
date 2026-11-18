@@ -51,6 +51,14 @@ def test_list_marks_disabled_and_invalid_characters_and_gives_the_reasons(servic
     assert "no such skill: ghost" in reply
 
 
+def test_list_shows_a_row_with_a_malformed_binding_instead_of_failing(service):
+    service.list_characters.return_value = [overview("bad", problems=("bindings: None must be a text",), bindings=("skill:core", None))]
+
+    reply = tools.dispatch_character_tool("list_characters", {}, service)
+
+    assert "`bad` [INVALID]" in reply and "skill:core, None" in reply
+
+
 def test_list_shows_a_character_without_bindings(service):
     service.list_characters.return_value = [overview(bindings=())]
 

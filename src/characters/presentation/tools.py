@@ -22,7 +22,7 @@ def _describe(overview: CharacterOverview) -> str:
     source = " by ".join(part for part in (character.song, character.artist) if part)
     tags = ("" if character.enabled else " [DISABLED]") + (" [INVALID]" if overview.problems else "")
     updated = f", updated {character.updated_at.astimezone(UTC):%Y-%m-%d %H:%M} UTC" if character.updated_at else ""
-    lines = [f"- `{character.name}`{tags} ({source or character.display_name}): bound to {', '.join(character.bindings) or 'nothing'}{updated}"]
+    lines = [f"- `{character.name}`{tags} ({source or character.display_name}): bound to {', '.join(map(str, character.bindings)) or 'nothing'}{updated}"]
     lines += [f"  problem: {problem}" for problem in overview.problems]
     if overview.unknown_skills:
         lines.append(f"  no such skill: {', '.join(overview.unknown_skills)}")
@@ -102,6 +102,24 @@ def _problem_list(exc: InvalidCharacterError) -> str:
     return "\n".join(f"- {problem}" for problem in exc.problems)
 
 
+def _build_character(
+    name: str, display_name: str, bindings: tuple[str, ...], texts: dict[str, str | None], voices: dict, enabled: bool
+) -> Character:
+    """The Character for arguments that already passed the shape checks; a missing optional text is empty, a missing icon is None."""
+    return Character(
+        name=name,
+        display_name=display_name,
+        bindings=bindings,
+        persona=texts["persona"] or "",
+        voices=voices,
+        song=texts["song"] or "",
+        artist=texts["artist"] or "",
+        enabled=enabled,
+        icon_emoji=texts["icon_emoji"] or None,
+        icon_url=texts["icon_url"] or None,
+    )
+
+
 def _parse_character(args: dict) -> tuple[Character | None, list[str]]:
     """Build a Character from the tool arguments, or say what is wrong with their shape. Business rules are the service's."""
     problems = []
@@ -119,20 +137,7 @@ def _parse_character(args: dict) -> tuple[Character | None, list[str]]:
     enabled = _flag(args, "enabled", True, problems)
     if problems:
         return None, problems
-
-    character = Character(
-        name=name,
-        display_name=display_name,
-        bindings=bindings or (),
-        persona=texts["persona"] or "",
-        voices=voices,
-        song=texts["song"] or "",
-        artist=texts["artist"] or "",
-        enabled=enabled,
-        icon_emoji=texts["icon_emoji"] or None,
-        icon_url=texts["icon_url"] or None,
-    )
-    return character, []
+    return _build_character(name, display_name, bindings or (), texts, voices, enabled), []
 
 
 def _parse_changes(args: dict, problems: list[str]) -> CharacterChanges:

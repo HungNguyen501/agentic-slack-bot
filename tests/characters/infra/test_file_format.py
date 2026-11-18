@@ -84,3 +84,40 @@ def test_a_file_with_windows_line_endings_is_read_like_any_other():
     crlf = FULL.replace("\n", "\r\n")
 
     assert parse_character_file("a.md", crlf) == parse_character_file("a.md", FULL)
+
+
+@pytest.mark.parametrize("song", ["hello---", "---hello", "a --- b", "x---y---z"])
+def test_a_value_that_contains_dashes_is_not_taken_for_the_closing_fence(song):
+    character = parse_character_file("a.md", f"---\nname: a\nsong: {song}\nbindings:\n  - skill:core\n---\nBody\n")
+
+    assert character.song == song
+    assert character.bindings == ("skill:core",)
+    assert character.persona == "Body"
+
+
+def test_an_indented_dash_line_inside_a_block_value_is_not_a_fence():
+    character = parse_character_file("a.md", "---\nname: a\nsong: |\n  first\n  ---\n  last\n---\nBody\n")
+
+    assert character.song == "first\n---\nlast"
+    assert character.persona == "Body"
+
+
+def test_a_fence_may_have_trailing_spaces():
+    character = parse_character_file("a.md", "---  \nname: a\n---\t\nBody\n")
+
+    assert (character.name, character.persona) == ("a", "Body")
+
+
+def test_a_file_that_never_closes_its_frontmatter_is_refused():
+    with pytest.raises(InvalidSeedError, match="must start with a --- frontmatter block"):
+        parse_character_file("a.md", "---\nname: a\nsong: hello---\n")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "\n", "---", "name: a", "\n---\nname: a\n---\n", "  ---\nname: a\n---\n", "\ufeff---\nname: a\n---\n"],
+    ids=["empty", "newline", "only-a-fence", "no-fence", "leading-blank-line", "indented-fence", "byte-order-mark"],
+)
+def test_text_without_a_frontmatter_block_is_refused(text):
+    with pytest.raises(InvalidSeedError, match="must start with a --- frontmatter block"):
+        parse_character_file("a.md", text)

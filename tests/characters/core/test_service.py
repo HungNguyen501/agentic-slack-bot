@@ -279,6 +279,50 @@ def test_a_pick_with_an_empty_list_in_hand_means_the_default_voice_without_readi
     assert repository.reads == reads
 
 
+# --- rows edited by hand ---------------------------------------------------------------------------
+
+MALFORMED = [
+    pytest.param({"voices": [1]}, id="voices-array"),
+    pytest.param({"voices": "x"}, id="voices-text"),
+    pytest.param({"voices": 5}, id="voices-number"),
+    pytest.param({"bindings": ("skill:core", None)}, id="binding-null"),
+    pytest.param({"bindings": (5,)}, id="binding-number"),
+]
+
+
+def malformed(overrides):
+    """A skill-bound row with `overrides` applied, which is how a hand edit leaves it malformed."""
+    return make_character("bad", **{"voices": {}, "bindings": ("skill:core",)} | overrides)
+
+
+@pytest.mark.parametrize("overrides", MALFORMED)
+def test_a_malformed_row_is_skipped_and_the_valid_ones_are_still_picked(service, repository, overrides, caplog):
+    repository.characters = [malformed(overrides), make_character("good")]
+
+    with caplog.at_level(logging.WARNING, logger="characters"):
+        picked = {service.character_for_feature("pr_reminder", CH, f"{n}.0").name for n in range(10)}
+
+    assert picked == {"good"}
+    assert "Skipping character bad" in caplog.text
+
+
+@pytest.mark.parametrize("overrides", MALFORMED)
+def test_a_malformed_row_does_not_stop_a_reply_from_getting_a_character(service, repository, overrides):
+    repository.characters = [malformed(overrides), skill_character("good", "core")]
+
+    assert service.character_for_skills([], ["core"], CH, TS).name == "good"
+
+
+@pytest.mark.parametrize("overrides", MALFORMED)
+def test_list_characters_reports_a_malformed_row_as_invalid_instead_of_failing(service, repository, overrides):
+    repository.characters = [malformed(overrides), make_character("good")]
+
+    overviews = {o.character.name: o for o in service.list_characters()}
+
+    assert overviews["bad"].problems
+    assert overviews["good"].problems == ()
+
+
 # --- list_characters -------------------------------------------------------------------------------
 
 

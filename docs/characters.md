@@ -86,7 +86,7 @@ The code for both phases is written and tested. It is not deployed.
 
 Rows can change in Supabase without passing through a sync, so the sync is not a gate. The core validates a row each time it loads one. A row that fails is skipped, a warning names the row and the problem, and the pick continues with the other characters. `list_characters` marks the row as invalid and gives the reason.
 
-- A template is refused when it uses a placeholder outside its field's list, uses an attribute, index or format in a placeholder (`{who.x}`, `{who[0]}`, `{who!r}`), contains `<` or `>`, contains `@channel`, `@here` or `@everyone`, or is longer than 300 characters. The `<` and `>` rule keeps the existing invariant that the only live mentions in a reminder are the user IDs that passed `limits.parse_mentions`. A row cannot add a mention, a user group, a channel link or a URL.
+- A template is refused when it uses a placeholder outside its field's list, uses an attribute, index or format in a placeholder (`{who.x}`, `{who[0]}`, `{who!r}`), contains `<` or `>`, contains `@channel`, `@here` or `@everyone`, contains a link with a scheme, `www.` or `mailto:` (`http://`, `https://`, any `scheme://`), or is longer than 300 characters. These rules keep the existing invariant that the only live mentions in a reminder are the user IDs that passed `limits.parse_mentions`. A row cannot add a mention, a user group or a channel link, because `<` and `>` block Slack's link syntax. It cannot add a link with a scheme, `www.` or `mailto:`, which Slack turns into a live link by itself. A bare domain such as `example.com` is not caught: telling it from ordinary text would need a list of top-level domains, and the writers of this table are trusted admins.
 - `name` is a lower-case slug of at most 64 characters. `display_name` has at most 80 characters and contains no `<` or `>`. `icon_emoji` has the form `:name:`. `icon_url` is an `https` URL.
 - `persona` has at most 1,500 characters.
 - A binding is `feature:<name>` or `skill:<name>`. The known features are `pr_reminder`. A binding to a skill that is not in `agent_skills` never matches, and `list_characters` flags it.
@@ -380,7 +380,7 @@ erDiagram
     }
 ```
 
-- `voices` holds the voice blocks as written. The database does not constrain them, so `core/validation.py` is the only gate and it runs on every read.
+- `voices` holds the voice blocks as written. Two check constraints keep a hand-edited row readable: `voices` must be a JSON object (`jsonb_typeof(voices) = 'object'`), and `bindings` must be empty or a one-dimensional array with no null elements. `core/validation.py` stays the gate for everything else and runs on every read. It also reports a wrong shape as a problem, so a row that predates a constraint is skipped and listed as invalid and never raises.
 - The `_set_updated_at()` trigger maintains `updated_at`.
 - `CLAUDE.md` "Data Models" has a `characters` entry.
 
@@ -453,7 +453,7 @@ Tests mirror `src/` under `tests/characters/{core,infra,presentation}/`, followi
   - A bot without `chat:write.customize` still posts.
   - `chat.update` leaves the sender of the placeholder unchanged, which is the reason for the delete and repost.
   - A set of five metadata questions answered with and without a persona returns the same SQL.
-- **Migration**: `V14` only creates a table, so it needs no real-SQL test.
+- **Migration**: `tests/migrations/test_v14_characters.py` runs the real SQL and checks that `voices` that is not an object, and `bindings` with a null element or more than one dimension, are refused, and that valid and default rows are accepted. It is skipped unless `MIGRATION_TEST_DB_URL` points at a throwaway Postgres.
 
 # **Discussions**
 

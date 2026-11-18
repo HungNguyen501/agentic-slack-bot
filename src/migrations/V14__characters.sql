@@ -23,7 +23,10 @@ create table if not exists public.characters (
     voices jsonb not null default '{}'::jsonb,
     created_at timestamp with time zone not null default now(),
     updated_at timestamp with time zone not null default now(),
-    constraint characters_pkey primary key (name)
+    constraint characters_pkey primary key (name),
+    -- not null only guards the column: a row edited by hand must still hold an object and a flat array of non-null texts.
+    constraint characters_bindings_check check (cardinality(bindings) = 0 or (array_ndims(bindings) = 1 and array_position(bindings, null) is null)),
+    constraint characters_voices_check check (jsonb_typeof(voices) = 'object')
 );
 
 create trigger characters_updated_at before

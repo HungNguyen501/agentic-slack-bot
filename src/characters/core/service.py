@@ -132,7 +132,7 @@ class CharacterService:
         return tuple(
             binding.removeprefix(SKILL_PREFIX)
             for binding in character.bindings
-            if binding.startswith(SKILL_PREFIX) and binding.removeprefix(SKILL_PREFIX) not in known
+            if isinstance(binding, str) and binding.startswith(SKILL_PREFIX) and binding.removeprefix(SKILL_PREFIX) not in known
         )
 
     def list_characters(self) -> list[CharacterOverview]:
