@@ -148,9 +148,10 @@ A new tool in a new `pr_reminder` category (`AgentTool.category`), added to `Age
 
 | Argument | Meaning |
 | --- | --- |
-| `scope` | `thread` (the thread the request is in, plus any links in the request) or `channel` (top-level messages in this channel within the lookback). |
+| `scope` | `thread` (every PR link in the thread the request is in) or `channel` (top-level messages in this channel within the lookback). Ignored for scanning when `pr_urls` is given. |
 | `lookback_hours` | Channel scope only. Default 72, maximum 336. |
-| `pr_urls` | PR links typed in the request itself. |
+| `remind_all` | Thread scope only. `true` when the user said to remind every PR of the thread, or answered "all" when asked which. Without it, a thread that links several PRs is not reminded: the tool lists the PRs and the agent asks which one(s). |
+| `pr_urls` | PR links typed in the request itself. When given, only these PRs are checked and nothing is read from Slack, so a request about one PR does not also remind the other PRs of the thread it was made in. They are reminded in the request's own thread. |
 
 The tool posts the reminders itself, one message per thread, so the mentions and the links are exactly as rendered by code and not paraphrased by the LLM. It returns a short summary to the agent (for example `Reminded in 3 threads: <permalinks>`, or "all 4 PRs are approved or closed"), which the agent relays as the confirmation in the request thread. No change to the agent loop is needed, because the result is always non-empty text.
 
@@ -168,7 +169,7 @@ A new skill, `13_pr_reminders.md` (`always: false`, description starting "Use wh
 
 ## Collecting PR Links
 
-- **Thread scope.** `conversations.replies` on the thread. In a top-level message there is nothing to scan, so only `pr_urls` from the request are checked.
+- **Thread scope.** `conversations.replies` on the thread, used when the request names no PR. If it finds more than one PR and `remind_all` is not set, nothing is checked or posted: the tool replies with the PRs (at most `PR_REMINDER_MAX_CHOICES_LISTED`, then a count) and the agent asks which one(s) to remind, then calls again with `pr_urls` or `remind_all`. One PR is reminded without asking. A recurring thread-scope reminder is not affected. A request that types PR links (`pr_urls`) checks only those links, whatever the scope.
 - **Channel scope.** `conversations.history` with `oldest = now - lookback_hours`, paginated, up to 1,000 messages. Top-level messages only in v1, which the tool description says. If the window holds more messages than the cap, the scan is flagged as truncated.
 - **What counts as a link.** A regex for `https://github.com/<owner>/<repo>/pull/<number>` run over message `text`, and also over attachments (`title_link`, `from_url`, `original_url`) and `blocks`. This matters because the GitHub Slack app posts PR notifications as attachments whose `text` can be empty. Slack's `<url|label>` wrapping is handled.
 - **Own messages are skipped.** The bot's earlier reminders contain PR links, so messages from the bot are ignored; otherwise its own reminders would keep PRs "alive" in the window.
@@ -208,7 +209,7 @@ Every reminder message that lists a PR waiting for review starts with the mentio
 
 ## Reminder Message
 
-Waiting PRs are grouped by target thread, and each thread gets one message, rendered by `agent/pr_reminders/message.py` and split with `slack.split_message`. The wording is not in that module: every phrase, the four rotating headers and the age thresholds that pick a quip live in the `ReminderMessages` config class in `common/configs.py`, so changing the tone or translating the bot means editing that class only, and `message.py` just picks and fills in the templates. The thread already shows the link, so the message stays short. It is written in Vietnamese, in a cheerful, comedic voice (a light nod to Vietnamese stage comedy, with common catchphrases, no quotes from anyone and no names), and it matches the bot's `:pepe-pray:` thinking animation:
+Waiting PRs are grouped by target thread, and each thread gets one message, rendered by `agent/pr_reminders/message.py` and split with `slack.split_message`. The default wording is `DEFAULT_VOICE` in that module (the four rotating headers, the quips, the footer and the closing notes), and a character can replace any of it (see [characters.md](characters.md)). The age units, the waiting line and the age thresholds that pick a quip are the `ReminderMessages` config class in `common/configs.py`. The thread already shows the link, so the message stays short. It is written in Vietnamese, in a cheerful, comedic voice (a light nod to Vietnamese stage comedy, with common catchphrases, no quotes from anyone and no names), and it matches the bot's `:pepe-pray:` thinking animation:
 
 ```
 <@U0123ABC> <@U0456DEF> :eyes: Ủa alo, 3 cái PR này đang chờ review nè bà con ơi! :pepe-pray:
@@ -250,10 +251,10 @@ When nothing is waiting, the one-off tool says so in its summary ("Nothing is wa
 - **`schedules/infra/supabase_schedules.py`** (was `connectors/db/schedules.py`): `Schedule` gains `kind`, `status` and `config`. `get_schedules()` takes optional `kind` and `active_only` arguments, and there are helpers to add a reminder, set `status`, and merge keys into `config`.
 - **Existing schedule tools.** `update_schedule` is restricted to `kind = 'question'`, because it could otherwise change a reminder's cron past the minimum-interval check. `remove_schedule` and `list_schedules` work on both kinds, since removing by id and seeing the id are exactly what an admin needs. Behaviour for question schedules does not change.
 - **`scheduler/app.py`:** load only `active` rows and branch on `kind`.
-- **`common/configs.py`:** the tool entries, `"pr_reminder"` in `AgentTool.category`, the limits as `AgentConfigs` constants, the `ReminderConfig` class (builds and validates the `config` JSON), and the `ReminderMessages` class (the wording of the reminder messages).
+- **`common/configs.py`:** the tool entries, `"pr_reminder"` in `AgentTool.category`, the limits as `AgentConfigs` constants, the `ReminderConfig` class (builds and validates the `config` JSON), and the `ReminderMessages` class (the age units, the waiting line, the quip thresholds and the header rotation; the rest of the wording is `DEFAULT_VOICE` in `message.py`).
 - **`agent/dispatch.py`:** one branch for the `pr_reminder` category, and the `schedule`-category branch passes the request's channel and thread to `schedule_pr_reminder`.
 - **`src/worker/tasks.py`:** the `process_pr_reminder` task.
-- **New `src/agent/pr_reminders/`:** `pr_links.py`, `queries.py`, `status.py`, `message.py` (fills in the templates of `ReminderMessages`), `limits.py` (all pure; `limits.py` has the cron minimum-interval, expiry, cron-window, timezone and mention-parsing checks), `service.py` (collect, check, post), `tools.py` (the two tool handlers).
+- **New `src/agent/pr_reminders/`:** `pr_links.py`, `queries.py`, `status.py`, `message.py` (holds `DEFAULT_VOICE` and fills in the templates), `limits.py` (all pure; `limits.py` has the cron minimum-interval, expiry, cron-window, timezone and mention-parsing checks), `service.py` (collect, check, post), `tools.py` (the two tool handlers).
 - **New skill file** `13_pr_reminders.md`.
 - **Unchanged:** the receiver, the agent loop and `process_scheduled_question`.
 

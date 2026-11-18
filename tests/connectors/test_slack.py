@@ -1,6 +1,8 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
+from redis import Redis, RedisError
+from slack_sdk.errors import SlackApiError
 
 from connectors import slack
 from connectors.slack import split_message
@@ -169,3 +171,160 @@ def test_add_reaction_reacts_to_the_message_as_the_bot():
 
     client.assert_called_once_with(token="xoxb-1")
     client.return_value.reactions_add.assert_called_once_with(channel="C1", timestamp="1.5", name="white_check_mark")
+
+
+@pytest.fixture(autouse=True)
+def redis():
+    """A Redis that remembers keys, standing in for the shared client the connector keeps its 'no customize scope' marks in."""
+    keys = {}
+    client = create_autospec(Redis, instance=True)
+    client.exists.side_effect = lambda key: int(key in keys)
+    client.set.side_effect = lambda key, value, ex=None: keys.__setitem__(key, ex)
+    client.marks = keys
+    with patch("connectors.slack.redis_client", client):
+        yield client
+
+
+def slack_error(code):
+    response = MagicMock()
+    response.get.return_value = code
+    return SlackApiError("boom", response)
+
+
+def test_post_message_without_an_identity_sends_none_of_the_customize_arguments():
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        client.return_value.chat_postMessage.return_value = {"ts": "9.9"}
+
+        assert slack.post_message("C1", "hi", "1.0", token="xoxb-1") == "9.9"
+
+    client.return_value.chat_postMessage.assert_called_once_with(channel="C1", text="hi", thread_ts="1.0", blocks=None)
+
+
+def test_post_message_sends_the_name_and_icon_it_is_given():
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        client.return_value.chat_postMessage.return_value = {"ts": "9.9"}
+
+        slack.post_message("C1", "hi", "1.0", token="xoxb-1", username="Em Gái Mưa", icon_emoji=":cloud_with_rain:")
+
+    client.return_value.chat_postMessage.assert_called_once_with(
+        channel="C1", text="hi", thread_ts="1.0", blocks=None, username="Em Gái Mưa", icon_emoji=":cloud_with_rain:"
+    )
+
+
+def test_post_message_posts_as_the_bot_when_the_app_lacks_the_customize_scope():
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        post = client.return_value.chat_postMessage
+        post.side_effect = [slack_error("missing_scope"), {"ts": "9.9"}]
+
+        assert slack.post_message("C1", "hi", "1.0", token="xoxb-1", username="Anna") == "9.9"
+
+    assert post.call_args_list[1].kwargs == {"channel": "C1", "text": "hi", "thread_ts": "1.0", "blocks": None}
+
+
+@pytest.mark.parametrize("identity", [{}, {"username": "Anna"}], ids=["no-identity", "identity"])
+def test_post_message_raises_other_slack_errors(identity):
+    with patch("connectors.slack.WebClient", autospec=True) as client, pytest.raises(SlackApiError):
+        client.return_value.chat_postMessage.side_effect = slack_error("channel_not_found" if identity else "missing_scope")
+        slack.post_message("C1", "hi", token="xoxb-1", **identity)
+
+
+def test_post_message_does_not_retry_a_missing_scope_when_no_identity_was_asked_for():
+    with patch("connectors.slack.WebClient", autospec=True) as client, pytest.raises(SlackApiError):
+        client.return_value.chat_postMessage.side_effect = slack_error("missing_scope")
+        slack.post_message("C1", "hi", token="xoxb-1")
+
+    client.return_value.chat_postMessage.assert_called_once()
+
+
+def test_after_a_missing_scope_the_same_app_posts_as_the_bot_without_asking_again():
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        post = client.return_value.chat_postMessage
+        post.side_effect = [slack_error("missing_scope"), {"ts": "1.1"}, {"ts": "1.2"}, {"ts": "1.3"}]
+
+        slack.post_message("C1", "one", token="xoxb-1", username="Anna")
+        slack.post_message("C1", "two", token="xoxb-1", username="Anna", icon_emoji=":star:")
+        slack.post_message("C1", "three", token="xoxb-1", username="Anna")
+
+    assert post.call_count == 4  # one refused attempt and its retry, then one call per message
+    assert all("username" not in call.kwargs and "icon_emoji" not in call.kwargs for call in post.call_args_list[1:])
+
+
+def test_a_missing_scope_is_logged_once_per_app(caplog):
+    with patch("connectors.slack.WebClient", autospec=True) as client, caplog.at_level("WARNING", logger="connectors.slack"):
+        client.return_value.chat_postMessage.side_effect = [slack_error("missing_scope"), {"ts": "1.1"}, {"ts": "1.2"}]
+
+        slack.post_message("C1", "one", token="xoxb-1", username="Anna")
+        slack.post_message("C1", "two", token="xoxb-1", username="Anna")
+
+    assert caplog.text.count("lacks chat:write.customize") == 1
+
+
+def test_another_app_keeps_its_identity_after_one_lacked_the_scope():
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        post = client.return_value.chat_postMessage
+        post.side_effect = [slack_error("missing_scope"), {"ts": "1.1"}, {"ts": "2.1"}]
+
+        slack.post_message("C1", "one", token="xoxb-1", username="Anna")
+        slack.post_message("C1", "two", token="xoxb-2", username="Anna")
+
+    assert post.call_args_list[2].kwargs["username"] == "Anna"
+
+
+def test_the_missing_scope_is_kept_in_redis_under_a_hash_of_the_token_with_an_expiry(redis):
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        client.return_value.chat_postMessage.side_effect = [slack_error("missing_scope"), {"ts": "1.1"}]
+
+        slack.post_message("C1", "one", token="xoxb-secret-token", username="Anna")
+
+    [(key, ttl)] = redis.marks.items()
+    assert key.startswith("slack_no_customize:") and "xoxb-secret-token" not in key
+    assert ttl == slack._NO_CUSTOMIZE_TTL_SECONDS
+
+
+def test_the_mark_is_found_by_a_later_job_that_shares_nothing_but_redis(redis):
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        post = client.return_value.chat_postMessage
+        post.side_effect = [slack_error("missing_scope"), {"ts": "1.1"}]
+        slack.post_message("C1", "one", token="xoxb-1", username="Anna")
+
+        post.side_effect = [{"ts": "2.1"}]
+        post.reset_mock()
+        slack.post_message("C1", "two", token="xoxb-1", username="Anna")  # another job: same Redis, fresh process
+
+    post.assert_called_once_with(channel="C1", text="two", thread_ts=None, blocks=None)
+
+
+def test_a_post_without_an_identity_never_touches_redis(redis):
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        client.return_value.chat_postMessage.return_value = {"ts": "1.1"}
+
+        slack.post_message("C1", "plain", token="xoxb-1")
+
+    redis.exists.assert_not_called()
+
+
+def test_an_unreadable_redis_means_asking_for_the_identity_again(redis):
+    redis.exists.side_effect = RedisError("down")
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        client.return_value.chat_postMessage.return_value = {"ts": "1.1"}
+
+        slack.post_message("C1", "one", token="xoxb-1", username="Anna")
+
+    assert client.return_value.chat_postMessage.call_args.kwargs["username"] == "Anna"
+
+
+def test_a_redis_that_cannot_store_the_mark_does_not_stop_the_message(redis):
+    redis.set.side_effect = RedisError("down")
+    with patch("connectors.slack.WebClient", autospec=True) as client:
+        client.return_value.chat_postMessage.side_effect = [slack_error("missing_scope"), {"ts": "1.1"}]
+
+        assert slack.post_message("C1", "one", token="xoxb-1", username="Anna") == "1.1"
+
+
+def test_the_app_is_not_marked_when_the_retry_as_the_bot_fails_too(redis):
+    with patch("connectors.slack.WebClient", autospec=True) as client, pytest.raises(SlackApiError):
+        client.return_value.chat_postMessage.side_effect = [slack_error("missing_scope"), slack_error("channel_not_found")]
+
+        slack.post_message("C1", "one", token="xoxb-1", username="Anna")
+
+    assert redis.marks == {}

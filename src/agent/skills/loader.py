@@ -1,5 +1,6 @@
 """Skill loading from Supabase and system-prompt assembly."""
 from datetime import date, timedelta
+from typing import NamedTuple
 
 from agent.skills.router import select_skills
 from connectors.db import agent_skills
@@ -24,11 +25,19 @@ def load_all_skills() -> list[AgentSkill]:
     return skills
 
 
+class SystemPrompt(NamedTuple):
+    """The assembled prompt and the names of the skills it was built from, which decide the character that speaks."""
+
+    text: str
+    routed: tuple[str, ...]
+    always: tuple[str, ...]
+
+
 def load_system_prompt(
     question: str,
     history: list[dict] | None = None,
     enabled_skills: list[str] | None = None,
-) -> str:
+) -> SystemPrompt:
     """Build the system prompt by combining always-on skills with router-selected domain skills.
 
     Args:
@@ -38,8 +47,8 @@ def load_system_prompt(
             list (the default) means all skills are available.
 
     Returns:
-        Assembled system prompt string including today's date, the 180-day window cutoff,
-        and the concatenated bodies of all active skill files.
+        The assembled system prompt text, including today's date, the 180-day window cutoff and the concatenated
+        bodies of all active skill files, with the names of the router-selected and always-loaded skills it used.
     """
     today = date.today()
     cutoff = today - timedelta(days=180)
@@ -55,8 +64,9 @@ def load_system_prompt(
     active = always_skills + [s for s in selectable if s.name.lower() in selected_names]
 
     base = "\n\n---\n\n".join(s.body for s in active)
-    return (
+    text = (
         f"Today's date: {today.isoformat()}\n"
         f"180-day window cutoff: {cutoff.isoformat()} — any date on or after this is within the allowed window.\n\n"
         f"{base}"
     )
+    return SystemPrompt(text, tuple(s.name for s in active if not s.always), tuple(s.name for s in always_skills))

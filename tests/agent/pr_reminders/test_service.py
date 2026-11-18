@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 from slack_sdk.errors import SlackApiError, SlackRequestError
@@ -8,6 +8,8 @@ from agent.pr_reminders import service
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.queries import GithubQueryError
 from agent.pr_reminders.status import Bucket, PrStatus
+from characters.core.models import Character
+from characters.core.service import CharacterService
 from common.configs import AgentConfigs
 from schedules.core.models import Schedule
 PR1, PR2, PR3 = (PrRef("org", "repo", n) for n in (1, 2, 3))
@@ -75,6 +77,42 @@ def test_collect_links_channel_scope_reads_history_since_the_lookback(bot, slack
         service.collect_links(bot, scope="channel", channel="C1", thread_ts="1.0", lookback_hours=2)
 
     slack.conversations_history.assert_called_once_with("C1", 1_000_000.0 - 2 * 3600, token="xoxb-test", max_messages=1000)
+
+
+def test_collect_links_with_only_typed_reads_nothing_from_slack_and_returns_just_the_typed_prs(bot, slack):
+    scan = service.collect_links(
+        bot, scope="thread", channel="C1", thread_ts="9.0", lookback_hours=None, typed_urls=["https://github.com/org/repo/pull/121"], only_typed=True
+    )
+
+    slack.conversations_replies.assert_not_called()
+    slack.conversations_history.assert_not_called()
+    assert [(link.ref.number, link.channel, link.thread_ts) for link in scan.links] == [(121, "C1", "9.0")]
+    assert scan.truncated is False
+
+
+def test_collect_links_does_not_pick_up_the_other_prs_of_the_thread_when_only_typed_is_set(bot, slack):
+    slack.conversations_replies.return_value = [{"ts": "1.0", "text": "https://github.com/org/other/pull/9 an older PR"}]
+
+    scan = service.collect_links(
+        bot, scope="thread", channel="C1", thread_ts="1.0", lookback_hours=None, typed_urls=["https://github.com/org/repo/pull/121"], only_typed=True
+    )
+
+    assert [link.ref.number for link in scan.links] == [121]
+
+
+def test_collect_links_without_only_typed_still_adds_the_typed_prs_to_the_thread_scan(bot, slack):
+    slack.conversations_replies.return_value = [{"ts": "1.0", "text": "https://github.com/org/other/pull/9"}]
+
+    scan = service.collect_links(bot, scope="thread", channel="C1", thread_ts="1.0", lookback_hours=None, typed_urls=["https://github.com/org/repo/pull/121"])
+
+    assert sorted(link.ref.number for link in scan.links) == [9, 121]
+
+
+def test_collect_links_with_only_typed_and_nothing_typed_finds_nothing(bot, slack):
+    scan = service.collect_links(bot, scope="thread", channel="C1", thread_ts="1.0", lookback_hours=None, only_typed=True)
+
+    assert scan.links == []
+    slack.conversations_replies.assert_not_called()
 
 
 def test_collect_links_puts_typed_urls_in_the_request_thread(bot, slack):
@@ -810,3 +848,115 @@ def test_run_reminder_leaves_the_reminder_active_when_github_fails(bot, db, coll
 
     set_status.assert_not_called()
     slack.post_message.assert_not_called()
+
+
+# --- characters ------------------------------------------------------------------------------------
+
+ANNA = Character(
+    name="anna",
+    display_name="Anna",
+    icon_emoji=":star:",
+    bindings=("feature:pr_reminder",),
+    voices={"pr_reminder": {"headers": ["{who} ANNA says {subject}"], "schedule_footer": "ANNA footer {schedule_id}", "expired": "ANNA expired {schedule_id}",
+                            "unreadable": "ANNA unreadable {schedule_id} {error_code}"}},
+)
+
+
+@pytest.fixture
+def characters():
+    cast = create_autospec(CharacterService, instance=True)
+    cast.character_for_feature.return_value = ANNA
+    return cast
+
+
+def test_check_and_remind_posts_each_thread_in_its_characters_voice_and_identity(bot, slack, github, pr_node, characters):
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+
+    service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, schedule_id="3f2a", now=NOW, characters=characters)
+
+    args, kwargs = slack.post_message.call_args
+    assert args[1].splitlines()[0] == "<@U1> <@U2> ANNA says cái PR này"
+    assert args[1].splitlines()[-1] == "ANNA footer 3f2a"
+    assert kwargs == {"token": "xoxb-test", "username": "Anna", "icon_emoji": ":star:"}
+    characters.character_for_feature.assert_called_once_with("pr_reminder", "C1", "1.0", characters.usable_characters.return_value)
+
+
+def test_check_and_remind_asks_for_a_character_once_per_thread(bot, slack, github, pr_node, characters):
+    github.graphql.return_value = graphql_payload((1, pr_node()), (2, pr_node()))
+
+    service.check_and_remind(bot, [link(PR1, "1.0"), link(PR2, "2.0")], mentions=MENTIONS, now=NOW, characters=characters)
+
+    usable = characters.usable_characters.return_value
+    assert sorted(call.args for call in characters.character_for_feature.call_args_list) == [("pr_reminder", "C1", "1.0", usable), ("pr_reminder", "C1", "2.0", usable)]
+
+
+def test_check_and_remind_reads_the_characters_once_for_the_whole_run(bot, slack, github, pr_node, characters):
+    github.graphql.return_value = graphql_payload((1, pr_node()), (2, pr_node()), (3, pr_node()))
+
+    service.check_and_remind(bot, [link(PR1, "1.0"), link(PR2, "2.0"), link(PR3, "3.0")], mentions=MENTIONS, now=NOW, characters=characters)
+
+    characters.usable_characters.assert_called_once_with()
+    assert characters.character_for_feature.call_count == 3
+
+
+def test_check_and_remind_does_not_read_the_characters_when_there_is_nothing_to_post(bot, slack, github, pr_node, characters):
+    github.graphql.return_value = graphql_payload((1, pr_node(decision="APPROVED")))
+
+    service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, now=NOW, characters=characters)
+
+    characters.usable_characters.assert_not_called()
+    characters.character_for_feature.assert_not_called()
+
+
+def test_check_and_remind_uses_the_default_voice_when_no_character_is_picked(bot, slack, github, pr_node, characters):
+    characters.character_for_feature.return_value = None
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+
+    service.check_and_remind(bot, [link(PR1, "1.0")], mentions=MENTIONS, now=NOW, characters=characters)
+
+    args, kwargs = slack.post_message.call_args
+    assert args[1].startswith("<@U1> <@U2> ") and "ANNA" not in args[1]
+    assert kwargs == {"token": "xoxb-test"}
+
+
+def test_run_reminder_posts_the_expiry_note_in_the_origin_threads_character(bot, db, collect, slack, characters):
+    get, set_status = db
+    get.return_value = schedule(config=CONFIG | {"expires_at": (IN_HOURS - timedelta(minutes=1)).timestamp()})
+
+    service.run_reminder(bot, "s1", IN_HOURS, characters=characters)
+
+    characters.character_for_feature.assert_called_once_with("pr_reminder", "C9", "9.0", None)
+    assert slack.post_message.call_args.args[:3] == ("C9", "ANNA expired s1", "9.0")
+    assert slack.post_message.call_args.kwargs["username"] == "Anna"
+    set_status.assert_called_once_with("s1", "expired")
+
+
+def test_run_reminder_posts_the_unreadable_note_in_the_origin_threads_character(bot, db, collect, slack, characters):
+    get, _ = db
+    get.return_value = schedule()
+    collect.side_effect = service.ChannelReadError("not_in_channel")
+
+    service.run_reminder(bot, "s1", IN_HOURS, characters=characters)
+
+    assert slack.post_message.call_args.args[1] == "ANNA unreadable s1 not_in_channel"
+    assert slack.post_message.call_args.kwargs["icon_emoji"] == ":star:"
+
+
+def test_run_reminder_hands_the_characters_to_the_check(bot, db, collect, slack, github, pr_node, characters):
+    get, _ = db
+    get.return_value = schedule()
+    github.graphql.return_value = graphql_payload((1, pr_node()))
+
+    service.run_reminder(bot, "s1", IN_HOURS, characters=characters)
+
+    assert slack.post_message.call_args.args[1].startswith("<@U1> <@U2> ANNA says")
+
+
+def test_run_reminder_without_characters_posts_the_default_wording_with_no_identity(bot, db, collect, slack):
+    get, set_status = db
+    get.return_value = schedule(config=CONFIG | {"expires_at": (IN_HOURS - timedelta(minutes=1)).timestamp()})
+
+    service.run_reminder(bot, "s1", IN_HOURS)
+
+    assert "đã hết hạn" in slack.post_message.call_args.args[1]
+    assert slack.post_message.call_args.kwargs == {"token": "xoxb-test"}

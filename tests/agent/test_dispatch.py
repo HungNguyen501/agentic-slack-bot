@@ -4,11 +4,14 @@ import pytest
 
 from agent import dispatch
 from bots.core.models import BotConfig
+from characters.core.service import CharacterService
 from dataset_sync.core.service import DatasetSyncService
 from schedules.core.ports import ScheduleRepository
 
 BOT = BotConfig(bot_id="bot-a", bot_token="xoxb-test", signing_secret=b"secret")
-SERVICES = dispatch.ToolServices(schedules=create_autospec(ScheduleRepository), dataset_sync=create_autospec(DatasetSyncService))
+SERVICES = dispatch.ToolServices(
+    schedules=create_autospec(ScheduleRepository), dataset_sync=create_autospec(DatasetSyncService), characters=create_autospec(CharacterService)
+)
 
 
 def call(name, user_id, admin_users=frozenset({"UADMIN"})):
@@ -31,7 +34,7 @@ def test_schedule_pr_reminder_goes_to_the_pr_reminder_handler_for_admins():
         reply = call("schedule_pr_reminder", "UADMIN")
 
     assert reply == "ok"
-    handler.assert_called_once_with("schedule_pr_reminder", {"scope": "channel"}, "UADMIN", "C1", "1.0", BOT)
+    handler.assert_called_once_with("schedule_pr_reminder", {"scope": "channel"}, "UADMIN", "C1", "1.0", BOT, SERVICES.characters)
     schedule_handler.assert_not_called()
 
 
@@ -41,7 +44,7 @@ def test_check_pr_approvals_is_open_to_everyone(user_id):
         reply = call("check_pr_approvals", user_id)
 
     assert reply == "ok"
-    handler.assert_called_once_with("check_pr_approvals", {"scope": "channel"}, user_id, "C1", "1.0", BOT)
+    handler.assert_called_once_with("check_pr_approvals", {"scope": "channel"}, user_id, "C1", "1.0", BOT, SERVICES.characters)
 
 
 def test_the_other_schedule_tools_still_use_the_schedule_handler():
@@ -67,3 +70,32 @@ def test_dataset_sync_tools_go_to_their_handler_for_admins():
 
     assert reply == "ok"
     handler.assert_called_once_with("sync_dataset", {"scope": "channel"}, "UADMIN", "C1", BOT, SERVICES.dataset_sync)
+
+
+CHARACTER_TOOLS = ["list_characters", "add_character", "update_character", "remove_character"]
+
+
+@pytest.mark.parametrize("name", CHARACTER_TOOLS)
+def test_character_tools_are_admin_only(name):
+    with patch("agent.dispatch.dispatch_character_tool", autospec=True) as handler:
+        reply = call(name, "UOTHER")
+
+    assert reply == "You are not authorized to manage characters."
+    handler.assert_not_called()
+
+
+@pytest.mark.parametrize("name", CHARACTER_TOOLS)
+def test_character_tools_go_to_the_character_handler_for_admins(name):
+    with patch("agent.dispatch.dispatch_character_tool", autospec=True, return_value="ok") as handler:
+        reply = call(name, "UADMIN")
+
+    assert reply == "ok"
+    handler.assert_called_once_with(name, {"scope": "channel"}, SERVICES.characters)
+
+
+def test_every_character_tool_is_a_known_tool_of_the_characters_category():
+    assert [dispatch.tool_category(name) for name in CHARACTER_TOOLS] == ["characters"] * 4
+
+
+def test_the_files_are_no_longer_synced_by_a_tool():
+    assert dispatch.tool_category("sync_characters") is None

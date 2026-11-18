@@ -92,27 +92,11 @@ def test_reminder_config_label(config, label):
     assert config.label() == label
 
 
-@pytest.mark.parametrize("header", ReminderMessages.HEADERS, ids=lambda header: header[:30])
-def test_every_header_mentions_the_people_and_names_the_prs(header):
-    assert "{who}" in header
-    assert "{subject}" in header or "{Subject}" in header
-
-
-def test_there_are_several_headers_to_rotate_through():
-    assert len(ReminderMessages.HEADERS) >= 2
-
-
-def test_every_template_can_be_filled_with_the_values_message_py_passes():
-    ReminderMessages.SUBJECT_MANY.format(count=3)
+def test_every_template_left_in_the_config_class_can_be_filled_with_the_values_message_py_passes():
     ReminderMessages.AGE_MINUTES.format(n=5)
     ReminderMessages.AGE_HOURS.format(n=5)
     ReminderMessages.AGE_DAYS.format(n=5)
     ReminderMessages.WAITING_LINE.format(age="5 phút", flair="")
-    ReminderMessages.SCHEDULE_FOOTER.format(schedule_id="3f2a")
-    ReminderMessages.EXPIRED.format(schedule_id="3f2a")
-    ReminderMessages.UNREADABLE.format(schedule_id="3f2a", error_code="not_in_channel")
-    for header in ReminderMessages.HEADERS:
-        header.format(who="<@U1>", subject="cái PR này", Subject="Cái PR này")
 
 
 def test_the_quip_thresholds_are_in_order_so_every_age_gets_at_most_one_quip():

@@ -2,8 +2,17 @@
 import functools
 
 from agent.dispatch import ToolServices
+from agent.pr_reminders.message import VOICE_SPEC as PR_REMINDER_VOICE_SPEC
 from bots.core.ports import BotRepository
 from bots.infra.supabase_bots import SupabaseBotRepository
+from characters.core.models import FEATURE_PR_REMINDER
+from characters.core.service import CharacterService
+from characters.infra.files_source import FilesCharacterSource
+from characters.infra.known_skills import SupabaseKnownSkills
+from characters.infra.redis_thread_characters import RedisThreadCharacterStore
+from characters.infra.supabase_characters import SupabaseCharacterRepository
+from common.configs import AgentConfigs
+from connectors.redis_client import client as redis_client
 from dataset_sync.core.service import DatasetSyncService
 from dataset_sync.infra.databricks_fetcher import DatabricksDatasetFetcher
 from dataset_sync.infra.slack_notifier import SlackFailureNotifier
@@ -28,5 +37,16 @@ def dataset_sync_service() -> DatasetSyncService:
 
 
 @functools.cache
+def character_service() -> CharacterService:
+    return CharacterService(
+        SupabaseCharacterRepository(),
+        RedisThreadCharacterStore(redis_client, AgentConfigs.THREAD_CHARACTER_TTL_SECONDS),
+        SupabaseKnownSkills(),
+        FilesCharacterSource(),
+        {FEATURE_PR_REMINDER: PR_REMINDER_VOICE_SPEC},
+    )
+
+
+@functools.cache
 def tool_services() -> ToolServices:
-    return ToolServices(schedules=schedule_repository(), dataset_sync=dataset_sync_service())
+    return ToolServices(schedules=schedule_repository(), dataset_sync=dataset_sync_service(), characters=character_service())

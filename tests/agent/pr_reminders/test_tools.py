@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 from slack_sdk.errors import SlackApiError
@@ -8,11 +8,13 @@ from agent.pr_reminders import tools
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.service import ChannelReadError, CheckResult, ScanResult
 from agent.pr_reminders.status import Bucket, PrStatus
+from characters.core.service import CharacterService
 from common.configs import AgentConfigs
 from schedules.core.models import AddedReminder, Schedule
 
 LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
 A, B = "U01ABCDEF", "U02GHIJKL"  # realistic Slack user IDs: at least 9 characters
+CHARACTERS = create_autospec(CharacterService)
 
 
 def result(*buckets, posted=(), truncated=0, failed_posts=0, marked=0):
@@ -64,7 +66,7 @@ def in_cron_window():
 
 def run(name, args, bot, user_id="U1", channel="C1", thread_ts="1.0"):
     """Call a tool as a user who mentioned two people (an @mention and a bare ID); tests override `mentions` to change that."""
-    return tools.dispatch_pr_reminder_tool(name, {"mentions": [f"<@{A}>", B]} | args, user_id, channel, thread_ts, bot)
+    return tools.dispatch_pr_reminder_tool(name, {"mentions": [f"<@{A}>", B]} | args, user_id, channel, thread_ts, bot, CHARACTERS)
 
 
 # --- who to remind --------------------------------------------------------------------------------
@@ -152,11 +154,33 @@ def test_schedule_pr_reminder_rejects_an_unknown_timezone_before_touching_slack(
 
 
 def test_check_pr_approvals_scans_the_request_channel_and_thread(bot, collect, check, slack):
-    run("check_pr_approvals", {"scope": "thread", "pr_urls": ["https://github.com/org/repo/pull/3", 7]}, bot, channel="C5", thread_ts="8.0")
+    run("check_pr_approvals", {"scope": "thread"}, bot, channel="C5", thread_ts="8.0")
+
+    collect.assert_called_once_with(bot, scope="thread", channel="C5", thread_ts="8.0", lookback_hours=72, typed_urls=[], only_typed=False)
+
+
+@pytest.mark.parametrize("scope", ["thread", "channel"])
+def test_a_request_that_types_a_pr_checks_only_that_pr_and_not_the_rest_of_the_thread_or_channel(bot, collect, check, slack, scope):
+    run("check_pr_approvals", {"scope": scope, "pr_urls": ["https://github.com/org/repo/pull/3", 7]}, bot, channel="C5", thread_ts="8.0")
 
     collect.assert_called_once_with(
-        bot, scope="thread", channel="C5", thread_ts="8.0", lookback_hours=72, typed_urls=["https://github.com/org/repo/pull/3"]
+        bot, scope=scope, channel="C5", thread_ts="8.0", lookback_hours=72, typed_urls=["https://github.com/org/repo/pull/3"], only_typed=True
     )
+
+
+def test_a_request_whose_typed_links_are_not_prs_says_so_instead_of_scanning_the_thread(bot, collect, check, slack):
+    collect.return_value = ScanResult([], False)
+
+    reply = run("check_pr_approvals", {"scope": "thread", "pr_urls": ["https://example.com/not-a-pr"]}, bot)
+
+    assert "None of the links in the request is a GitHub pull request link" in reply
+    check.assert_not_called()
+
+
+def test_an_empty_pr_urls_list_scans_like_no_pr_urls_at_all(bot, collect, check, slack):
+    run("check_pr_approvals", {"scope": "thread", "pr_urls": []}, bot)
+
+    assert collect.call_args.kwargs["only_typed"] is False
 
 
 def test_check_pr_approvals_also_reports_threads_that_only_wait_on_the_author(bot, collect, check, slack):
@@ -659,3 +683,105 @@ def test_an_unexpected_value_error_is_reported_as_an_error_not_as_a_validation_m
 
 def test_unknown_tool_name(bot):
     assert run("nope", {}, bot) == "Unknown PR reminder tool: nope"
+
+
+def test_check_pr_approvals_hands_the_character_service_to_the_check(bot, collect, check, slack):
+    run("check_pr_approvals", {"scope": "thread"}, bot)
+
+    assert check.call_args.kwargs["characters"] is CHARACTERS
+
+
+def test_schedule_pr_reminder_hands_the_character_service_to_the_first_check(bot, collect, check, db):
+    run("schedule_pr_reminder", {"scope": "channel", "cron": "*/30 8-17 * * 1-5"}, bot)
+
+    assert check.call_args.kwargs["characters"] is CHARACTERS
+
+
+# --- a thread that links several PRs: ask which one first --------------------------------------------
+
+
+def several(count):
+    return ScanResult([PrLink(PrRef("org", "repo", number), "C1", "1.0", "1.0") for number in range(1, count + 1)], False)
+
+
+def test_a_thread_that_links_several_prs_asks_which_one_and_posts_nothing(bot, collect, check, slack):
+    collect.return_value = several(2)
+
+    reply = run("check_pr_approvals", {"scope": "thread"}, bot)
+
+    check.assert_not_called()
+    assert "This thread links 2 PRs" in reply and "posted nothing yet" in reply
+    assert "- org/repo#1: https://github.com/org/repo/pull/1" in reply and "- org/repo#2: https://github.com/org/repo/pull/2" in reply
+
+
+def test_the_question_tells_the_agent_how_to_call_again(bot, collect, check, slack):
+    collect.return_value = several(2)
+
+    reply = run("check_pr_approvals", {"scope": "thread"}, bot)
+
+    assert "Ask the user which PR(s) to remind, or whether to remind all of them" in reply
+    assert "pr_urls" in reply and "remind_all true" in reply
+
+
+def test_remind_all_reminds_every_pr_of_the_thread(bot, collect, check, slack):
+    collect.return_value = several(3)
+
+    run("check_pr_approvals", {"scope": "thread", "remind_all": True}, bot)
+
+    check.assert_called_once()
+    assert len(check.call_args.args[1]) == 3
+    assert collect.call_args.kwargs["only_typed"] is False
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None, False, "true"], ids=["text", "number", "null", "false", "text-true"])
+def test_only_a_real_true_counts_as_the_users_answer_all(bot, collect, check, slack, value):
+    collect.return_value = several(2)
+
+    reply = run("check_pr_approvals", {"scope": "thread", "remind_all": value}, bot)
+
+    check.assert_not_called()
+    assert "This thread links 2 PRs" in reply
+
+
+def test_a_thread_with_a_single_pr_is_reminded_without_asking(bot, collect, check, slack):
+    collect.return_value = several(1)
+
+    run("check_pr_approvals", {"scope": "thread"}, bot)
+
+    check.assert_called_once()
+
+
+def test_a_channel_wide_check_is_not_asked_about_which_pr(bot, collect, check, slack):
+    collect.return_value = several(5)
+
+    run("check_pr_approvals", {"scope": "channel"}, bot)
+
+    check.assert_called_once()
+
+
+def test_a_typed_pr_is_reminded_without_asking_even_in_a_thread_of_many(bot, collect, check, slack):
+    collect.return_value = several(1)
+
+    run("check_pr_approvals", {"scope": "thread", "pr_urls": ["https://github.com/org/repo/pull/1"]}, bot)
+
+    check.assert_called_once()
+    assert collect.call_args.kwargs["only_typed"] is True
+
+
+def test_the_question_lists_a_limited_number_of_prs_and_counts_the_rest(bot, collect, check, slack):
+    collect.return_value = several(AgentConfigs.PR_REMINDER_MAX_CHOICES_LISTED + 3)
+
+    reply = run("check_pr_approvals", {"scope": "thread"}, bot)
+
+    assert reply.count("\n- org/repo#") == AgentConfigs.PR_REMINDER_MAX_CHOICES_LISTED
+    assert f"This thread links {AgentConfigs.PR_REMINDER_MAX_CHOICES_LISTED + 3} PRs" in reply
+    assert "- and 3 more" in reply
+
+
+def test_a_recurring_thread_reminder_still_covers_the_whole_thread_without_asking(bot, collect, check, db):
+    collect.return_value = several(3)
+
+    run("schedule_pr_reminder", {"scope": "thread", "cron": "*/30 8-17 * * 1-5"}, bot)
+
+    check.assert_called_once()
+    assert len(check.call_args.args[1]) == 3
