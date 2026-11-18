@@ -8,9 +8,11 @@ from typing import NamedTuple
 from slack_sdk.errors import SlackApiError
 
 from agent.pr_reminders.limits import ReminderRequestError, parse_mentions, parse_timezone, validate_reminder_cron
+from agent.pr_reminders.pr_links import PrLink
 from agent.pr_reminders.service import CHANNEL_READ_HELP, ChannelReadError, CheckResult, check_and_remind, collect_links, save_progress
 from agent.pr_reminders.status import Bucket
 from bots.core.models import BotConfig
+from characters.core.service import CharacterService
 from common.configs import AgentConfigs, ReminderConfig
 from common.cron import is_in_cron_window
 from connectors import slack
@@ -112,10 +114,23 @@ def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str
     return " ".join(parts)
 
 
-def _check_pr_approvals(args: dict, channel: str, thread_ts: str, bot: BotConfig) -> str:
+def _ask_which_pr(links: list[PrLink]) -> str:
+    """The reply for a thread that links several PRs when the request named none: nothing was posted, and the agent asks."""
+    cap = AgentConfigs.PR_REMINDER_MAX_CHOICES_LISTED
+    listed = "\n".join(f"- {link.ref.slug}: {link.ref.url}" for link in links[:cap])
+    more = f"\n- and {len(links) - cap} more" if len(links) > cap else ""
+    return (
+        f"This thread links {len(links)} PRs and the request doesn't say which one, so I posted nothing yet:\n{listed}{more}\n"
+        "Ask the user which PR(s) to remind, or whether to remind all of them. Then call check_pr_approvals again: with pr_urls set to "
+        "the PR links they chose (only those are reminded), or with remind_all true for every PR in the thread."
+    )
+
+
+def _check_pr_approvals(args: dict, channel: str, thread_ts: str, bot: BotConfig, characters: CharacterService) -> str:
     scope = _parse_scope(args)
     mentions = _parse_mentions(args)
     typed_urls = [url for url in args.get("pr_urls") or [] if isinstance(url, str)]
+    # A request that names PRs is about those PRs: the rest of the thread or channel is not scanned.
     scan = collect_links(
         bot,
         scope=scope,
@@ -123,12 +138,18 @@ def _check_pr_approvals(args: dict, channel: str, thread_ts: str, bot: BotConfig
         thread_ts=thread_ts,
         lookback_hours=_parse_lookback(args),
         typed_urls=typed_urls,
+        only_typed=bool(typed_urls),
     )
     if not scan.links:
+        if typed_urls:
+            return "None of the links in the request is a GitHub pull request link (https://github.com/<owner>/<repo>/pull/<number>)."
         where = "in this thread." if scope == "thread" else "in this channel's recent top-level messages."
         more = " The window has more messages than I scan, so older ones may be missing." if scan.truncated else ""
         return f"I didn't find any GitHub pull request links {where}{more}"
-    return _summarize(bot, check_and_remind(bot, scan.links, mentions=mentions, include_author_only_threads=True), scan.truncated)
+    if scope == "thread" and not typed_urls and args.get("remind_all") is not True and len(scan.links) > 1:
+        return _ask_which_pr(scan.links)
+    result = check_and_remind(bot, scan.links, mentions=mentions, include_author_only_threads=True, characters=characters)
+    return _summarize(bot, result, scan.truncated)
 
 
 class _ScheduleRequest(NamedTuple):
@@ -159,7 +180,7 @@ def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
     )
 
 
-def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConfig, schedule_id: str, thread_ts: str) -> str:
+def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConfig, schedule_id: str, thread_ts: str, characters: CharacterService) -> str:
     """Run the check that follows scheduling, post any first reminders, and describe what happened.
 
     Outside the hours and days the cron describes nothing is read or posted: the first tick inside them does it, so
@@ -174,7 +195,7 @@ def _first_check(bot: BotConfig, request: _ScheduleRequest, config: ReminderConf
         return "It's outside the hours the schedule runs in, so the first check waits for its first tick."
 
     scan = collect_links(bot, scope=request.scope, channel=request.channel, thread_ts=thread_ts, lookback_hours=request.lookback_hours)
-    result = check_and_remind(bot, scan.links, mentions=request.mentions, schedule_id=schedule_id)
+    result = check_and_remind(bot, scan.links, mentions=request.mentions, schedule_id=schedule_id, characters=characters)
     try:
         save_progress(schedule_id, config, result, now)
     except Exception:
@@ -203,7 +224,7 @@ def _already_scheduled(existing: Schedule, request: _ScheduleRequest) -> str:
     return reply
 
 
-def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
+def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig, characters: CharacterService) -> str:
     request = _parse_schedule_request(args, channel)
     expires_at = datetime.now(UTC).timestamp() + request.expires_in_hours * 3600 if request.expires_in_hours else None
     config = ReminderConfig(request.scope, channel, thread_ts, tuple(request.mentions), request.lookback_hours, user_id, expires_at=expires_at)
@@ -220,7 +241,7 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
     if not added.created:
         return _already_scheduled(added.schedule, request)
     try:
-        first = _first_check(bot, request, config, schedule_id, thread_ts)
+        first = _first_check(bot, request, config, schedule_id, thread_ts, characters)
     except Exception:
         _schedules.remove_schedule(schedule_id, bot_id=bot.bot_id)
         raise
@@ -233,17 +254,18 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
     return f"PR reminder scheduled — id: `{schedule_id}`. {first} It runs on cron `{request.cron}` ({request.timezone}), and {ends}"
 
 
-def dispatch_pr_reminder_tool(name: str, args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig) -> str:
+def dispatch_pr_reminder_tool(name: str, args: dict, user_id: str | None, channel: str, thread_ts: str, bot: BotConfig, characters: CharacterService) -> str:
     """Run check_pr_approvals or schedule_pr_reminder and return the text to hand back to the LLM.
 
     The reminders themselves are posted here, not by the LLM; the return value is a summary, a refusal or an error
-    message for the agent to relay. `thread_ts` is the request's thread, also the one scanned for scope "thread".
+    message for the agent to relay. `thread_ts` is the request's thread, also the one scanned for scope "thread". `characters` gives
+    each thread the reminders go to its voice.
     """
     try:
         if name == "check_pr_approvals":
-            return _check_pr_approvals(args, channel, thread_ts, bot)
+            return _check_pr_approvals(args, channel, thread_ts, bot, characters)
         if name == "schedule_pr_reminder":
-            return _schedule_pr_reminder(args, user_id, channel, thread_ts, bot)
+            return _schedule_pr_reminder(args, user_id, channel, thread_ts, bot, characters)
     except ReminderRequestError as exc:
         return str(exc)
     except ChannelReadError as exc:

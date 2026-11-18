@@ -63,7 +63,7 @@ class AgentTool:
     name: str
     description: str
     parameters: dict
-    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder", "dataset_sync"] = "core"
+    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder", "dataset_sync", "characters"] = "core"
 
     def to_openai_schema(self) -> dict:
         # Responses API tools are flat (no nested "function" key) and default to strict=True,
@@ -111,9 +111,16 @@ class AgentConfigs:
     PR_REMINDER_APPROVED_REACTION: str = "white_check_mark"
     PR_REMINDER_CLOSED_REACTION: str = "x"
     PR_REMINDER_MAX_REACTIONS_PER_RUN: int = 25
+    # A one-off check inside a thread that links several PRs asks which one to remind instead of reminding all of them;
+    # this many are listed in that question.
+    PR_REMINDER_MAX_CHOICES_LISTED: int = 10
     # The zone a reminder's cron is written in when the request names none. When reminders may fire is part of the cron
     # itself (e.g. `*/30 8-17 * * 1-5`), written by the agent following the pr-reminders skill.
     PR_REMINDER_DEFAULT_TIMEZONE: str = "Asia/Ho_Chi_Minh"
+
+    # How long a thread keeps the character picked for it (characters/infra/redis_thread_characters.py). Long enough
+    # for a PR thread to be reminded for as long as a reminder can look back (PR_REMINDER_MAX_LOOKBACK_HOURS).
+    THREAD_CHARACTER_TTL_SECONDS: int = 14 * 24 * 3600
 
     TOOLS: tuple[AgentTool, ...] = (
         AgentTool(
@@ -198,9 +205,13 @@ class AgentConfigs:
             description=(
                 "Check whether GitHub pull requests shared in Slack are approved, and remind the given people (by @mention) "
                 "in the Slack thread of each PR that is still waiting for review. Use when someone asks to check PR "
-                "approval status or to remind reviewers about PRs. scope 'thread' checks the PR links in the current "
-                "thread (or in this message); scope 'channel' checks PR links in the channel's top-level messages "
-                "(not thread replies) over the last lookback_hours. Needs the people to remind: take them from the @mentions in the user's message, and if "
+                "approval status or to remind reviewers about PRs. If the request itself contains PR links, pass them in "
+                "pr_urls: then only those PRs are checked, and the rest of the thread or channel is not looked at. Without "
+                "pr_urls, scope 'thread' looks at the PR links in the current thread: with one PR it reminds for it, and with several "
+                "it posts nothing and lists them so you can ask the user which one(s) to remind, or whether to remind all (then call "
+                "again with pr_urls for the chosen ones, or with remind_all true). Scope 'channel' "
+                "checks PR links in the channel's top-level messages (not thread replies) over the last lookback_hours. "
+                "Needs the people to remind: take them from the @mentions in the user's message, and if "
                 "there are none, ask the user who to remind instead of calling this."
             ),
             parameters={
@@ -214,7 +225,18 @@ class AgentConfigs:
                             f"max {PR_REMINDER_MAX_LOOKBACK_HOURS}. '3d' is 72."
                         ),
                     },
-                    "pr_urls": {"type": "array", "items": {"type": "string"}, "description": "GitHub PR links typed in the request itself."},
+                    "pr_urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "GitHub PR links typed in the request itself. When given, only these PRs are checked.",
+                    },
+                    "remind_all": {
+                        "type": "boolean",
+                        "description": (
+                            "Scope thread only: true when the user said to remind every PR in the thread (or answered 'all' when asked which). "
+                            "Without it, a thread that links several PRs is not reminded; the tool lists them instead."
+                        ),
+                    },
                     "mentions": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -363,29 +385,132 @@ class AgentConfigs:
             },
             category="secrets",
         ),
+        AgentTool(
+            name="list_characters",
+            description=(
+                "List the characters (voices) the bot can speak in: name, song and artist, whether it is enabled, what it is bound to "
+                "(features and skills), whether its row is valid, and when it was last changed. Admin-only. Use when an admin asks "
+                "which characters, personas or voices exist, or why one is not being used."
+            ),
+            parameters={"type": "object", "properties": {}},
+            category="characters",
+        ),
+        AgentTool(
+            name="add_character",
+            description=(
+                "Add a new character (voice) to the characters table. Admin-only. It only adds: a name that already exists is "
+                "refused and nothing is changed. Name, display_name and at least one binding are required. First collect every "
+                "required value from the admin, asking for what is missing. Then call with dry_run true to validate it, fix any problem "
+                "with the admin, show the full definition (including the Vietnamese text), and only after a clear yes call again with "
+                "dry_run false. Voice text may use only the placeholders listed for each field and must not contain < or >, "
+                "@channel, @here or @everyone."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Lower-case slug, letters, digits, - or _, up to 64 characters, e.g. 'em-gai-mua'."},
+                    "display_name": {
+                        "type": "string",
+                        "description": "Sender name shown on Slack, up to 80 characters. Defaults to name. Use the song title, not an artist's name.",
+                    },
+                    "song": {"type": "string", "description": "The song this character follows, if any."},
+                    "artist": {"type": "string", "description": "The song's artist, for credit only."},
+                    "icon_emoji": {"type": "string", "description": "Standard Slack emoji shown as the avatar, e.g. ':cloud_with_rain:'."},
+                    "icon_url": {"type": "string", "description": "https image URL shown as the avatar. An icon_emoji wins when both are given."},
+                    "bindings": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "What the character speaks for: 'feature:pr_reminder' (PR reminder messages, needs voices.pr_reminder) and "
+                            "'skill:<skill name>' (agent replies for that skill, needs persona), e.g. 'skill:metadata'. "
+                            "'skill:core' makes it the default voice of every task that has no character of its own."
+                        ),
+                    },
+                    "persona": {"type": "string", "description": "Instructions for the agent's tone, up to 1500 characters. Required by any skill binding."},
+                    "voices": {
+                        "type": "object",
+                        "description": (
+                            "One object per feature. For pr_reminder: headers (list of 1-10 templates, each with {who} and {subject} or {Subject}), and "
+                            "optional subject_one, subject_many (needs {count}), flair_fresh, flair_stale, flair_ancient, author_court_with_waiting, "
+                            "author_court_alone, author_line, schedule_footer, expired (these two need {schedule_id}), unreadable ({schedule_id} and "
+                            "{error_code}). Each template is at most 300 characters. A field left out uses the default wording."
+                        ),
+                    },
+                    "enabled": {"type": "boolean", "description": "Default true. Pass false to store it without using it yet."},
+                    "dry_run": {"type": "boolean", "description": "true checks the request and stores nothing. Always check with true before storing."},
+                },
+                "required": ["name", "display_name", "bindings"],
+            },
+            category="characters",
+        ),
+        AgentTool(
+            name="update_character",
+            description=(
+                "Change a stored character, including what it speaks for (its bindings to features and skills). Admin-only. Only the "
+                "fields given are changed; the character is then checked as a whole and nothing is saved if a rule fails. The name "
+                "cannot be changed. First call with dry_run true to validate the change, fix any problem with the admin, tell the "
+                "admin exactly what will change, and only after a clear yes call again with dry_run false. To retire a character "
+                "without deleting it, pass enabled false."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the stored character, as list_characters shows it."},
+                    "display_name": {"type": "string", "description": "New sender name shown on Slack."},
+                    "song": {"type": "string"},
+                    "artist": {"type": "string"},
+                    "icon_emoji": {"type": "string", "description": "New avatar emoji, e.g. ':star:'. An empty text clears it."},
+                    "icon_url": {"type": "string", "description": "New avatar https URL. An empty text clears it."},
+                    "persona": {"type": "string", "description": "New persona text, up to 1500 characters. Replaces the old one."},
+                    "enabled": {"type": "boolean", "description": "false stops the bot using it, true brings it back."},
+                    "bindings": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Replace all bindings with exactly these ('feature:pr_reminder', 'skill:<name>', 'skill:core').",
+                    },
+                    "add_bindings": {"type": "array", "items": {"type": "string"}, "description": "Bindings to add to the current ones, e.g. ['skill:metadata']."},
+                    "remove_bindings": {"type": "array", "items": {"type": "string"}, "description": "Bindings to remove from the current ones."},
+                    "dry_run": {"type": "boolean", "description": "true checks the change and stores nothing. Always check with true before storing."},
+                    "voices": {
+                        "type": "object",
+                        "description": (
+                            "Per feature, the full new voice block (e.g. {'pr_reminder': {'headers': [...]}}). It replaces that "
+                            "feature's whole block, and other features' blocks are left as they are."
+                        ),
+                    },
+                },
+                "required": ["name"],
+            },
+            category="characters",
+        ),
+        AgentTool(
+            name="remove_character",
+            description=(
+                "Delete a stored character. Admin-only. Threads that used it get a new character next time. A character that ships "
+                "as a seed file comes back on the next deploy, and the result says so. Before calling, name the character and wait "
+                "for a clear yes."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Name of the stored character, as list_characters shows it."}},
+                "required": ["name"],
+            },
+            category="characters",
+        ),
     )
 
 
 @dataclass(frozen=True)
 class ReminderMessages:
-    """The wording of the Slack messages PR reminders post (`agent/pr_reminders/message.py`), and the thresholds that pick a quip.
+    """The parts of a PR reminder's wording that no character can change (`agent/pr_reminders/message.py`).
 
-    Vietnamese, in a cheerful, comedic voice. `{placeholders}` are filled in by message.py, so retuning the tone or
-    translating the bot means editing this class only. Every template must keep its placeholders.
+    Vietnamese. The rest of the wording (headers, quips, the author-court lines, the footer and the closing notes) is the
+    voice of a reminder: `DEFAULT_VOICE` in message.py holds the default one and a character can replace any of it.
+    `{placeholders}` are filled in by message.py.
     """
 
-    # The header above a thread's PRs. It rotates every HEADER_ROTATION_SECONDS so a recurring reminder doesn't repeat
-    # itself word for word. {who} is the mentions, {subject} the PR phrase, {Subject} the same with a capital letter
-    # for a template that starts a sentence with it.
-    HEADERS: tuple[str, ...] = (
-        "{who} :eyes: Ủa alo, {subject} đang chờ review nè bà con ơi! :pepe-pray:",
-        "{who} :bell: Dạ thưa quý vị, {subject} chờ review lâu quá trời quá đất luôn rồi nha!",
-        "{who} :wave: Cốc cốc cốc! Có ai ở nhà không? {Subject} đang đứng đợi review nè!",
-        "{who} :mag: Trời ơi tin được không? {subject} vẫn chưa ai review luôn á!",
-    )
+    # The header rotates every HEADER_ROTATION_SECONDS so a recurring reminder doesn't repeat itself word for word.
     HEADER_ROTATION_SECONDS: int = 30 * 60
-    SUBJECT_ONE: str = "cái PR này"
-    SUBJECT_MANY: str = "{count} cái PR này"
 
     # How long a PR has waited, e.g. "20 phút", and the line it appears in.
     AGE_MINUTES: str = "{n} phút"
@@ -394,28 +519,11 @@ class ReminderMessages:
     AGE_UNKNOWN: str = "?"
     WAITING_LINE: str = "chờ {age}{flair}"
 
-    # A quip after the age: fresh PRs sparkle, forgotten ones gather dust. Nothing in between.
+    # When the quip after the age applies: fresh PRs sparkle, forgotten ones gather dust. Nothing in between. The quips
+    # themselves are part of the voice.
     FLAIR_FRESH_UNDER_HOURS: int = 1
     FLAIR_STALE_AFTER_DAYS: int = 3
     FLAIR_ANCIENT_AFTER_DAYS: int = 7
-    FLAIR_FRESH: str = " :sparkles: mới tinh"
-    FLAIR_STALE: str = " :cricket: dế gáy rồi nha"
-    FLAIR_ANCIENT: str = " :spider_web: nhện giăng tơ luôn rồi"
-
-    # PRs with changes requested: listed without a ping, under a heading that depends on whether PRs also wait for review.
-    AUTHOR_COURT_WITH_WAITING: str = "Bóng đang ở sân tác giả (cần sửa lại) :tennis:"
-    AUTHOR_COURT_ALONE: str = ":tennis: PR này bị yêu cầu sửa lại, bóng đang ở sân tác giả nha"
-    AUTHOR_LINE: str = "bị yêu cầu sửa lại"
-
-    # The last line of a recurring reminder: how to stop it.
-    SCHEDULE_FOOTER: str = 'Lịch nhắc `{schedule_id}` — nhắn "xoá lịch nhắc {schedule_id}" để tui hết làm phiền nha.'
-
-    # Notes posted in the thread the reminder was requested in.
-    EXPIRED: str = ":hourglass: Lịch nhắc `{schedule_id}` đã hết hạn như cả nhà đặt, tui xin phép nghỉ ngơi nha. Cần nhắc tiếp thì kêu tui lập lịch mới!"
-    UNREADABLE: str = (
-        ":warning: Ủa, tui không thấy channel của lịch nhắc `{schedule_id}` nữa (lỗi Slack: `{error_code}`), nên tui treo giày nghỉ nhắc luôn. "
-        "Kiểm tra giúp tui coi tui còn ở trong channel và có quyền đọc lịch sử (history scopes) không nha."
-    )
 
 
 @dataclass(frozen=True)

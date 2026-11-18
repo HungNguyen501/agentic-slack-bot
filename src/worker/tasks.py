@@ -8,9 +8,10 @@ import time
 from slack_sdk.errors import SlackApiError, SlackClientError
 
 from agent.access_control import review, submission
-from agent.agent import run_agent, summarize_answer
+from agent.agent import AgentReply, run_agent, summarize_answer
 from agent.history import record_thread_messages
 from agent.pr_reminders.service import run_reminder
+from characters.core.models import Character
 from connectors import slack
 from worker import wiring
 
@@ -96,6 +97,23 @@ def _animate_thinking(channel: str, ts: str, token: str, stop_event: threading.E
             return
 
 
+def _post_as_character(channel: str, thread_ts: str, chunks: list[str], character: Character, token: str) -> str:
+    """Post each chunk as a reply in the thread under the character's name and icon; returns the last ts."""
+    ts = thread_ts
+    for chunk in chunks:
+        ts = slack.post_message(channel, chunk, thread_ts, token=token, **character.slack_identity())
+    return ts
+
+
+def _delete_placeholder(channel: str, ts: str, token: str) -> None:
+    """Remove the thinking placeholder. The answer is already posted, so a failure here must not fail the job: RQ would
+    retry it and run the whole agent again, posting the answer twice."""
+    try:
+        slack.delete_message(channel, ts, token=token)
+    except (SlackApiError, SlackClientError, OSError):
+        log.warning("Could not delete the thinking placeholder %s in %s", ts, channel, exc_info=True)
+
+
 def reply_to_mention(
     channel: str,
     thread_ts: str,
@@ -179,10 +197,10 @@ def reply_to_mention(
     animation_thread.start()
 
     try:
-        answer = run_agent(question, thread_ts, channel, user_id=user, bot=bot, services=wiring.tool_services())
+        answer, character = run_agent(question, thread_ts, channel, user_id=user, bot=bot, services=wiring.tool_services())
     except Exception as exc:
         log.exception("Agent error: %s", exc)
-        answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
+        answer, character = AgentReply("Sorry, I ran into an error while processing your question. Please try again :hugging_face:.")
     finally:
         # Stop and join before touching thinking_ts ourselves — otherwise a final animation
         # edit still in flight could land after (and clobber) the real answer below.
@@ -196,10 +214,16 @@ def reply_to_mention(
         return thread_ts
 
     chunks = slack.split_message(answer)
-    slack.update_message(channel, thinking_ts, chunks[0], token=bot.bot_token)
-    ts = thinking_ts
-    for chunk in chunks[1:]:
-        ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
+    if character:
+        # chat.update can't change a message's sender, so the placeholder (posted before the router picked the character)
+        # is replaced by new messages under the character's name and icon.
+        ts = _post_as_character(channel, thread_ts, chunks, character, bot.bot_token)
+        _delete_placeholder(channel, thinking_ts, bot.bot_token)
+    else:
+        slack.update_message(channel, thinking_ts, chunks[0], token=bot.bot_token)
+        ts = thinking_ts
+        for chunk in chunks[1:]:
+            ts = slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
     log.info("Posted reply (%d chunk(s)) to %s (thread %s)", len(chunks), channel, thread_ts)
     return ts
 
@@ -227,12 +251,13 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
     header_ts = slack.post_message(channel, f"*Scheduled question:* _{question}_", token=bot.bot_token)
 
     try:
-        answer = run_agent(question, header_ts, channel, bot=bot, services=wiring.tool_services())
-        summary = summarize_answer(question, answer)
+        answer, character = run_agent(question, header_ts, channel, bot=bot, services=wiring.tool_services())
+        summary = summarize_answer(question, answer, character)
     except Exception as exc:
         log.exception("Scheduled agent error: %s", exc)
         answer = "Sorry, I ran into an error while processing the scheduled question."
         summary = answer
+        character = None
 
     slack.update_message(
         channel,
@@ -242,9 +267,12 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
     )
 
     chunks = slack.split_message(answer)
-    ts = header_ts
-    for chunk in chunks:
-        ts = slack.post_message(channel, chunk, header_ts, token=bot.bot_token)
+    if character:
+        ts = _post_as_character(channel, header_ts, chunks, character, bot.bot_token)
+    else:
+        ts = header_ts
+        for chunk in chunks:
+            ts = slack.post_message(channel, chunk, header_ts, token=bot.bot_token)
     log.info("Posted scheduled answer (%d chunk(s)) to %s (thread %s)", len(chunks), channel, header_ts)
     return ts
 
@@ -254,7 +282,7 @@ def process_pr_reminder(schedule_id: str, bot_id: str) -> None:
 
     It posts into the PRs' own threads, so there is no reply to return.
     """
-    run_reminder(wiring.bot_repository().get_by_id(bot_id), schedule_id)
+    run_reminder(wiring.bot_repository().get_by_id(bot_id), schedule_id, characters=wiring.character_service())
 
 
 def process_dataset_sync(schedule_id: str, bot_id: str) -> None:

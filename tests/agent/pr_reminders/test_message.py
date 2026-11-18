@@ -1,9 +1,13 @@
+from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
 from agent.pr_reminders.message import (
+    DEFAULT_VOICE,
+    VOICE_SPEC,
+    PrReminderVoice,
     escape,
     format_age,
     render_expired_note,
@@ -12,6 +16,8 @@ from agent.pr_reminders.message import (
 )
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.status import Bucket, PrStatus
+from characters.core.models import Character
+from characters.core.validation import character_problems
 from common.configs import ReminderMessages
 
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
@@ -172,20 +178,39 @@ def test_render_unreadable_note_gives_the_slack_error_and_what_to_check():
     assert "history scopes" in note
 
 
-def test_the_wording_comes_from_the_config_class_so_it_can_be_retuned_there():
+@pytest.mark.parametrize("header", DEFAULT_VOICE.headers, ids=lambda header: header[:30])
+def test_every_default_header_mentions_the_people_and_names_the_prs(header):
+    assert "{who}" in header
+    assert "{subject}" in header or "{Subject}" in header
+
+
+def test_there_are_several_default_headers_to_rotate_through():
+    assert len(DEFAULT_VOICE.headers) >= 2
+
+
+def test_every_default_template_can_be_filled_with_the_values_this_module_passes():
+    DEFAULT_VOICE.subject_many.format(count=3)
+    DEFAULT_VOICE.schedule_footer.format(schedule_id="3f2a")
+    DEFAULT_VOICE.expired.format(schedule_id="3f2a")
+    DEFAULT_VOICE.unreadable.format(schedule_id="3f2a", error_code="not_in_channel")
+    for header in DEFAULT_VOICE.headers:
+        header.format(who="<@U1>", subject="cái PR này", Subject="Cái PR này")
+
+
+def test_the_wording_comes_from_the_voice_it_is_rendered_with():
     pr = status(1, age=timedelta(days=4))
     changes = status(2, bucket=Bucket.WAITING_ON_AUTHOR)
-    with (
-        patch.object(ReminderMessages, "HEADERS", ("{who} HEADER {subject}",)),
-        patch.object(ReminderMessages, "SUBJECT_ONE", "ONE"),
-        patch.object(ReminderMessages, "WAITING_LINE", "WAITED {age}{flair}"),
-        patch.object(ReminderMessages, "AGE_DAYS", "{n}D"),
-        patch.object(ReminderMessages, "FLAIR_STALE", " STALE"),
-        patch.object(ReminderMessages, "AUTHOR_COURT_WITH_WAITING", "COURT"),
-        patch.object(ReminderMessages, "AUTHOR_LINE", "FIX"),
-        patch.object(ReminderMessages, "SCHEDULE_FOOTER", "FOOT {schedule_id}"),
-    ):
-        text = render_thread_message([pr], [changes], mentions=MENTIONS, now=NOW, schedule_id="3f2a")
+    voice = replace(
+        DEFAULT_VOICE,
+        headers=("{who} HEADER {subject}",),
+        subject_one="ONE",
+        flair_stale=" STALE",
+        author_court_with_waiting="COURT",
+        author_line="FIX",
+        schedule_footer="FOOT {schedule_id}",
+    )
+    with patch.object(ReminderMessages, "WAITING_LINE", "WAITED {age}{flair}"), patch.object(ReminderMessages, "AGE_DAYS", "{n}D"):
+        text = render_thread_message([pr], [changes], mentions=MENTIONS, now=NOW, schedule_id="3f2a", voice=voice)
 
     assert text.splitlines()[0] == "<@U1> <@U2> HEADER ONE"
     assert text.splitlines()[1].endswith("— WAITED 4D STALE")
@@ -194,13 +219,75 @@ def test_the_wording_comes_from_the_config_class_so_it_can_be_retuned_there():
     assert text.splitlines()[4] == "FOOT 3f2a"
 
 
-def test_the_closing_notes_also_come_from_the_config_class():
-    with (
-        patch.object(ReminderMessages, "EXPIRED", "EXPIRED {schedule_id}"),
-        patch.object(ReminderMessages, "UNREADABLE", "UNREADABLE {schedule_id} {error_code}"),
-    ):
-        assert render_expired_note("s1") == "EXPIRED s1"
-        assert render_unreadable_note("s1", "not_in_channel") == "UNREADABLE s1 not_in_channel"
+def test_the_plural_subject_and_the_other_quips_come_from_the_voice():
+    voice = replace(DEFAULT_VOICE, headers=("{who} {Subject}",), subject_many="{count} MANY", flair_fresh=" FRESH", flair_ancient=" ANCIENT")
+
+    two_fresh = [status(1, age=timedelta(minutes=5)), status(2, age=timedelta(minutes=5))]
+    fresh = render_thread_message(two_fresh, [], mentions=MENTIONS, now=NOW, schedule_id=None, voice=voice)
+    ancient = render_thread_message([status(1, age=timedelta(days=30))], [], mentions=MENTIONS, now=NOW, schedule_id=None, voice=voice)
+
+    assert fresh.splitlines()[0] == "<@U1> <@U2> 2 MANY"
+    assert fresh.splitlines()[1].endswith(" FRESH")
+    assert ancient.splitlines()[1].endswith(" ANCIENT")
+
+
+def test_the_alone_court_line_comes_from_the_voice():
+    voice = replace(DEFAULT_VOICE, author_court_alone="ALONE")
+
+    text = render_thread_message([], [status(2, bucket=Bucket.WAITING_ON_AUTHOR)], mentions=MENTIONS, now=NOW, schedule_id=None, voice=voice)
+
+    assert text.splitlines()[0] == "ALONE"
+
+
+def test_the_closing_notes_come_from_the_voice():
+    voice = replace(DEFAULT_VOICE, expired="EXPIRED {schedule_id}", unreadable="UNREADABLE {schedule_id} {error_code}")
+
+    assert render_expired_note("s1", voice) == "EXPIRED s1"
+    assert render_unreadable_note("s1", "not_in_channel", voice) == "UNREADABLE s1 not_in_channel"
+
+
+def test_a_title_stays_escaped_in_a_custom_voice():
+    voice = replace(DEFAULT_VOICE, headers=("{who} custom {subject}",))
+
+    text = render_thread_message([status(title="<!channel> hi")], [], mentions=MENTIONS, now=NOW, schedule_id=None, voice=voice)
+
+    assert "<!channel>" not in text
+    assert text.splitlines()[0] == "<@U1> <@U2> custom cái PR này"
+
+
+# --- PrReminderVoice.from_character ------------------------------------------------------------------
+
+
+def _character(block=None, **overrides):
+    voices = {} if block is None else {"pr_reminder": block}
+    return Character(name="c", display_name="C", voices=voices, **overrides)
+
+
+def test_the_default_voice_is_used_without_a_character():
+    assert PrReminderVoice.from_character(None) == DEFAULT_VOICE
+
+
+def test_the_default_voice_is_used_when_the_character_has_no_pr_reminder_block():
+    assert PrReminderVoice.from_character(_character()) == DEFAULT_VOICE
+
+
+def test_a_character_replaces_only_the_fields_it_sets():
+    voice = PrReminderVoice.from_character(_character({"headers": ["{who} {subject} A", "{who} {subject} B"], "author_line": "FIX"}))
+
+    assert voice.headers == ("{who} {subject} A", "{who} {subject} B")
+    assert voice.author_line == "FIX"
+    assert voice.expired == DEFAULT_VOICE.expired
+    assert voice.subject_one == DEFAULT_VOICE.subject_one
+
+
+def test_the_voice_spec_accepts_the_default_wording():
+    block = {f.name: list(getattr(DEFAULT_VOICE, f.name)) if f.name == "headers" else getattr(DEFAULT_VOICE, f.name) for f in fields(PrReminderVoice)}
+
+    assert character_problems(_character(block, bindings=("feature:pr_reminder",)), {"pr_reminder": VOICE_SPEC}) == []
+
+
+def test_the_voice_spec_covers_every_field_of_the_voice():
+    assert set(VOICE_SPEC.fields) == {f.name for f in fields(PrReminderVoice)}
 
 
 def test_the_header_rotation_period_comes_from_the_config_class():

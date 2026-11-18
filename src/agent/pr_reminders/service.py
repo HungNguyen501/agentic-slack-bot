@@ -12,6 +12,8 @@ from agent.pr_reminders.limits import is_reminder_expired
 from agent.pr_reminders.pr_links import PrLink, limit_links, links_from_messages, links_from_urls, merge_links
 from agent.pr_reminders.status import Bucket, PrStatus, build_status
 from bots.core.models import BotConfig
+from characters.core.models import FEATURE_PR_REMINDER, Character
+from characters.core.service import CharacterService
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import github, slack
 from schedules.core.models import Schedule
@@ -108,15 +110,20 @@ def collect_links(
     thread_ts: str,
     lookback_hours: int | None,
     typed_urls: list[str] | None = None,
+    only_typed: bool = False,
 ) -> ScanResult:
     """Read Slack and find the PRs linked in the thread `thread_ts` (scope "thread") or in the channel's recent top-level messages (scope "channel").
 
     `typed_urls` are PR links typed in the request itself; they live in `thread_ts` and win over the same PR found in a message.
+    With `only_typed` nothing is read from Slack: the PRs are exactly the typed ones, so a request that names a PR does not
+    also pick up the other PRs of the thread it was made in.
     The result is `truncated` when the channel had more messages in the window than AgentConfigs.PR_REMINDER_MAX_MESSAGES_SCANNED.
 
     Raises:
         ChannelReadError: the bot can't read the channel.
     """
+    if only_typed:
+        return ScanResult(links_from_urls(typed_urls or [], channel, thread_ts), False)
     truncated = False
     try:
         if scope == "thread":
@@ -145,12 +152,13 @@ def fetch_statuses(links: list[PrLink]) -> list[PrStatus]:
     return [build_status(link, nodes.get(link.ref)) for link in links]
 
 
-def _post(bot: BotConfig, channel: str, thread_ts: str, text: str) -> bool:
-    """Post `text` as replies in a thread, backing off once on a 429. Returns False (and logs) when it couldn't be posted."""
+def _post(bot: BotConfig, channel: str, thread_ts: str, text: str, character: Character | None = None) -> bool:
+    """Post `text` as replies in a thread, as `character` when given, backing off once on a 429. Returns False (and logs) when it couldn't be posted."""
+    identity = character.slack_identity() if character else {}
     for chunk in slack.split_message(text):
         for attempt in range(2):
             try:
-                slack.post_message(channel, chunk, thread_ts, token=bot.bot_token)
+                slack.post_message(channel, chunk, thread_ts, token=bot.bot_token, **identity)
                 break
             except SlackApiError as exc:
                 if _is_rate_limited(exc) and attempt == 0:
@@ -263,6 +271,12 @@ def _threads_to_remind(
     )
 
 
+def _character_for(
+    characters: CharacterService | None, channel: str, thread_ts: str, usable: list[Character] | None = None
+) -> Character | None:
+    return characters.character_for_feature(FEATURE_PR_REMINDER, channel, thread_ts, usable) if characters else None
+
+
 def check_and_remind(
     bot: BotConfig,
     links: list[PrLink],
@@ -272,6 +286,7 @@ def check_and_remind(
     include_author_only_threads: bool = False,
     last_reminded: dict[str, float] | None = None,
     now: datetime | None = None,
+    characters: CharacterService | None = None,
 ) -> CheckResult:
     """Check the PRs on GitHub, post one reminder in each thread that has a PR waiting for review, and mark finished ones.
 
@@ -286,7 +301,8 @@ def check_and_remind(
     to stop it. `include_author_only_threads` also posts, without a ping, in threads whose only news is "changes
     requested": a one-off check wants that, a recurring one would repeat it every run. `last_reminded` (see
     ReminderConfig) decides which threads go first when there are more than fit in one run, and keeps a thread that was
-    reminded moments ago from being reminded again.
+    reminded moments ago from being reminded again. `characters` gives each thread its voice and sender identity: a thread
+    keeps the character it has, so reminders and replies there stay in one voice; without it the default voice is used.
 
     Raises:
         httpx.HTTPError, queries.GithubQueryError: GitHub couldn't be queried. Nothing is posted in that case.
@@ -298,11 +314,15 @@ def check_and_remind(
     threads = _threads_to_remind(statuses, include_author_only_threads, last_reminded or {}, now)
     cap = AgentConfigs.PR_REMINDER_MAX_THREADS_POSTED
     result = CheckResult(statuses, truncated, deferred_threads=max(0, len(threads) - cap))
+    # Read once for the whole run: each thread then only asks the thread store which character it has.
+    usable = characters.usable_characters() if characters and threads else None
     for thread in threads[:cap]:
         if result.posted or result.failed_posts:
             time.sleep(_POST_GAP_SECONDS)
-        text = message.render_thread_message(thread.waiting, thread.on_author, mentions=mentions, now=now, schedule_id=schedule_id)
-        if _post(bot, thread.channel, thread.thread_ts, text):
+        character = _character_for(characters, thread.channel, thread.thread_ts, usable)
+        voice = message.PrReminderVoice.from_character(character)
+        text = message.render_thread_message(thread.waiting, thread.on_author, mentions=mentions, now=now, schedule_id=schedule_id, voice=voice)
+        if _post(bot, thread.channel, thread.thread_ts, text, character):
             result.posted.append((thread.channel, thread.thread_ts))
         else:
             result.failed_posts += 1
@@ -310,10 +330,10 @@ def check_and_remind(
     return result
 
 
-def _end_reminder(bot: BotConfig, schedule_id: str, config: ReminderConfig, status: str, note: str) -> None:
+def _end_reminder(bot: BotConfig, schedule_id: str, config: ReminderConfig, status: str, note: str, character: Character | None = None) -> None:
     """Soft-delete the reminder, then say why in its origin thread. Ending first, so a Slack failure can't leave it firing."""
     _schedules.set_schedule_status(schedule_id, status)
-    _post(bot, config.origin_channel, config.origin_thread_ts, note)
+    _post(bot, config.origin_channel, config.origin_thread_ts, note, character)
 
 
 def save_progress(schedule_id: str, config: ReminderConfig, result: CheckResult, now: datetime) -> None:
@@ -340,7 +360,7 @@ def _load_reminder(schedule_id: str) -> tuple[Schedule, ReminderConfig] | None:
         return None
 
 
-def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) -> None:
+def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None, characters: CharacterService | None = None) -> None:
     """Run one tick of a recurring PR reminder: remind in the threads of PRs waiting for review, or end the reminder.
 
     When it may run is the schedule's cron (hours and days included, in the row's timezone), so every tick that gets
@@ -350,6 +370,8 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
 
     A transient GitHub or Slack read failure propagates and fails the job; the reminder stays active and the next tick
     tries again. The scheduler doesn't retry reminder jobs: a retry after posting would repeat the mentions.
+
+    `characters` gives each thread its voice (see `check_and_remind`); the closing notes use the origin thread's character.
     """
     now = now or datetime.now(UTC)
 
@@ -359,7 +381,9 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
     schedule, config = loaded
 
     if is_reminder_expired(config.expires_at, now):
-        _end_reminder(bot, schedule_id, config, "expired", message.render_expired_note(schedule_id))
+        character = _character_for(characters, config.origin_channel, config.origin_thread_ts)
+        voice = message.PrReminderVoice.from_character(character)
+        _end_reminder(bot, schedule_id, config, "expired", message.render_expired_note(schedule_id, voice), character)
         return
 
     try:
@@ -368,11 +392,13 @@ def run_reminder(bot: BotConfig, schedule_id: str, now: datetime | None = None) 
         )
     except ChannelReadError as exc:
         log.warning("PR reminder %s can't read %s (%s) — ending it", schedule_id, schedule.channel, exc.code)
-        _end_reminder(bot, schedule_id, config, "completed", message.render_unreadable_note(schedule_id, exc.code))
+        character = _character_for(characters, config.origin_channel, config.origin_thread_ts)
+        voice = message.PrReminderVoice.from_character(character)
+        _end_reminder(bot, schedule_id, config, "completed", message.render_unreadable_note(schedule_id, exc.code, voice), character)
         return
 
     result = check_and_remind(
-        bot, scan.links, mentions=list(config.mentions), schedule_id=schedule.id, last_reminded=config.last_reminded, now=now
+        bot, scan.links, mentions=list(config.mentions), schedule_id=schedule.id, last_reminded=config.last_reminded, now=now, characters=characters
     )
     log.info(
         "PR reminder %s: %d PR(s) checked (%s), posted in %d thread(s), marked %d finished",

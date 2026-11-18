@@ -1,11 +1,53 @@
 """Slack Web API client — message posting, history reads, modal views, and mrkdwn chunking."""
+import hashlib
+import logging
 from collections.abc import Callable
 from typing import Any
 
+from redis import RedisError
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
+from connectors.redis_client import client as redis_client
+
+log = logging.getLogger("connectors.slack")
+
+# An app whose token lacks chat:write.customize is remembered in Redis (`slack_no_customize:{sha256(token)[:16]}`), not in
+# memory: `rq worker` forks a process per job, so a module-level set would be forgotten after every message or run.
+# Without it every message from such an app costs two Slack calls (the refused attempt, then the retry) and a warning.
+# It expires so that adding the scope and reinstalling the app takes effect without a restart.
+_NO_CUSTOMIZE_TTL_SECONDS = 600
 
 
-def post_message(channel: str, text: str, thread_ts: str | None = None, blocks: list[dict] | None = None, *, token: str) -> str:
+def _no_customize_key(token: str) -> str:
+    return f"slack_no_customize:{hashlib.sha256(token.encode()).hexdigest()[:16]}"
+
+
+def _lacks_customize_scope(token: str) -> bool:
+    try:
+        return bool(redis_client.exists(_no_customize_key(token)))
+    except RedisError:
+        return False
+
+
+def _remember_missing_customize_scope(token: str) -> None:
+    try:
+        redis_client.set(_no_customize_key(token), "1", ex=_NO_CUSTOMIZE_TTL_SECONDS)
+    except RedisError:
+        log.warning("Could not remember that this Slack app lacks chat:write.customize", exc_info=True)
+
+
+def post_message(
+    channel: str,
+    text: str,
+    thread_ts: str | None = None,
+    blocks: list[dict] | None = None,
+    *,
+    token: str,
+    username: str | None = None,
+    icon_emoji: str | None = None,
+    icon_url: str | None = None,
+) -> str:
     """Post a message to Slack and return its timestamp.
 
     Args:
@@ -14,11 +56,28 @@ def post_message(channel: str, text: str, thread_ts: str | None = None, blocks: 
         thread_ts: If provided, posts as a reply in that thread; otherwise posts a new top-level message.
         blocks: Optional Block Kit blocks to render instead of/alongside plain text.
         token: Bot OAuth token (xoxb-...) to authenticate the request.
+        username: Sender name to show instead of the bot's own. Needs the chat:write.customize scope; without it the
+            message is posted under the bot's own name and icon.
+        icon_emoji: Emoji (":name:") to show as the sender's icon, instead of the bot's own. Same scope as `username`.
+        icon_url: Image URL to show as the sender's icon. Same scope as `username`.
 
     Returns:
         The Slack message timestamp (ts) of the posted message.
     """
-    response = WebClient(token=token).chat_postMessage(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
+    client = WebClient(token=token)
+    identity = {key: value for key, value in (("username", username), ("icon_emoji", icon_emoji), ("icon_url", icon_url)) if value}
+    if identity and _lacks_customize_scope(token):
+        identity = {}
+    try:
+        response = client.chat_postMessage(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks, **identity)
+    except SlackApiError as exc:
+        if not identity or exc.response.get("error") != "missing_scope":
+            raise
+        # A message is better than none: the app lacks chat:write.customize, so post it as the bot itself.
+        response = client.chat_postMessage(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
+        # Only now is the missing scope proven: had the retry failed too, the cause could be something else.
+        _remember_missing_customize_scope(token)
+        log.warning("Slack app lacks chat:write.customize; posted as the bot instead of %s (remembered for %d s)", username, _NO_CUSTOMIZE_TTL_SECONDS)
     return str(response["ts"])
 
 

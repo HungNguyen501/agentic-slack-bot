@@ -2,24 +2,35 @@
 import json
 import logging
 import traceback
+from typing import NamedTuple
 
 from agent.access_control.tools import ACCESS_REQUEST_POSTED_MESSAGE
 from agent.dispatch import ToolServices, dispatch_tool, get_agent_tools, tool_category
 from agent.history import load_history, save_history
 from agent.skills.loader import load_system_prompt
 from bots.core.models import BotConfig
+from characters.core.models import Character
+from characters.core.persona import build_voice_block
 from common.configs import AgentConfigs, Configs
 from connectors import openai_client
 
 log = logging.getLogger("agent")
 
 
-def summarize_answer(question: str, answer: str) -> str:
+class AgentReply(NamedTuple):
+    """What the agent loop answered, and the character whose voice it used (None for the plain voice)."""
+
+    text: str
+    character: Character | None = None
+
+
+def summarize_answer(question: str, answer: str, character: Character | None = None) -> str:
     """Condense a full agent answer into a short Slack-friendly summary.
 
     Args:
         question: The original question that produced the answer.
         answer: The agent's full answer text.
+        character: The character the answer was written as; the summary takes the same voice.
 
     Returns:
         A 1-3 sentence summary in Slack mrkdwn, or the original answer if summarization fails.
@@ -42,6 +53,7 @@ def summarize_answer(question: str, answer: str) -> str:
                         "(e.g. zero failures), celebrate it warmly (\"Great day, no failed jobs!\"); if "
                         "something's off, show a bit of empathy or mild concern rather than staying flat "
                         "and neutral. Use Slack mrkdwn, no headers."
+                        + (f"\n\n{build_voice_block(character)}" if character else "")
                     ),
                 },
                 {"role": "user", "content": f"Question: {question}\n\nAnswer:\n{answer}"},
@@ -64,7 +76,7 @@ def run_agent(
     bot: BotConfig | None = None,
     *,
     services: ToolServices,
-) -> str:
+) -> AgentReply:
     """Run the OpenAI agentic loop with per-thread conversation history.
 
     Args:
@@ -77,7 +89,8 @@ def run_agent(
         services: Use cases and stores for the tools that run on them.
 
     Returns:
-        Agent's final answer as a Slack-formatted string.
+        The agent's final answer as a Slack-formatted string, with the character it was written as. The character is
+        picked from those bound to the skills the router chose (or to `skill:core`) and stays the same for the thread.
     """
     if bot is None:
         raise ValueError("bot is required — must be loaded from the bots registry")
@@ -88,7 +101,9 @@ def run_agent(
     history = load_history(thread_ts)
     log.info("Loaded %d history messages for thread %s", len(history), thread_ts)
 
-    instructions = load_system_prompt(question, history, enabled_skills)
+    prompt = load_system_prompt(question, history, enabled_skills)
+    character = services.characters.character_for_skills(prompt.routed, prompt.always, channel, thread_ts)
+    instructions = f"{prompt.text}\n\n---\n\n{build_voice_block(character)}" if character else prompt.text
     messages: list[dict] = list(history)
 
     # Prepend the current user's authorization status so the LLM re-evaluates
@@ -115,7 +130,7 @@ def run_agent(
             history.append({"role": "user", "content": question})  # store clean question, not the auth-annotated one
             history.append({"role": "assistant", "content": answer})
             save_history(thread_ts, history)
-            return answer
+            return AgentReply(answer, character)
 
         # Reasoning items must be echoed back alongside their function_call items on the next turn.
         messages.extend(item.model_dump(exclude_none=True) for item in response.output)
@@ -129,6 +144,6 @@ def run_agent(
                 history.append({"role": "user", "content": question})
                 history.append({"role": "assistant", "content": result})
                 save_history(thread_ts, history)
-                return ""
+                return AgentReply("", character)
 
-    return "Sorry, I hit a processing limit. Please try a more specific question."
+    return AgentReply("Sorry, I hit a processing limit. Please try a more specific question.", character)
