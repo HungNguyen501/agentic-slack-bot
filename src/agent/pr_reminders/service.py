@@ -11,12 +11,16 @@ from agent.pr_reminders import message, queries
 from agent.pr_reminders.limits import is_reminder_expired
 from agent.pr_reminders.pr_links import PrLink, limit_links, links_from_messages, links_from_urls, merge_links
 from agent.pr_reminders.status import Bucket, PrStatus, build_status
+from bots.core.models import BotConfig
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import github, slack
-from connectors.db.bots import BotConfig
-from connectors.db.schedules import Schedule, get_schedule, merge_schedule_config, set_schedule_status
+from schedules.core.models import Schedule
+from schedules.infra.supabase_schedules import SupabaseScheduleRepository
 
 log = logging.getLogger("agent.pr_reminders")
+
+# Built here until this feature is migrated and receives its repository from the worker's composition root.
+_schedules = SupabaseScheduleRepository()
 
 # Slack errors meaning "this bot can't read that channel" (retrying won't fix them), and what to tell the user.
 CHANNEL_READ_HELP = {
@@ -308,7 +312,7 @@ def check_and_remind(
 
 def _end_reminder(bot: BotConfig, schedule_id: str, config: ReminderConfig, status: str, note: str) -> None:
     """Soft-delete the reminder, then say why in its origin thread. Ending first, so a Slack failure can't leave it firing."""
-    set_schedule_status(schedule_id, status)
+    _schedules.set_schedule_status(schedule_id, status)
     _post(bot, config.origin_channel, config.origin_thread_ts, note)
 
 
@@ -318,13 +322,13 @@ def save_progress(schedule_id: str, config: ReminderConfig, result: CheckResult,
     last_reminded = {key: at for key, at in config.last_reminded.items() if key in waiting_threads}
     last_reminded |= {thread_key(channel, thread_ts): now.timestamp() for channel, thread_ts in result.posted}
     if last_reminded != config.last_reminded:
-        merge_schedule_config(schedule_id, {"last_reminded": last_reminded})
+        _schedules.merge_schedule_config(schedule_id, {"last_reminded": last_reminded})
 
 
 def _load_reminder(schedule_id: str) -> tuple[Schedule, ReminderConfig] | None:
     """The active reminder and its config, or None when there is nothing to run: it is gone or already ended, or its
     config is malformed (which ends it)."""
-    schedule = get_schedule(schedule_id)
+    schedule = _schedules.get_schedule(schedule_id)
     if schedule is None or schedule.kind != "pr_reminder" or schedule.status != "active":
         log.info("PR reminder %s is gone or no longer active — skipping", schedule_id)
         return None
@@ -332,7 +336,7 @@ def _load_reminder(schedule_id: str) -> tuple[Schedule, ReminderConfig] | None:
         return schedule, ReminderConfig.from_dict(schedule.config)
     except ValueError:
         log.exception("PR reminder %s has a malformed config — ending it", schedule_id)
-        set_schedule_status(schedule_id, "completed")
+        _schedules.set_schedule_status(schedule_id, "completed")
         return None
 
 

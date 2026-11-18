@@ -4,10 +4,10 @@ from unittest.mock import patch
 from agent.access_control import tools
 from agent.access_control.access_request_categories import AccessRequestCategory
 from agent.access_control.tools import ACCESS_REQUEST_POSTED_MESSAGE, build_form_blocks, build_form_button_value
-from agent.dataset_sync.store import DatasetNotSyncedError
+from dataset_sync.core.errors import DatasetNotSyncedError
 from agent.forms.access_request_options import LOCATIONS_DATASET, TAGS_DATASET, FormOptions
+from bots.core.models import BotConfig
 from common.configs import AgentConfigs
-from connectors.db.bots import BotConfig
 
 BOT = BotConfig(bot_id="bot-a", bot_token="xoxb-test", signing_secret=b"secret")
 LOCATIONS = [{"company_key": "eaze_com", "company": "Eaze", "location_market": "CA", "location": "Eaze"}]

@@ -8,10 +8,10 @@ from agent.access_control import principals
 from agent.access_control.access_request_categories import channel_authorized, get_access_request_category
 from agent.forms.access_request_view import EMAIL_PATTERN
 from agent.service_principal_secrets.store import get as get_cached_secret, upsert as upsert_secret
+from bots.core.models import BotConfig
 from common import crypto
 from common.configs import AgentConfigs, Configs
 from connectors import databricks
-from connectors.db.bots import BotConfig
 from connectors.redis_client import client as redis_client
 
 log = logging.getLogger("agent.service_principal_secrets.tools")

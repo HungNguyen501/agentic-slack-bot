@@ -9,7 +9,7 @@ from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.queries import GithubQueryError
 from agent.pr_reminders.status import Bucket, PrStatus
 from common.configs import AgentConfigs
-from connectors.db.schedules import Schedule
+from schedules.core.models import Schedule
 PR1, PR2, PR3 = (PrRef("org", "repo", n) for n in (1, 2, 3))
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 IN_HOURS = datetime(2026, 11, 4, 5, 0, tzinfo=UTC)  # 12:00 in Vietnam
@@ -625,13 +625,16 @@ def schedule(status="active", kind="pr_reminder", config=CONFIG, created_at=None
 
 @pytest.fixture
 def merge_config():
-    with patch("agent.pr_reminders.service.merge_schedule_config", autospec=True) as merge:
+    with patch("agent.pr_reminders.service._schedules.merge_schedule_config", autospec=True) as merge:
         yield merge
 
 
 @pytest.fixture
 def db(merge_config):
-    with patch("agent.pr_reminders.service.get_schedule", autospec=True) as get, patch("agent.pr_reminders.service.set_schedule_status", autospec=True) as set_status:
+    with (
+        patch("agent.pr_reminders.service._schedules.get_schedule", autospec=True) as get,
+        patch("agent.pr_reminders.service._schedules.set_schedule_status", autospec=True) as set_status,
+    ):
         yield get, set_status
 
 

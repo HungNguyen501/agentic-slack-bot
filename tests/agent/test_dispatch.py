@@ -1,15 +1,18 @@
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
 from agent import dispatch
-from connectors.db.bots import BotConfig
+from bots.core.models import BotConfig
+from dataset_sync.core.service import DatasetSyncService
+from schedules.core.ports import ScheduleRepository
 
 BOT = BotConfig(bot_id="bot-a", bot_token="xoxb-test", signing_secret=b"secret")
+SERVICES = dispatch.ToolServices(schedules=create_autospec(ScheduleRepository), dataset_sync=create_autospec(DatasetSyncService))
 
 
 def call(name, user_id, admin_users=frozenset({"UADMIN"})):
-    return dispatch.dispatch_tool(name, {"scope": "channel"}, user_id, admin_users, BOT, "C1", "1.0")
+    return dispatch.dispatch_tool(name, {"scope": "channel"}, user_id, admin_users, BOT, "C1", "1.0", SERVICES)
 
 
 def test_schedule_pr_reminder_is_admin_only():
@@ -43,10 +46,10 @@ def test_check_pr_approvals_is_open_to_everyone(user_id):
 
 def test_the_other_schedule_tools_still_use_the_schedule_handler():
     with patch("agent.dispatch.dispatch_schedule_tool", autospec=True, return_value="ok") as handler:
-        reply = dispatch.dispatch_tool("remove_schedule", {"id": "s1"}, "UADMIN", frozenset({"UADMIN"}), BOT, "C1", "1.0")
+        reply = dispatch.dispatch_tool("remove_schedule", {"id": "s1"}, "UADMIN", frozenset({"UADMIN"}), BOT, "C1", "1.0", SERVICES)
 
     assert reply == "ok"
-    handler.assert_called_once_with("remove_schedule", {"id": "s1"}, "bot-a")
+    handler.assert_called_once_with("remove_schedule", {"id": "s1"}, "bot-a", SERVICES.schedules)
 
 
 @pytest.mark.parametrize("name", ["list_synced_datasets", "sync_dataset", "schedule_dataset_sync"])
@@ -63,4 +66,4 @@ def test_dataset_sync_tools_go_to_their_handler_for_admins():
         reply = call("sync_dataset", "UADMIN")
 
     assert reply == "ok"
-    handler.assert_called_once_with("sync_dataset", {"scope": "channel"}, "UADMIN", "C1", BOT)
+    handler.assert_called_once_with("sync_dataset", {"scope": "channel"}, "UADMIN", "C1", BOT, SERVICES.dataset_sync)

@@ -93,14 +93,6 @@ class AgentConfigs:
     # it's treated as expired (see agent/service_principal_secrets/tools.py's secret_link:{token} key).
     SECRET_LINK_TTL_SECONDS: int = 600
 
-    # Datasets synced from Databricks into Supabase (agent/dataset_sync/).
-    DATASET_SYNC_MAX_ROWS: int = 50_000
-    DATASET_SYNC_MIN_INTERVAL_MINUTES: int = 60
-    # A sync that would shrink a dataset of at least MIN_ROWS rows to under RATIO of its size is refused unless forced:
-    # a query that suddenly sees few rows (lost privileges, a renamed table) would otherwise wipe the form's options.
-    DATASET_SYNC_SHRINK_GUARD_MIN_ROWS: int = 10
-    DATASET_SYNC_SHRINK_GUARD_RATIO: float = 0.5
-
     # PR review reminders (agent/pr_reminders/).
     PR_REMINDER_SCOPES: tuple[str, ...] = ("thread", "channel")
     PR_REMINDER_DEFAULT_LOOKBACK_HOURS: int = 72

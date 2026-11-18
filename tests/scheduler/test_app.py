@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from connectors.db.schedules import Schedule
+from schedules.core.models import Schedule
 from scheduler import app
 
 

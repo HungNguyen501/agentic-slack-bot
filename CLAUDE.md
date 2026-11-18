@@ -66,7 +66,7 @@ reviewer clicks the link → receiver GET /secrets/{token} → atomic Redis GETD
 **Dataset sync** (reference data Databricks → Supabase, e.g. the data access form's locations and tags):
 ```
 scheduler (schedules row kind = dataset_sync) → enqueue process_dataset_sync → worker
-  (agent/dataset_sync/service.py::run_scheduled_sync) → fetch_rows from Databricks
+  (dataset_sync/core/service.py::DatasetSyncService.run_scheduled_sync) → fetch_rows from Databricks
   → fully replace synced_datasets.synced_rows (a failure or empty result keeps the old copy; failures are posted to the schedule's channel)
 admin asks the agent to sync / schedule → list_synced_datasets / sync_dataset / schedule_dataset_sync tools
 request_data_access → reads the synced datasets, snapshots the form's dropdown options into Redis (access_form_options:{token})
@@ -133,7 +133,7 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `bots` table** — bot registry (no per-bot env vars):
 - `id`, `bot_token_secret_id uuid`, `signing_secret_secret_id uuid`, `enabled_skills text[]`, `admin_users text[]`, `app_id`, `active`
-- The token and signing secret are stored in Supabase Vault; `connectors/db/bots.py` resolves them by joining `vault.decrypted_secrets`. Admins rotate them with `vault.update_secret()` — no redeploy. The plaintext `bot_token` / `signing_secret` columns from V1 were dropped in V8.
+- The token and signing secret are stored in Supabase Vault; `bots/infra/supabase_bots.py` resolves them by joining `vault.decrypted_secrets`. Admins rotate them with `vault.update_secret()` — no redeploy. The plaintext `bot_token` / `signing_secret` columns from V1 were dropped in V8.
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
@@ -177,16 +177,32 @@ See `.claude/rules/skills.md` for authoring guidelines.
 
 ## File Map
 
+This is the **current** (legacy) layout, grouped by task. Do not add new modules to `agent/` or `connectors/db/`: new features follow [layered-architecture.md](.claude/rules/layered-architecture.md) (`src/<feature>/{presentation,core,infra}/`), and existing features move to it one at a time.
+
 ```
 src/
-  receiver/app.py            # Webhook + interactivity handler (block_actions, view_submission)
+  receiver/
+    app.py                   # Webhook + interactivity handler (block_actions, view_submission)
+    wiring.py                # Composition root: the bot repository
   worker/
     tasks.py                 # RQ task definitions (mentions, schedules, access request submission) — thin shell over agent/
+    wiring.py                # Composition root: builds the migrated features' adapters + use cases, and the `ToolServices` the agent loop's tools run on
+  # Migrated to the layered layout (layered-architecture.md): <feature>/{core,infra,presentation}/
+  bots/
+    core/                    # BotConfig model, BotRepository port, BotNotFoundError
+    infra/supabase_bots.py   # Bot registry in Supabase; token + signing secret from Vault
+  schedules/
+    core/                    # Schedule / AddedReminder / AddedDatasetSync models, ScheduleRepository port
+    infra/supabase_schedules.py   # Schedule CRUD, atomic PR-reminder / dataset-sync inserts (shared by the scheduler and the agent's tools)
+    presentation/tools.py    # list/add/update/remove_schedule tool handlers
+  dataset_sync/
+    core/                    # models, errors, ports (DatasetRepository, DatasetFetcher, FailureNotifier), DatasetSyncService (sync with empty/shrink guards, scheduled run, scheduling, listing)
+    infra/                   # supabase_datasets.py (registry + snapshots; get_rows is what other features read), databricks_fetcher.py, slack_notifier.py
+    presentation/tools.py    # list_synced_datasets / sync_dataset / schedule_dataset_sync handlers
   agent/                     # Everything the agent does, by task
     agent.py                 # Agent loop (OpenAI Responses API) + summarize_answer
     dispatch.py              # Tool schema exposure + per-call routing
     history.py               # Per-thread conversation history (Redis)
-    schedules.py             # Schedule-CRUD tool handlers
     skills/                  # loader.py (Supabase) / router.py / source.py (parsing) / sync.py (`make skills-sync`); files/ holds the agent (runtime) skill files (01–14) — NOT Claude Code skills
     forms/                   # Pure, no I/O — the receiver may import this
       access_request_options.py    # FormOptions built from the synced datasets (pure); Redis key for the snapshot
@@ -207,10 +223,6 @@ src/
     service_principal_secrets/
       store.py                     # Cached (encrypted) service-principal secret CRUD (Supabase)
       tools.py                     # generate_service_principal_secret tool handler
-    dataset_sync/
-      store.py                     # synced_datasets registry + snapshots (Supabase); get_rows() is what features read
-      service.py                   # sync_dataset (full replace, with empty/shrink guards) + run_scheduled_sync
-      tools.py                     # list_synced_datasets / sync_dataset / schedule_dataset_sync handlers
     pr_reminders/
       pr_links.py                  # PR links in Slack messages + the thread each lives in (pure)
       queries.py                   # GitHub GraphQL query + response parser (pure)
@@ -219,7 +231,9 @@ src/
       limits.py                    # Cron minimum interval, optional expiry check, cron-window and timezone checks, mention parsing, ReminderRequestError (pure)
       service.py                   # Collect links, check GitHub, post reminders, run one reminder tick
       tools.py                     # check_pr_approvals / schedule_pr_reminder handlers
-  scheduler/app.py           # Cron polling loop
+  scheduler/
+    app.py                   # Cron polling loop
+    wiring.py                # Composition root: the schedule repository
   common/
     configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas) + ReminderConfig (the `schedules.config` of a PR reminder) + ReminderMessages (the Vietnamese wording of PR reminder messages)
     cron.py                  # Cron validation (malformed / too frequent) shared by recurring jobs
@@ -227,9 +241,7 @@ src/
   connectors/                # Generic clients for external tools — no task-specific logic
     db/                      # Supabase (Postgres) access — sync, psycopg
       connection.py              # psycopg connection helper
-      bots.py                    # Bot registry
       agent_skills.py            # AgentSkill model + agent_skills table read / full replace (loader + `make skills-sync`)
-      schedules.py               # Schedule CRUD (shared by the scheduler service and the agent's schedule tools)
     databricks/              # Statement API, Jobs API, SCIM, OAuth secrets
       client.py                  # Host/token/auth headers
       sql.py                     # SELECT-only Statement API client (run_query: capped, Slack-formatted; fetch_rows: every row, for dataset sync)
@@ -253,6 +265,7 @@ src/
 
 Detailed guidelines in `.claude/rules/`:
 - [architecture.md](.claude/rules/architecture.md) — service boundaries and invariants
+- [layered-architecture.md](.claude/rules/layered-architecture.md) — **where new code goes**: feature-first packages with `presentation/` / `core/` / `infra/` layers, ports, composition root, dependency rule. Required for all new code; the existing tree is migrated one feature at a time
 - [code-style.md](.claude/rules/code-style.md) — Python style, linting, dependencies
 - [skills.md](.claude/rules/skills.md) — agent skill file authoring (`src/agent/skills/files/`)
 - [database.md](.claude/rules/database.md) — Supabase access: row dataclasses, where DB modules live, queries, migrations, tests
@@ -261,7 +274,7 @@ Detailed guidelines in `.claude/rules/`:
 
 Two unrelated things are called "skills" here:
 - **Agent skills** — `src/agent/skills/files/*.md`, loaded into the Slack bot's system prompt at runtime.
-- **Claude Code skills** — `.claude/skills/`, used by you while developing. Invoke `python-code-style` / `python-unit-tests` / `python-docstrings` when writing Python, and run `/code-review` on your changes before opening a PR. Details and precedence over the skills' defaults: [code-style.md](.claude/rules/code-style.md).
+- **Claude Code skills** — `.claude/skills/`, used by you while developing. Invoke `python-code-style` / `python-unit-tests` / `python-docstrings` when writing Python, invoke `layered-architecture` (with [layered-architecture.md](.claude/rules/layered-architecture.md), which takes precedence) before deciding where new code or a new module goes, and run `/code-review` on your changes before opening a PR. Details and precedence over the skills' defaults: [code-style.md](.claude/rules/code-style.md).
 
 ## Custom Commands
 

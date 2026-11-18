@@ -54,7 +54,7 @@ source = ["src"]
 exclude_also = ["def __repr__", "raise AssertionError", "raise NotImplementedError", "if __name__ == .__main__.:"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 addopts = ["--import-mode=importlib"]
 testpaths = ["tests"]
 

@@ -1,16 +1,27 @@
 """Tool schema exposure and per-call routing for the agent loop."""
 import logging
+from dataclasses import dataclass
 
 from agent.access_control.tools import dispatch_data_access_tool
-from agent.dataset_sync.tools import dispatch_dataset_sync_tool
 from agent.pr_reminders.tools import dispatch_pr_reminder_tool
-from agent.schedules import dispatch_schedule_tool
 from agent.service_principal_secrets.tools import dispatch_secret_generation_tool
+from bots.core.models import BotConfig
 from common.configs import AgentConfigs
 from connectors import databricks
-from connectors.db.bots import BotConfig
+from dataset_sync.core.service import DatasetSyncService
+from dataset_sync.presentation.tools import dispatch_dataset_sync_tool
+from schedules.core.ports import ScheduleRepository
+from schedules.presentation.tools import dispatch_schedule_tool
 
 log = logging.getLogger("agent.dispatch")
+
+
+@dataclass(frozen=True)
+class ToolServices:
+    """The migrated features' use cases and stores the tool handlers run on, built by the worker's composition root."""
+
+    schedules: ScheduleRepository
+    dataset_sync: DatasetSyncService
 
 
 def get_agent_tools() -> list[dict]:
@@ -31,6 +42,7 @@ def dispatch_tool(
     bot: BotConfig,
     channel: str,
     thread_ts: str,
+    services: ToolServices,
 ) -> str:
     """Route a single tool call to the correct handler, enforcing the per-bot admin whitelist.
 
@@ -42,6 +54,7 @@ def dispatch_tool(
         bot: Per-bot config carrying bot_id, bot_token, admin_users, enabled_skills.
         channel: Slack channel ID the request was made in.
         thread_ts: Thread timestamp of the conversation.
+        services: Use cases and stores for the tools that run on them.
 
     Returns:
         String result to pass back to the LLM as the tool response.
@@ -61,12 +74,12 @@ def dispatch_tool(
             return "You are not authorized to manage schedules."
         if name == "schedule_pr_reminder":
             return dispatch_pr_reminder_tool(name, args, user_id, channel, thread_ts, bot)
-        return dispatch_schedule_tool(name, args, bot.bot_id)
+        return dispatch_schedule_tool(name, args, bot.bot_id, services.schedules)
 
     if tool_category(name) == "dataset_sync":
         if user_id not in admin_users:
             return "You are not authorized to manage dataset syncs."
-        return dispatch_dataset_sync_tool(name, args, user_id, channel, bot)
+        return dispatch_dataset_sync_tool(name, args, user_id, channel, bot, services.dataset_sync)
 
     if tool_category(name) == "pr_reminder":
         return dispatch_pr_reminder_tool(name, args, user_id, channel, thread_ts, bot)

@@ -8,8 +8,8 @@ from agent.access_control.access_requests import AccessRequest, add_access_reque
 from agent.forms.access_request_submission import VerifiedAccessRequest
 from agent.forms.access_request_view import parse_emails
 from agent.history import record_thread_messages
+from bots.core.models import BotConfig
 from connectors import slack
-from connectors.db.bots import BotConfig
 
 log = logging.getLogger("agent.access_control.submission")
 

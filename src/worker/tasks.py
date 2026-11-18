@@ -9,11 +9,10 @@ from slack_sdk.errors import SlackApiError, SlackClientError
 
 from agent.access_control import review, submission
 from agent.agent import run_agent, summarize_answer
-from agent.dataset_sync.service import run_scheduled_sync
 from agent.history import record_thread_messages
 from agent.pr_reminders.service import run_reminder
 from connectors import slack
-from connectors.db.bots import get_by_id as get_bot
+from worker import wiring
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
@@ -117,7 +116,7 @@ def reply_to_mention(
     Returns:
         The Slack message timestamp (ts) of the last posted reply chunk.
     """
-    bot = get_bot(bot_id)
+    bot = wiring.bot_repository().get_by_id(bot_id)
     question = _strip_bot_mention(text, bot.bot_token)
 
     review_command = review.parse_review_command(question)
@@ -180,7 +179,7 @@ def reply_to_mention(
     animation_thread.start()
 
     try:
-        answer = run_agent(question, thread_ts, channel, user_id=user, bot=bot)
+        answer = run_agent(question, thread_ts, channel, user_id=user, bot=bot, services=wiring.tool_services())
     except Exception as exc:
         log.exception("Agent error: %s", exc)
         answer = "Sorry, I ran into an error while processing your question. Please try again :hugging_face:."
@@ -222,13 +221,13 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
     Returns:
         The Slack message timestamp (ts) of the agent's detailed reply.
     """
-    bot = get_bot(bot_id)
+    bot = wiring.bot_repository().get_by_id(bot_id)
     log.info("Running scheduled agent for channel=%s question=%.200s (bot_id=%s)", channel, question, bot_id)
 
     header_ts = slack.post_message(channel, f"*Scheduled question:* _{question}_", token=bot.bot_token)
 
     try:
-        answer = run_agent(question, header_ts, channel, bot=bot)
+        answer = run_agent(question, header_ts, channel, bot=bot, services=wiring.tool_services())
         summary = summarize_answer(question, answer)
     except Exception as exc:
         log.exception("Scheduled agent error: %s", exc)
@@ -255,15 +254,15 @@ def process_pr_reminder(schedule_id: str, bot_id: str) -> None:
 
     It posts into the PRs' own threads, so there is no reply to return.
     """
-    run_reminder(get_bot(bot_id), schedule_id)
+    run_reminder(wiring.bot_repository().get_by_id(bot_id), schedule_id)
 
 
 def process_dataset_sync(schedule_id: str, bot_id: str) -> None:
-    """Run one tick of the dataset sync in the `schedules` row `schedule_id`; see agent.dataset_sync.service.run_scheduled_sync.
+    """Run one tick of the dataset sync in the `schedules` row `schedule_id`; see dataset_sync.core.service.DatasetSyncService.run_scheduled_sync.
 
     It is silent on success and reports a failure in the schedule's channel, so there is no reply to return.
     """
-    run_scheduled_sync(get_bot(bot_id), schedule_id)
+    wiring.dataset_sync_service().run_scheduled_sync(wiring.bot_repository().get_by_id(bot_id), schedule_id)
 
 
 def notify_access_request_button_expired(bot_id: str, channel: str, thread_ts: str) -> None:
@@ -274,7 +273,7 @@ def notify_access_request_button_expired(bot_id: str, channel: str, thread_ts: s
         channel: Slack channel ID the button was posted into.
         thread_ts: Thread timestamp to reply into.
     """
-    bot = get_bot(bot_id)
+    bot = wiring.bot_repository().get_by_id(bot_id)
     slack.post_message(
         channel,
         "This request button has expired. Please ask again to get a new one.",
@@ -299,5 +298,5 @@ def process_data_access_submission(
     Returns:
         The Slack message timestamp (ts) of the last posted review-request chunk.
     """
-    bot = get_bot(bot_id)
+    bot = wiring.bot_repository().get_by_id(bot_id)
     return submission.submit_data_access_request(bot, channel, thread_ts, requester_id, request_type, reviewers, fields)

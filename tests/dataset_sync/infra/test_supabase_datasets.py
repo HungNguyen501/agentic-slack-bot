@@ -1,20 +1,14 @@
-from contextlib import contextmanager
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from functools import partial
 
 import pytest
 
-from agent.dataset_sync import store
+from dataset_sync.core.errors import DatasetBusyError, DatasetNotSyncedError
+from dataset_sync.infra.supabase_datasets import SupabaseDatasetRepository
+from tests.support.db import fake_connect as shared_fake_connect
 
-
-@contextmanager
-def fake_connect(fetchone=None, rowcount=1):
-    cur = MagicMock(fetchone=MagicMock(return_value=fetchone), rowcount=rowcount)
-    conn = MagicMock()
-    conn.cursor.return_value.__enter__.return_value = cur
-    with patch("agent.dataset_sync.store.connect", autospec=True) as connect:
-        connect.return_value.__enter__.return_value = conn
-        yield cur
+store = SupabaseDatasetRepository()
+fake_connect = partial(shared_fake_connect, "dataset_sync.infra.supabase_datasets.connect")
 
 
 def test_get_rows_returns_the_last_good_snapshot():
@@ -24,7 +18,7 @@ def test_get_rows_returns_the_last_good_snapshot():
 
 @pytest.mark.parametrize("row", [None, {"synced_rows": [], "last_synced_at": None}])
 def test_get_rows_refuses_an_unknown_or_never_synced_dataset(row):
-    with fake_connect(fetchone=row), pytest.raises(store.DatasetNotSyncedError, match="has not been synced yet"):
+    with fake_connect(fetchone=row), pytest.raises(DatasetNotSyncedError, match="has not been synced yet"):
         store.get_rows("d")
 
 
@@ -38,19 +32,19 @@ def test_save_snapshot_replaces_the_rows_in_one_update():
 
 
 def test_save_snapshot_for_a_deleted_dataset_raises_instead_of_pretending_to_succeed():
-    with fake_connect(rowcount=0), pytest.raises(store.DatasetNotSyncedError, match="no longer exists"):
+    with fake_connect(rowcount=0), pytest.raises(DatasetNotSyncedError, match="no longer exists"):
         store.save_snapshot("d", ["a"], [{"a": "1"}])
 
 
-def test_dataset_lock_takes_a_transaction_scoped_lock_per_dataset_and_holds_it_for_the_block():
+def test_lock_takes_a_transaction_scoped_lock_per_dataset_and_holds_it_for_the_block():
     with fake_connect(fetchone={"locked": True}) as cur:
-        with store.dataset_lock("d"):
+        with store.lock("d"):
             assert cur.execute.call_count == 1
         sql, params = cur.execute.call_args.args
 
     assert "pg_try_advisory_xact_lock" in sql and params == ("dataset_sync:d",)
 
 
-def test_dataset_lock_refuses_instead_of_waiting_when_another_sync_holds_it():
-    with fake_connect(fetchone={"locked": False}), pytest.raises(store.DatasetBusyError, match="already running"), store.dataset_lock("d"):
+def test_lock_refuses_instead_of_waiting_when_another_sync_holds_it():
+    with fake_connect(fetchone={"locked": False}), pytest.raises(DatasetBusyError, match="already running"), store.lock("d"):
         pytest.fail("the block must not run")
