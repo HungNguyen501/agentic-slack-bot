@@ -5,15 +5,19 @@ import secrets
 import time
 
 from agent.access_control.access_request_categories import channel_authorized, get_access_request_category
-from agent.dataset_sync import store
-from agent.dataset_sync.store import DatasetNotSyncedError
 from agent.forms.access_request_options import LOCATIONS_DATASET, TAGS_DATASET, FormOptionsError, build_form_options, options_redis_key
+from bots.core.models import BotConfig
 from common.configs import AgentConfigs
 from connectors import slack
-from connectors.db.bots import BotConfig
 from connectors.redis_client import client as redis_client
+from dataset_sync.core.errors import DatasetNotSyncedError
+from dataset_sync.core.ports import DatasetReader
+from dataset_sync.infra.supabase_datasets import SupabaseDatasetRepository
 
 log = logging.getLogger("agent.access_control.tools")
+
+# Built here until this feature is migrated and receives its dataset reader from the worker's composition root.
+store: DatasetReader = SupabaseDatasetRepository()
 
 ACCESS_REQUEST_POSTED_MESSAGE = (
     "Click below to fill out a data access request. "

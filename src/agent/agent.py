@@ -4,12 +4,12 @@ import logging
 import traceback
 
 from agent.access_control.tools import ACCESS_REQUEST_POSTED_MESSAGE
-from agent.dispatch import dispatch_tool, get_agent_tools, tool_category
+from agent.dispatch import ToolServices, dispatch_tool, get_agent_tools, tool_category
 from agent.history import load_history, save_history
 from agent.skills.loader import load_system_prompt
+from bots.core.models import BotConfig
 from common.configs import AgentConfigs, Configs
 from connectors import openai_client
-from connectors.db.bots import BotConfig
 
 log = logging.getLogger("agent")
 
@@ -62,6 +62,8 @@ def run_agent(
     channel: str,
     user_id: str | None = None,
     bot: BotConfig | None = None,
+    *,
+    services: ToolServices,
 ) -> str:
     """Run the OpenAI agentic loop with per-thread conversation history.
 
@@ -72,6 +74,7 @@ def run_agent(
             interactive messages (e.g. request_data_access) into the same thread.
         user_id: Slack user ID of the requester; used for schedule tool authorization.
         bot: Per-bot config carrying admin_users and enabled_skills.
+        services: Use cases and stores for the tools that run on them.
 
     Returns:
         Agent's final answer as a Slack-formatted string.
@@ -119,7 +122,7 @@ def run_agent(
 
         for tool_call in tool_calls:
             args = json.loads(tool_call.arguments)
-            result = dispatch_tool(tool_call.name, args, user_id, admin_users, bot, channel, thread_ts)
+            result = dispatch_tool(tool_call.name, args, user_id, admin_users, bot, channel, thread_ts, services)
             messages.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})
 
             if tool_category(tool_call.name) == "data_access" and result == ACCESS_REQUEST_POSTED_MESSAGE:

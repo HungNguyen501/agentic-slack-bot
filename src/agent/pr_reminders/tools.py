@@ -10,13 +10,17 @@ from slack_sdk.errors import SlackApiError
 from agent.pr_reminders.limits import ReminderRequestError, parse_mentions, parse_timezone, validate_reminder_cron
 from agent.pr_reminders.service import CHANNEL_READ_HELP, ChannelReadError, CheckResult, check_and_remind, collect_links, save_progress
 from agent.pr_reminders.status import Bucket
+from bots.core.models import BotConfig
 from common.configs import AgentConfigs, ReminderConfig
 from common.cron import is_in_cron_window
 from connectors import slack
-from connectors.db.bots import BotConfig
-from connectors.db.schedules import Schedule, add_pr_reminder, remove_schedule
+from schedules.core.models import Schedule
+from schedules.infra.supabase_schedules import SupabaseScheduleRepository
 
 log = logging.getLogger("agent.pr_reminders.tools")
+
+# Built here until this feature is migrated and receives its repository from the worker's composition root.
+_schedules = SupabaseScheduleRepository()
 
 _CHANNEL_ID_RE = re.compile(r"[CG][A-Z0-9]{6,}")
 
@@ -208,7 +212,7 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
     # first check posts, so the schedule id in those messages is real, and comes out again if that check fails.
     schedule_id = str(uuid.uuid4())
     quota = AgentConfigs.PR_REMINDER_MAX_ACTIVE_PER_CHANNEL
-    added = add_pr_reminder(
+    added = _schedules.add_pr_reminder(
         schedule_id, request.cron, request.channel, config.label(), bot.bot_id, config.to_dict(), max_active=quota, timezone=request.timezone
     )
     if added is None:
@@ -218,7 +222,7 @@ def _schedule_pr_reminder(args: dict, user_id: str | None, channel: str, thread_
     try:
         first = _first_check(bot, request, config, schedule_id, thread_ts)
     except Exception:
-        remove_schedule(schedule_id, bot_id=bot.bot_id)
+        _schedules.remove_schedule(schedule_id, bot_id=bot.bot_id)
         raise
 
     ends = (

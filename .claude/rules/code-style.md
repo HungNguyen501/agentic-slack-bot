@@ -17,7 +17,7 @@ Run `make lint` before considering any Python change complete.
 
 Standard library → third-party → local, separated by blank lines. No wildcard imports. Prefer absolute imports over relative ones.
 
-Import specific names (`from connectors.db.bots import BotConfig`) where the surrounding code does; don't convert existing modules to import-the-module style.
+Import specific names (`from bots.core.models import BotConfig`) where the surrounding code does; don't convert existing modules to import-the-module style.
 
 ## Type Hints
 
@@ -55,6 +55,7 @@ Project-local Claude Code skills in `.claude/skills/` apply to Python work here.
 | `python-code-style` | Judgment calls on naming, errors, defaults, language features when writing or reviewing Python |
 | `python-docstrings` | Adding or fixing docstrings, only when asked |
 | `python-unit-tests` | Writing or reviewing pytest tests (see Testing below) |
+| `layered-architecture` | Deciding which package/layer new code goes in, or reviewing a diff for layer violations. Project rules: [layered-architecture.md](layered-architecture.md) (folder names and the `common/` module differ from the skill's defaults) |
 | `code-review` | `/code-review` on your diff before opening a PR; CI also runs a remote review (`.github/workflows/code-review.yaml`) that fails on medium+ severity |
 
 These are managed by the skills hub (`.claude/skills/.hub-skills.json`) — don't hand-edit them; changes are overwritten on the next sync. They are unrelated to the agent skills in `src/agent/skills/files/`.
@@ -64,6 +65,7 @@ These are managed by the skills hub (`.claude/skills/.hub-skills.json`) — don'
 Tests live in `tests/`, mirroring `src/` (e.g. `src/connectors/slack.py` → `tests/connectors/test_slack.py`), and run with `make test` (also a CI step), which reports coverage with `--cov-fail-under=0` — coverage is reported, not yet enforced. Follow `python-unit-tests`:
 - pytest is configured in `pyproject.toml` (`pythonpath = ["src"]`, `--import-mode=importlib`), so imports are rooted at `src/` and test files can share basenames. `tests/conftest.py` sets inert env defaults because the config classes read env vars at import time.
 - Prefer the pure modules (`src/agent/forms/`, `src/agent/pr/`, `common/crypto.py`, `connectors/slack.split_message`); mock Slack/Databricks/GitHub/Supabase/Redis/OpenAI at the boundary (patch where the name is looked up, with `autospec=True`), never hit real services.
+- Code written to the layered layout is tested per layer ([layered-architecture.md](layered-architecture.md) "Testing per layer"): `core/` with in-memory fakes of its ports and no patching; the patch-at-the-boundary rule above applies to `infra/` adapters.
 - Cover a bug fix with a test that fails on the old code.
 - A data migration that rewrites existing rows gets a test that runs the real SQL. `tests/migrations/` is the one place that does, and it is skipped unless `MIGRATION_TEST_DB_URL` points at a throwaway Postgres (see the docstring in `test_v12_schedules_timezone.py`); it never runs in `make test` against a shared database.
 

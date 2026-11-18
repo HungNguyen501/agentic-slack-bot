@@ -171,8 +171,8 @@ The form reads the columns `company_key`, `company`, `location_market` and `loca
 **Run the sync, from the command line** (no Slack or admin rights needed; same lock and safeguards)
 
 ```bash
-docker compose exec worker python -c "from agent.dataset_sync.service import sync_dataset; print(sync_dataset('store_locations'))"
-docker compose exec worker python -c "from agent.dataset_sync.service import sync_dataset; print(sync_dataset('row_filter_tags'))"
+docker compose exec worker python -c "from worker.wiring import dataset_sync_service; print(dataset_sync_service().sync_dataset('store_locations'))"
+docker compose exec worker python -c "from worker.wiring import dataset_sync_service; print(dataset_sync_service().sync_dataset('row_filter_tags'))"
 ```
 
 A `SyncResult(dataset=..., row_count=..., previous_row_count=...)` line means it worked; a failure prints the reason as a `DatasetSyncError`. Add `force=True` to `sync_dataset(...)` only to override the "much smaller than the stored copy" refusal.

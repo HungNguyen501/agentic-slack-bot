@@ -9,7 +9,7 @@ from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.service import ChannelReadError, CheckResult, ScanResult
 from agent.pr_reminders.status import Bucket, PrStatus
 from common.configs import AgentConfigs
-from connectors.db.schedules import AddedReminder, Schedule
+from schedules.core.models import AddedReminder, Schedule
 
 LINK = PrLink(PrRef("org", "repo", 1), "C1", "1.0", "1.0")
 A, B = "U01ABCDEF", "U02GHIJKL"  # realistic Slack user IDs: at least 9 characters
@@ -49,8 +49,8 @@ def save():
 @pytest.fixture
 def db(save):
     with (
-        patch("agent.pr_reminders.tools.add_pr_reminder", autospec=True) as add,
-        patch("agent.pr_reminders.tools.remove_schedule", autospec=True) as remove,
+        patch("agent.pr_reminders.tools._schedules.add_pr_reminder", autospec=True) as add,
+        patch("agent.pr_reminders.tools._schedules.remove_schedule", autospec=True) as remove,
     ):
         yield add, remove
 

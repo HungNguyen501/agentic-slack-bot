@@ -15,7 +15,7 @@ from agent.forms.access_request_submission import VerifiedAccessRequest
 from agent.pr import data_platform_repo
 from agent.pr.access_control_rules import format_rules_entry, format_service_principals_snapshot
 from agent.pr.access_request_pr import PrEntry, build_pr
-from connectors.db.bots import BotConfig
+from bots.core.models import BotConfig
 
 log = logging.getLogger("agent.access_control.review")
 

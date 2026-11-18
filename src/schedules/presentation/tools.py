@@ -1,17 +1,18 @@
 """Schedule-management tool handlers (list/add/update/remove cron-scheduled questions)."""
 import logging
 
-from connectors.db.schedules import add_schedule, get_schedules, remove_schedule, update_schedule
+from schedules.core.ports import ScheduleRepository
 
-log = logging.getLogger("agent.schedules")
+log = logging.getLogger("schedules.tools")
 
 
-def dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
+def dispatch_schedule_tool(name: str, args: dict, bot_id: str, schedules: ScheduleRepository) -> str:
     """Execute a schedule management tool and return a human-readable result string.
 
     Args:
         name: Tool name — one of list_schedules, add_schedule, update_schedule, remove_schedule.
         args: Parsed JSON arguments from the LLM tool call.
+        schedules: Where the bot's schedules are stored.
 
     Returns:
         A plain-text or Slack-mrkdwn confirmation string, or an error message if the
@@ -19,24 +20,24 @@ def dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
     """
     try:
         if name == "list_schedules":
-            schedules = get_schedules(bot_id, active_only=True)
-            if not schedules:
+            rows = schedules.get_schedules(bot_id, active_only=True)
+            if not rows:
                 return "No schedules configured."
-            zone_width = max(len("Timezone"), *(len(s.timezone) for s in schedules))
+            zone_width = max(len("Timezone"), *(len(s.timezone) for s in rows))
             header = f"{'ID':<36}  {'Cron':<20}  {'Timezone':<{zone_width}}  {'Channel':<12}  Question"
             divider = "-" * len(header)
-            rows = [header, divider] + [
+            lines = [header, divider] + [
                 f"{s.id:<36}  {s.cron:<20}  {s.timezone:<{zone_width}}  {s.channel:<12}  {s.question}"
-                for s in schedules
+                for s in rows
             ]
-            return f"```\n{chr(10).join(rows)}\n```"
+            return f"```\n{chr(10).join(lines)}\n```"
 
         if name == "add_schedule":
-            s = add_schedule(args["cron"], args["channel"], args["question"], bot_id=bot_id)
+            s = schedules.add_schedule(args["cron"], args["channel"], args["question"], bot_id=bot_id)
             return f"Schedule created — id: `{s.id}`"
 
         if name == "update_schedule":
-            s = update_schedule(
+            s = schedules.update_schedule(
                 args["id"],
                 cron=args.get("cron"),
                 channel=args.get("channel"),
@@ -48,7 +49,7 @@ def dispatch_schedule_tool(name: str, args: dict, bot_id: str) -> str:
             return f"Schedule `{s.id}` updated."
 
         if name == "remove_schedule":
-            deleted = remove_schedule(args["id"], bot_id=bot_id)
+            deleted = schedules.remove_schedule(args["id"], bot_id=bot_id)
             if deleted:
                 return f"Schedule `{args['id']}` removed."
             return f"Schedule `{args['id']}` not found."

@@ -1,23 +1,16 @@
-from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from functools import partial
 
 import pytest
 
 from connectors.db import agent_skills
 from connectors.db.agent_skills import AgentSkill
+from tests.support.db import fake_connect as shared_fake_connect
 
 ROW = {"name": "metadata", "filename": "03_metadata.md", "always": False, "description": "d", "body": "b"}
 SKILL = AgentSkill(name="metadata", filename="03_metadata.md", body="b", description="d")
 
 
-@contextmanager
-def fake_connect(fetchall=None, rowcount=0):
-    cur = MagicMock(fetchall=MagicMock(return_value=fetchall or []), rowcount=rowcount)
-    conn = MagicMock()
-    conn.cursor.return_value.__enter__.return_value = cur
-    with patch("connectors.db.agent_skills.connect", autospec=True) as connect:
-        connect.return_value.__enter__.return_value = conn
-        yield cur
+fake_connect = partial(shared_fake_connect, "connectors.db.agent_skills.connect", rowcount=0)
 
 
 def test_get_all_returns_skills_in_file_order():

@@ -2,7 +2,7 @@
 import json
 from dataclasses import asdict, dataclass
 
-# Names of the synced_datasets (see agent/dataset_sync/) the form reads.
+# Names of the synced_datasets (see src/dataset_sync/) the form reads.
 LOCATIONS_DATASET = "store_locations"
 TAGS_DATASET = "row_filter_tags"
 

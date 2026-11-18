@@ -17,9 +17,10 @@ from rq import Queue, Retry
 
 from agent.forms.access_request_options import FormOptions, options_redis_key
 from agent.forms.access_request_view import build_access_request_view, validate_submission
+from bots.core.models import BotConfig
 from common.configs import Configs
 from connectors import slack
-from connectors.db.bots import BotConfig, get_by_app_id
+from receiver import wiring
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
@@ -79,7 +80,7 @@ def _resolve_bot(payload: dict) -> BotConfig:
     """
     app_id = payload.get("api_app_id")
     if app_id:
-        bot = get_by_app_id(app_id)
+        bot = wiring.bot_repository().get_by_app_id(app_id)
         if bot:
             return bot
     raise HTTPException(status_code=500, detail=f"No active bot configured for app {app_id!r}")

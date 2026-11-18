@@ -10,7 +10,8 @@ import rq
 from croniter import croniter
 
 from common.configs import Configs
-from connectors.db.schedules import Schedule, get_schedules
+from schedules.core.models import Schedule
+from scheduler import wiring
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scheduler")
@@ -114,7 +115,7 @@ def run() -> None:
         now = datetime.now(UTC)
 
         try:
-            schedules = get_schedules(active_only=True)
+            schedules = wiring.schedule_repository().get_schedules(active_only=True)
         except Exception as exc:
             log.error("Failed to load schedules from Supabase: %s", exc)
             time.sleep(Configs.SCHEDULER_INTERVAL)

@@ -1,6 +1,6 @@
 import pytest
 
-from connectors.db.bots import BotConfig
+from bots.core.models import BotConfig
 
 
 @pytest.fixture
