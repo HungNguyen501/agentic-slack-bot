@@ -288,12 +288,12 @@ def test_failed_chunks_files_not_read_and_unreliable_are_said_plainly(service):
 
 
 def test_an_unfinished_window_says_how_to_continue_and_how_to_add_the_counts_up(service):
-    service.analyze.return_value = analysis(next_before="1799990000.123456@1799000000.000000", groups_omitted=2, records_omitted=5)
+    service.analyze.return_value = analysis(next_before="1799990000.123456@1799000000.000000")
 
     reply = run(service, "analyze_channel", ANALYZE_ARGS)
 
     assert 'analyze_channel again with before="1799990000.123456@1799000000.000000"' in reply
-    assert "add them up across calls" in reply and "(2 more groups: 5 records)" in reply
+    assert "add them up across calls" in reply and "Distinct dates are exact within one call" in reply
     assert "End of window" not in reply
 
 
@@ -337,6 +337,37 @@ def test_a_clean_analysis_does_not_mention_cut_messages(service):
     service.analyze.return_value = analysis()
 
     assert "Messages longer" not in run(service, "analyze_channel", ANALYZE_ARGS)
+
+
+def test_when_groups_were_left_out_of_an_unfinished_window_the_group_counts_are_said_not_to_add_up(service):
+    service.analyze.return_value = analysis(next_before="1799990000.123456@1799000000.000000", groups_omitted=40, records_omitted=90)
+
+    reply = run(service, "analyze_channel", ANALYZE_ARGS)
+
+    assert 'before="1799990000.123456@1799000000.000000"' in reply
+    assert "can NOT be added up exactly across calls" in reply and "narrow the filter or the window" in reply
+    assert "total of all records can still be added up" in reply
+    assert "add them up across calls" not in reply
+
+
+def test_when_every_group_was_listed_the_counts_are_said_to_add_up(service):
+    service.analyze.return_value = analysis(next_before="1799990000.123456@1799000000.000000", groups_omitted=0)
+
+    reply = run(service, "analyze_channel", ANALYZE_ARGS)
+
+    assert "add them up across calls" in reply and "NOT" not in reply
+
+
+def test_a_finished_window_with_left_out_groups_says_the_listing_is_partial(service):
+    service.analyze.return_value = analysis(groups_omitted=3, records_omitted=5)
+
+    reply = run(service, "analyze_channel", ANALYZE_ARGS)
+
+    assert reply.endswith(
+        "End of window: that was every matching message. Only the 1 largest groups are listed; the rest are summed in the '(N more groups: M records)' line."
+    )
+    assert "(3 more groups: 5 records)" in reply
+    assert "Sample records, newest first:" in reply and reply.index("(3 more groups: 5 records)") < reply.index("Sample records") < reply.index("End of window")
 
 
 def test_an_analysis_with_no_records_says_so(service):

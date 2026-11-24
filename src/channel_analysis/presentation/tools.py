@@ -196,12 +196,22 @@ def _analysis_counts(result: Analysis) -> list[str]:
 
 
 def _analysis_paging(result: Analysis) -> str:
+    """How to continue, and whether the counts above can be added to those of the next call."""
     if not result.next_before:
+        if result.groups_omitted:
+            return (
+                f"End of window: that was every matching message. Only the {len(result.groups)} largest groups are listed; "
+                "the rest are summed in the '(N more groups: M records)' line."
+            )
         return "End of window: that was every matching message."
-    return (
-        f'More messages remain. Call analyze_channel again with before="{result.next_before}" and the same other arguments. '
-        "Counts are for this call only: add them up across calls. Distinct dates are exact within one call; a date split across two calls is counted in each."
-    )
+    more = f'More messages remain. Call analyze_channel again with before="{result.next_before}" and the same other arguments. '
+    if result.groups_omitted:
+        # A group left out here can be listed by another call, so adding the listed counts would understate it and could reorder a ranking.
+        return (
+            more + f"This call listed only its {len(result.groups)} largest groups, so group counts and rankings can NOT be added up exactly across calls: "
+            "narrow the filter or the window (`contains`, `lookback_days`) until the groups fit. The total of all records can still be added up."
+        )
+    return more + "Counts are for this call only: add them up across calls. Distinct dates are exact within one call; a date split across two calls is counted in each."
 
 
 def _format_analysis(result: Analysis) -> str:

@@ -120,7 +120,7 @@ class ChannelAnalysisService:
         Raises:
             ChannelAnalysisError: `channel` is empty or a direct message.
         """
-        channel_id, info, problems = self._inspect(bot, channel, requester_id)
+        channel_id, _, problems = self._inspect(bot, channel, requester_id)
         empty_window = False
         # Probing reads a message, so it only runs when nothing blocks: a refused check can't tell the requester whether the channel has messages.
         if channel_id and not any(p.blocking for p in problems):

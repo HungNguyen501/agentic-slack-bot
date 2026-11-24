@@ -455,8 +455,8 @@ class AgentConfigs:
                 "check_channel_access first. Use it for counts, rankings, 'which ones', what stopped appearing, and anything too big "
                 "for read_channel_messages; use read_channel_messages for timelines, quotes and wording. You never see the raw "
                 "messages, only counts, a sample and links as evidence. Counts are for one call: if the result says more messages "
-                "remain, call again with `before` and the same other arguments and add the counts up. Mention failed chunks and "
-                "files not read in your answer. Reaches at most 30 days back."
+                "remain, call again with `before` and the same other arguments and add the counts up, unless the result says the group "
+                "counts can't be added exactly (then narrow the filter or window). Mention failed chunks and files not read in your answer. Reaches at most 30 days back."
             ),
             parameters={
                 "type": "object",
