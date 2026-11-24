@@ -23,6 +23,8 @@ class OpenAIExtractionModel:
                 max_completion_tokens=limits.EXTRACT_MAX_OUTPUT_TOKENS,
                 json_object=True,
                 timeout=timeout_seconds,
+                # With the SDK's own retries the timeout would apply to each attempt, and a hung chunk would take three times as long.
+                max_retries=0,
             )
         except OpenAIError as exc:
             raise ExtractionError(f"The extraction model failed ({exc.__class__.__name__}).") from exc

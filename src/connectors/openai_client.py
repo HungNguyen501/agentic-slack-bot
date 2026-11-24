@@ -25,6 +25,7 @@ def chat_completion_with_usage(
     max_completion_tokens: int | None = None,
     json_object: bool = False,
     timeout: float | None = None,
+    max_retries: int | None = None,
 ) -> ChatResult:
     """Run a Chat Completions call and return the first choice's message text with the tokens it used.
 
@@ -36,6 +37,9 @@ def chat_completion_with_usage(
             leave room for them when reasoning is on.
         json_object: Request `response_format={"type": "json_object"}` so the reply is always parseable JSON.
         timeout: Seconds to wait for this request before the SDK raises `openai.APITimeoutError`; None keeps the client's default.
+            The SDK retries a failed request twice by default and the timeout applies to each attempt, so a caller that needs the
+            timeout to bound the call passes `max_retries=0`.
+        max_retries: Retries the SDK may make for this call; None keeps the client's default.
 
     Returns:
         The message content of the first choice, and the prompt and completion tokens the call used.
@@ -49,7 +53,8 @@ def chat_completion_with_usage(
         kwargs["response_format"] = {"type": "json_object"}
     if timeout is not None:
         kwargs["timeout"] = timeout
-    response = client.chat.completions.create(model=model, messages=messages, **kwargs)
+    target = client if max_retries is None else client.with_options(max_retries=max_retries)
+    response = target.chat.completions.create(model=model, messages=messages, **kwargs)
     usage = response.usage
     # content is None when a reasoning model spends the whole max_completion_tokens budget on reasoning.
     return ChatResult(response.choices[0].message.content or "", usage.prompt_tokens if usage else 0, usage.completion_tokens if usage else 0)

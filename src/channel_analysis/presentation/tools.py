@@ -149,7 +149,8 @@ def _group_line(group: GroupCount, group_by: tuple[str, ...]) -> str:
     return f"- {label}: {group.records} · {group.messages} · {group.dates}{links}"
 
 
-def _format_analysis(result: Analysis) -> str:
+def _analysis_coverage(result: Analysis) -> list[str]:
+    """What was read, what was left out, and whether the counts can be trusted."""
     matched = f", matched any of: {', '.join(result.terms)}" if result.terms else ""
     lines = [
         f"Analysis of channel {result.channel_id} · window {_when(result.window_start)} to {_when(result.window_end)}",
@@ -164,8 +165,14 @@ def _format_analysis(result: Analysis) -> str:
         lines.append("Chunks that failed: none")
     if result.unreliable:
         lines.append("UNRELIABLE: more than half the chunks failed, so these counts leave out too much. Say so, and run a narrower window.")
+    if result.messages_cut:
+        lines.append(f"Messages longer than one message may add (their end was not read): {result.messages_cut}")
     lines.append("Files not read: " + ("; ".join(f"{name} ({reason})" for name, reason in result.files_not_read) or "none"))
-    lines += ["", "Counts (records · messages · distinct dates):"]
+    return lines
+
+
+def _analysis_counts(result: Analysis) -> list[str]:
+    lines = ["", "Counts (records · messages · distinct dates):"]
     lines.extend(_group_line(group, result.group_by) for group in result.groups)
     if result.groups_omitted:
         lines.append(f"({result.groups_omitted} more groups: {result.records_omitted} records)")
@@ -174,15 +181,20 @@ def _format_analysis(result: Analysis) -> str:
     if result.sample:
         lines += ["", "Sample records, newest first:"]
         lines.extend(f"- [{_when(r.ts)}] {r.link or ''}: " + ", ".join(f"{name}={value}" for name, value in r.values.items()) for r in result.sample)
-    lines.append("")
-    if result.next_before:
-        lines.append(
-            f'More messages remain. Call analyze_channel again with before="{result.next_before}" and the same other arguments. '
-            "Counts are for this call only: add them up across calls. Distinct dates are exact within one call; a date split across two calls is counted in each."
-        )
-    else:
-        lines.append("End of window: that was every matching message.")
-    return "\n".join(lines)
+    return lines
+
+
+def _analysis_paging(result: Analysis) -> str:
+    if not result.next_before:
+        return "End of window: that was every matching message."
+    return (
+        f'More messages remain. Call analyze_channel again with before="{result.next_before}" and the same other arguments. '
+        "Counts are for this call only: add them up across calls. Distinct dates are exact within one call; a date split across two calls is counted in each."
+    )
+
+
+def _format_analysis(result: Analysis) -> str:
+    return "\n".join([*_analysis_coverage(result), *_analysis_counts(result), "", _analysis_paging(result)])
 
 
 def _analyze(args: dict, requester_id: str, bot: BotConfig, service: ChannelAnalysisService) -> str:

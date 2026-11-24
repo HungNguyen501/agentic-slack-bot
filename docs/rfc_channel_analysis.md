@@ -348,7 +348,7 @@ Admin-only, same category (`channel_analysis`), same access checks on every call
 ### Flow of one call
 
 1. **Scan.** The paging loop of `ChannelAnalysisService.read` becomes a private generator, `_scan`, that yields the kept messages one by one with the cursor from before each. `read` and `analyze` both consume it. This is a refactor with no behavior change; the phase 1 tests must pass unchanged. The scan cap is larger for analysis (`MAX_SCAN_PER_CALL_ANALYSIS`) because reading many messages is the point.
-2. **Items.** Each kept message becomes one *item*: its time (UTC), author, text, reactions and replies. With `include_files`, each readable file becomes more items that carry the message's time and link. A file's text is cut with `cut_page` (a CSV header repeats) into pieces of at most `ITEM_CHAR_LIMIT`. At most `MAX_FILES_PER_CALL` files are read per call; the rest are listed as "not read" with the reason (too many, too large, unreadable type). A file is read only through the channel it was posted in, with the same size cap as phase 1.
+2. **Items.** Each kept message becomes *items*: its time (UTC), author, text, reactions and replies, whole and not cut at the page's display limit (a long message or thread is split into pieces of `ITEM_CHAR_LIMIT`, at most `MAX_ITEMS_PER_MESSAGE` of them; what is beyond that is not read and the result says how many messages were cut). With `include_files`, each readable file becomes more items that carry the message's time and link. Files attached to the message or to its replies count (a reply's file is counted under the thread's root message, its heading names the reply). A file's text is cut with `cut_page` into pieces of at most `ITEM_CHAR_LIMIT`; a CSV's header, or a workbook's sheet name and first row, repeats at the top of each later piece so it can be read alone. At most `MAX_FILES_PER_CALL` files are read per call; the rest are listed as "not read" with the reason (too many, too large, unreadable type). A file is read only through the channel it was posted in, with the same size cap as phase 1.
 3. **Chunks.** Items are packed in order into chunks of at most `CHUNK_CHAR_BUDGET`. A call makes at most `MAX_CHUNKS_PER_CALL` chunks. A message whose items do not fit in the last allowed chunk is not taken: `next_before` is the cursor before it, as in `read`, so a long window needs several calls and a resumed call never repeats or skips a message.
 4. **Extract.** Chunks run in parallel (`EXTRACT_PARALLELISM` threads) through the `ExtractionModel` port. Core builds the prompt and checks the answer; infra only makes the model call.
 5. **Check and merge.** Core validates every record (rules below), drops duplicates, and groups and counts in code.
@@ -371,6 +371,8 @@ Core accepts a record only if all of this holds, and counts the ones it rejects:
 - `m` is a number that names an item of this chunk.
 - Only declared fields are kept; other keys are dropped.
 - A value is turned into text and cut at `MAX_VALUE_CHARS`; a missing value is null.
+- A field can't be named `m`: that key numbers the item in each record.
+- An item number that is not a whole number (including digit-like characters Python can't convert) rejects the record, it does not fail the call.
 - With `allowed_values`, the value must match one of them, ignoring case, and is stored in the allowed spelling. Anything else rejects the record.
 - A record with every field null is rejected.
 - Identical records from the same message (same values) are counted once.

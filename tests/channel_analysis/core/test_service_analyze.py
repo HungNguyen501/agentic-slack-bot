@@ -20,6 +20,15 @@ def analyze(service, **kwargs):
     return service.analyze(BOT, kwargs.pop("channel", CHANNEL), kwargs.pop("requester", ADMIN), kwargs.pop("spec", SPEC), **kwargs)
 
 
+def raising(error: Exception):
+    """A function for a fake's method that raises `error` when it is called."""
+
+    def fail(*args, **kwargs):
+        raise error
+
+    return fail
+
+
 def numbers(user: str) -> list[int]:
     return [int(n) for n in re.findall(r"^\[m(\d+)\] ", user, re.M)]
 
@@ -342,21 +351,21 @@ def test_a_file_becomes_more_items_of_its_message(service, history, extractor, f
 
 
 @pytest.mark.parametrize(
-    "ref, text_error, reason",
+    "ref, text_error, expected",
     [
-        (FileRef("F1", "huge.csv", "csv", limits.FILE_MAX_BYTES + 1), None, "larger than 5 MB"),
-        (FileRef("F1", "scan.pdf", "pdf", 10), FileUnreadableError("That PDF has no text layer."), "no text layer"),
-        (FileRef("F1", "x.csv", "csv", 10), ChannelAnalysisError("I can't find that file."), "can't find that file"),
+        (FileRef("F1", "huge.csv", "csv", limits.FILE_MAX_BYTES + 1), None, ("huge.csv", "it is larger than 5 MB")),
+        (FileRef("F1", "scan.pdf", "pdf", 10), FileUnreadableError("That PDF has no text layer."), ("scan.pdf", "That PDF has no text layer.")),
+        (FileRef("F1", "x.csv", "csv", 10), ChannelAnalysisError("I can't find that file."), ("x.csv", "I can't find that file.")),
     ],
     ids=["too-big", "unreadable", "missing"],
 )
-def test_a_file_that_cannot_be_read_is_listed_with_the_reason_and_the_message_is_still_analyzed(service, history, extractor, files, ref, text_error, reason):
+def test_a_file_that_cannot_be_read_is_listed_with_the_reason_and_the_message_is_still_analyzed(service, history, extractor, files, ref, text_error, expected):
     history.messages = [make_message(1, "report", files=(ref,))]
-    files.text = lambda file_id, token: (_ for _ in ()).throw(text_error) if text_error else "x"
+    files.text = raising(text_error or AssertionError("a file over the size limit is refused before it is downloaded"))
 
     result = analyze(service, include_files=True)
 
-    assert [(name, why) for name, why in result.files_not_read] == [(ref.name, reason)] or reason in result.files_not_read[0][1]
+    assert result.files_not_read == (expected,)
     assert result.messages_read == 1
 
 
@@ -452,3 +461,114 @@ def test_the_channel_checks_apply_to_an_analysis_too(service, history, extractor
         analyze(service)
 
     assert history.fetches == [] and extractor.calls == []
+
+
+# --- what the extractor sees is the whole message, not the page's display cut
+
+
+def test_a_row_past_the_display_cut_reaches_the_extractor_and_a_page_read_still_cuts_it(service, history, extractor):
+    body = "".join(f"row {n:04d} ok\n" for n in range(400)) + "row 9999 table_needle failed"
+    assert len(body) > limits.MESSAGE_CHAR_LIMIT
+    history.messages = [make_message(1, body)]
+    extractor.respond = one_record_per_item(table="table_needle")
+
+    result = analyze(service, contains=("table_needle",))
+    page = service.read(BOT, CHANNEL, ADMIN, contains=("table_needle",))
+
+    sent = "\n".join(call[1] for call in extractor.calls)
+    assert "row 9999 table_needle failed" in sent
+    assert result.messages_read == 1
+    assert "row 9999" not in page.messages[0].text and page.messages[0].text.endswith("…[cut]")
+
+
+def test_replies_past_the_pages_display_budget_reach_the_extractor(service, history, extractor, monkeypatch):
+    monkeypatch.setattr(limits, "REPLIES_CHAR_LIMIT", 300)
+    replies = tuple(make_message(0.5, f"reply {n} " + "x" * 120, ts=f"{1799990000 + n}.000000") for n in range(10))
+    history.messages = [make_message(1, "root", replies=replies)]
+
+    analyze(service)
+    page = service.read(BOT, CHANNEL, ADMIN)
+
+    assert "reply 9 " in "\n".join(call[1] for call in extractor.calls)
+    assert page.messages[0].omitted_replies > 0
+
+
+def test_a_message_longer_than_one_message_may_add_is_counted_as_cut(service, history, extractor, monkeypatch):
+    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 100)
+    monkeypatch.setattr(limits, "MAX_ITEMS_PER_MESSAGE", 2)
+    history.messages = [make_message(1, "line of text\n" * 60), make_message(2, "short")]
+
+    result = analyze(service)
+
+    assert (result.messages_read, result.messages_cut) == (2, 1)
+
+
+# --- files attached to replies, and matching on their names
+
+
+REPLY_FILE = FileRef("F8", "late_rows.csv", "csv", 20)
+
+
+def thread_with_a_file_in_a_reply():
+    reply = make_message(0.5, "here is the late report", author="<@U7>", files=(REPLY_FILE,))
+    return make_message(2, "daily report", link="https://x/root", replies=(reply,), reply_count=1), reply
+
+
+def test_a_file_attached_to_a_reply_is_read_and_counted_under_the_thread_root(service, history, extractor, files):
+    root, reply = thread_with_a_file_in_a_reply()
+    files.texts["F8"] = "table,status\nlate_table,failed\n"
+    history.messages = [root]
+    extractor.respond = one_record_per_item()
+
+    result = analyze(service, include_files=True)
+
+    user = extractor.calls[0][1]
+    assert "late_table,failed" in user and "file late_rows.csv" in user and "<@U7>" in user
+    assert result.files_not_read == ()
+    assert result.sample[0].link == "https://x/root" and result.messages_read == 1
+
+
+def test_a_reply_file_that_cannot_be_read_is_listed_not_silently_skipped(service, history, extractor, files):
+    root, _ = thread_with_a_file_in_a_reply()
+    history.messages = [root]
+    files.text = raising(FileUnreadableError("That PDF has no text layer."))
+
+    result = analyze(service, include_files=True)
+
+    assert result.files_not_read == (("late_rows.csv", "That PDF has no text layer."),)
+
+
+def test_files_of_the_root_and_of_its_replies_share_the_files_budget(service, history, extractor, files, monkeypatch):
+    monkeypatch.setattr(limits, "MAX_FILES_PER_CALL", 1)
+    files.texts.update({"F1": "root file", "F8": "reply file"})
+    reply = make_message(0.5, "r", files=(REPLY_FILE,))
+    history.messages = [make_message(2, "root", files=(FileRef("F1", "root.txt", "text", 5),), replies=(reply,))]
+
+    result = analyze(service, include_files=True)
+
+    assert [name for name, _ in result.files_not_read] == ["late_rows.csv"]
+    assert "root file" in extractor.calls[0][1] and "reply file" not in extractor.calls[0][1]
+
+
+def test_a_term_that_is_only_the_name_of_a_file_in_a_reply_matches_the_message(service, history, extractor):
+    root, _ = thread_with_a_file_in_a_reply()
+    history.messages = [root, make_message(3, "unrelated")]
+
+    result = analyze(service, contains=("late_rows",))
+    page = service.read(BOT, CHANNEL, ADMIN, contains=("late_rows",))
+
+    assert result.messages_read == 1 and len(page.messages) == 1
+
+
+def test_a_workbooks_later_pages_of_the_file_tool_start_with_their_sheet_and_columns(service, files, history, monkeypatch):
+    from channel_analysis.core.models import FileMeta
+
+    monkeypatch.setattr(limits, "FILE_PAGE_CHARS", 200)
+    files.metas["FX"] = FileMeta("counts.xlsx", "xlsx", 100, frozenset({CHANNEL}))
+    files.texts["FX"] = "## Sheet: Counts\ntable,rows\n" + "".join(f"t{n},{n}\n" for n in range(60))
+    first = service.read_file(BOT, CHANNEL, ADMIN, "FX")
+
+    second = service.read_file(BOT, CHANNEL, ADMIN, "FX", offset=first.next_offset)
+
+    assert first.text.startswith("## Sheet: Counts\ntable,rows\n")
+    assert second.text.startswith("## Sheet: Counts\ntable,rows\n")

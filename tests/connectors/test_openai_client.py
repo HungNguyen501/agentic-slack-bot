@@ -49,3 +49,23 @@ def test_chat_completion_still_returns_just_the_text():
         assert openai_client.chat_completion([], model="m", json_object=True) == "just text"
 
     assert client.chat.completions.create.call_args.kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_a_call_that_asks_for_no_retries_goes_through_a_client_with_none():
+    with patch.object(openai_client, "client", MagicMock()) as client:
+        client.with_options.return_value.chat.completions.create.return_value = completion("hi")
+
+        openai_client.chat_completion_with_usage([], model="m", timeout=90, max_retries=0)
+
+    client.with_options.assert_called_once_with(max_retries=0)
+    client.chat.completions.create.assert_not_called()
+    assert client.with_options.return_value.chat.completions.create.call_args.kwargs["timeout"] == 90
+
+
+def test_a_call_that_does_not_ask_keeps_the_clients_default_retries():
+    with patch.object(openai_client, "client", MagicMock()) as client:
+        client.chat.completions.create.return_value = completion("hi")
+
+        openai_client.chat_completion_with_usage([], model="m")
+
+    client.with_options.assert_not_called()

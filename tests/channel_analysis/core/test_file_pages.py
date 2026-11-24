@@ -1,4 +1,6 @@
-from channel_analysis.core.file_pages import cut_page
+import pytest
+
+from channel_analysis.core.file_pages import cut_page, repeated_header, sheet_header
 
 
 def test_a_text_that_fits_is_one_page_with_no_next():
@@ -73,3 +75,37 @@ def test_a_first_line_longer_than_a_page_does_not_stall_the_pages_that_follow():
         seen.append(page)
 
     assert "".join(seen) == text
+
+
+WORKBOOK = "## Sheet: Counts\ntable,rows\na,1\nb,2\n## Sheet: Failures\ntable,error\nc,boom\nd,bang\n"
+
+
+def test_a_page_of_a_workbook_in_the_second_sheet_needs_that_sheets_name_and_columns():
+    offset = WORKBOOK.index("d,bang")
+
+    assert sheet_header(WORKBOOK, offset) == "## Sheet: Failures\ntable,error"
+
+
+def test_a_page_in_the_first_sheet_needs_the_first_sheets_header():
+    assert sheet_header(WORKBOOK, WORKBOOK.index("b,2")) == "## Sheet: Counts\ntable,rows"
+
+
+@pytest.mark.parametrize("where", ["## Sheet: Counts", "table,rows", "## Sheet: Failures", "table,error"], ids=["name", "header", "second-name", "second-header"])
+def test_a_page_that_starts_at_or_before_a_sheets_header_repeats_nothing(where):
+    assert sheet_header(WORKBOOK, WORKBOOK.index(where)) is None
+
+
+def test_a_sheet_marker_inside_a_cell_is_not_taken_for_a_sheet():
+    text = "## Sheet: Real\ncol\nsay ## Sheet: Fake\nnext\nmore\n"
+
+    assert sheet_header(text, text.index("more")) == "## Sheet: Real\ncol"
+
+
+@pytest.mark.parametrize(
+    "filetype, expected",
+    [("csv", "a,b"), ("TSV", "a,b"), ("xlsx", "## Sheet: S\na,b"), ("text", None), ("pdf", None)],
+)
+def test_the_header_a_page_repeats_depends_on_the_kind_of_file(filetype, expected):
+    text = "a,b\n1,2\n" if filetype.lower() in ("csv", "tsv") else "## Sheet: S\na,b\n1,2\n3,4\n"
+
+    assert repeated_header(text, len(text) - 4, filetype) == expected

@@ -27,6 +27,7 @@ def test_the_model_is_asked_in_json_mode_with_no_tools_a_timeout_and_the_configu
         max_completion_tokens=limits.EXTRACT_MAX_OUTPUT_TOKENS,
         json_object=True,
         timeout=90,
+        max_retries=0,
     )
     assert (answer.data, answer.prompt_tokens, answer.completion_tokens) == ({"records": [{"m": 1}]}, 1200, 80)
 

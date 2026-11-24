@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 
 from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAnalysisError, ExtractionShapeError
-from channel_analysis.core.file_pages import cut_page
+from channel_analysis.core.file_pages import cut_page, repeated_header
 from channel_analysis.core.models import ChannelMessage, ExtractionItem, ExtractionSpec, FileRef, GroupCount, Record
 
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+# `m` is the item number in the answer's records; a field of that name would collide with it.
+_RESERVED_FIELD_NAMES = frozenset({"m"})
 NO_VALUE = "(none)"
 
 
@@ -30,6 +32,8 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
         raise ChannelAnalysisError(f"`fields` takes 1 to {limits.MAX_FIELDS} fields.")
     names = [field.name for field in spec.fields]
     for field in spec.fields:
+        if field.name in _RESERVED_FIELD_NAMES:
+            raise ChannelAnalysisError(f"`{field.name}` is reserved (it numbers the items in the answer); give the field another name.")
         if not _FIELD_NAME.match(field.name):
             raise ChannelAnalysisError(f"Field name `{field.name}` must be snake_case: lower case letters, digits and underscores, starting with a letter.")
         if len(field.description) > limits.MAX_FIELD_DESCRIPTION_CHARS:
@@ -47,8 +51,7 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
         raise ChannelAnalysisError(f"`group_by` names `{unknown[0]}`, which is not one of the fields ({', '.join(names)}).")
 
 
-def message_item(message: ChannelMessage) -> ExtractionItem:
-    """A message as one item: its text, file names, reactions and replies, under the time and author."""
+def _message_text(message: ChannelMessage) -> str:
     lines = [message.text or "(no text)"]
     lines.extend(f"[file {f.name}, {f.filetype}]" for f in message.files)
     if message.reactions:
@@ -58,17 +61,35 @@ def message_item(message: ChannelMessage) -> ExtractionItem:
         lines.extend(f"[file {f.name}, {f.filetype}]" for f in reply.files)
     if message.omitted_replies:
         lines.append(f"({message.omitted_replies} more replies not shown)")
-    return ExtractionItem(message.ts, message.link, f"{format_when(message.ts)} · {message.author}", "\n".join(lines))
+    return "\n".join(lines)
 
 
-def file_items(message: ChannelMessage, file: FileRef, text: str, room: int) -> tuple[list[ExtractionItem], bool]:
-    """The pieces of a file's text as items of `message`, at most `room` of them; also whether the whole text fit."""
-    header = text.split("\n", 1)[0] if file.filetype.lower() in limits.TABULAR_FILE_TYPES else None
+def message_items(message: ChannelMessage) -> tuple[list[ExtractionItem], bool]:
+    """A message as items: its whole text, file names, reactions and replies under the time and author, cut into pieces of at most
+    `ITEM_CHAR_LIMIT` and at most `MAX_ITEMS_PER_MESSAGE` of them. Also whether it all fit; what doesn't is not read."""
+    heading = f"{format_when(message.ts)} · {message.author}"
+    text = _message_text(message)
+    items: list[ExtractionItem] = []
+    offset: int | None = 0
+    while offset is not None and len(items) < limits.MAX_ITEMS_PER_MESSAGE:
+        piece, offset = cut_page(text, offset, limits.ITEM_CHAR_LIMIT)
+        items.append(ExtractionItem(message.ts, message.link, heading if not items else f"{heading} (continued, part {len(items) + 1})", piece))
+    return items, offset is None
+
+
+def file_items(message: ChannelMessage, file: FileRef, text: str, room: int, source: ChannelMessage | None = None) -> tuple[list[ExtractionItem], bool]:
+    """The pieces of a file's text as items, at most `room` of them; also whether the whole text fit.
+
+    The items belong to `message` (its time and link, so counts and evidence are per message); `source` is the message the file was
+    attached to when that is one of its replies, and only shows in the heading. A page of a CSV or a workbook starts with its header
+    (a workbook's sheet name and first row) so it can be read alone.
+    """
+    shown = source or message
     items: list[ExtractionItem] = []
     offset: int | None = 0
     while offset is not None and len(items) < room:
-        piece, offset = cut_page(text, offset, limits.ITEM_CHAR_LIMIT, header)
-        heading = f"{format_when(message.ts)} · {message.author} · file {file.name} (part {len(items) + 1})"
+        piece, offset = cut_page(text, offset, limits.ITEM_CHAR_LIMIT, repeated_header(text, offset, file.filetype))
+        heading = f"{format_when(shown.ts)} · {shown.author} · file {file.name} (part {len(items) + 1})"
         items.append(ExtractionItem(message.ts, message.link, heading, piece))
     return items, offset is None
 
@@ -145,9 +166,12 @@ def read_records(answer: dict, items: list[ExtractionItem], spec: ExtractionSpec
 
 
 def _item_number(raw: object, count: int) -> int | None:
-    if isinstance(raw, bool) or not isinstance(raw, (int, str)) or not str(raw).strip().isdigit():
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
         return None
-    number = int(str(raw).strip())
+    try:
+        number = int(str(raw).strip())
+    except ValueError:  # "²" passes str.isdigit but not int(), and a string of thousands of digits is over Python's limit
+        return None
     return number if 1 <= number <= count else None
 
 

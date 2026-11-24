@@ -37,10 +37,11 @@ def test_a_valid_spec_passes():
         (SPEC, ("table", "table"), "different fields"),
         (SPEC, ("table", "status", "x", "y"), "different fields"),
         (SPEC, ("nope",), "not one of the fields"),
+        (ExtractionSpec("i", (ExtractionField("m", "the item number"),)), (), "reserved"),
     ],
     ids=[
         "no-instruction", "long-instruction", "no-fields", "too-many-fields", "bad-name", "digit-first", "repeated-name", "long-description",
-        "long-value", "many-values", "repeated-group", "too-many-groups", "unknown-group",
+        "long-value", "many-values", "repeated-group", "too-many-groups", "unknown-group", "reserved-m",
     ],
 )  # fmt: skip
 def test_a_bad_spec_is_refused_in_words(spec, group_by, message):
@@ -57,8 +58,9 @@ def test_a_message_becomes_an_item_with_its_files_reactions_and_replies():
         replies=(make_message(0.5, "thanks", author="<@U1>"),), omitted_replies=3,
     )  # fmt: skip
 
-    built = extraction.message_item(message)
+    (built,), whole = extraction.message_items(message)
 
+    assert whole is True
     assert (built.ts, built.link) == (message.ts, "https://x/p1")
     assert built.heading.endswith("· Mail Report")
     reply_line = f"↳ [{extraction.format_when(ts_ago(0.5))}] <@U1>: thanks"
@@ -66,7 +68,39 @@ def test_a_message_becomes_an_item_with_its_files_reactions_and_replies():
 
 
 def test_a_message_with_no_text_still_makes_an_item():
-    assert extraction.message_item(make_message(1, "")).text == "(no text)"
+    (built,), _ = extraction.message_items(make_message(1, ""))
+
+    assert built.text == "(no text)"
+
+
+def test_a_long_message_is_read_whole_in_pieces_not_cut_at_the_display_limit(monkeypatch):
+    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 100)
+    rows = "".join(f"row {n:03d}: table_{n}\n" for n in range(40))
+    message = make_message(1, rows)
+
+    items, whole = extraction.message_items(message)
+
+    assert whole is True and len(items) > 1
+    assert "".join(i.text for i in items) == rows
+    assert "(continued, part 2)" in items[1].heading and "continued" not in items[0].heading
+    assert all((i.ts, i.link) == (message.ts, message.link) for i in items)
+
+
+def test_a_message_longer_than_one_message_may_add_is_cut_and_says_so(monkeypatch):
+    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 50)
+    monkeypatch.setattr(limits, "MAX_ITEMS_PER_MESSAGE", 3)
+
+    items, whole = extraction.message_items(make_message(1, "line of text\n" * 100))
+
+    assert (len(items), whole) == (3, False)
+
+
+def test_replies_that_are_beyond_the_display_budget_are_still_in_the_items():
+    replies = tuple(make_message(0.5, f"reply {n} " + "x" * 500, ts=f"{1800000000 - 3000 + n}.000000") for n in range(40))
+
+    items, _ = extraction.message_items(make_message(1, "root", replies=replies))
+
+    assert "reply 39 " in "".join(i.text for i in items)
 
 
 def test_a_file_becomes_pieces_that_carry_the_messages_time_and_link(monkeypatch):
@@ -80,6 +114,35 @@ def test_a_file_becomes_pieces_that_carry_the_messages_time_and_link(monkeypatch
     assert all((p.ts, p.link) == (message.ts, "https://x/p1") for p in pieces)
     assert "(part 1)" in pieces[0].heading and "(part 2)" in pieces[1].heading
     assert pieces[1].text.startswith("table,rows\n")
+
+
+def test_a_file_attached_to_a_reply_belongs_to_the_root_message_but_shows_the_reply_in_its_heading():
+    root = make_message(2, "root", link="https://x/root")
+    reply = make_message(1, "see attached", author="<@U7>", ts=ts_ago(1))
+
+    (piece,), whole = extraction.file_items(root, FileRef("F9", "late.csv", "csv", 5), "a,b\n1,2\n", room=5, source=reply)
+
+    assert whole is True
+    assert (piece.ts, piece.link) == (root.ts, "https://x/root")
+    assert "<@U7>" in piece.heading and extraction.format_when(reply.ts) in piece.heading and "late.csv" in piece.heading
+
+
+def test_every_piece_of_a_workbook_starts_with_its_sheet_and_its_columns(monkeypatch):
+    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 200)
+    counts = "## Sheet: Counts\ntable,rows\n" + "".join(f"t{n},{n}\n" for n in range(40))
+    failures = "## Sheet: Failures\ntable,error\n" + "".join(f"f{n},boom\n" for n in range(40))
+
+    pieces, whole = extraction.file_items(make_message(1), FileRef("F1", "counts.xlsx", "xlsx", 9), counts + failures, room=50)
+
+    counts_header, failures_header = ("## Sheet: Counts", "table,rows"), ("## Sheet: Failures", "table,error")
+    firsts = [tuple(piece.text.split("\n")[:2]) for piece in pieces]
+    in_failures = [piece for piece, first in zip(pieces, firsts, strict=True) if first == failures_header]
+    in_counts = [piece for piece, first in zip(pieces, firsts, strict=True) if first == counts_header]
+    assert whole is True and len(pieces) > 3
+    assert firsts[0] == counts_header and set(firsts) == {counts_header, failures_header}
+    assert len(in_counts) + len(in_failures) == len(pieces)
+    assert "f0,boom" in "".join(p.text for p in pieces) and "t39,39" in "".join(p.text for p in in_counts)
+    assert "t" not in {row[0] for p in in_failures for row in p.text.split("\n")[2:] if row}
 
 
 def test_a_file_that_needs_more_pieces_than_the_room_is_cut_and_says_so(monkeypatch):
@@ -178,6 +241,13 @@ def test_a_record_that_breaks_a_rule_is_rejected_and_counted(record):
 
     assert len(records) == 1 and records[0].values["table"] == "ok"
     assert rejected == 1
+
+
+@pytest.mark.parametrize("number", ["²", "9" * 5000, "٣"], ids=["superscript", "over-the-int-limit", "arabic-indic-three-past-the-items"])
+def test_an_item_number_that_looks_like_digits_but_is_not_one_rejects_the_record_instead_of_failing_the_call(number):
+    records, rejected = read({"records": [{"m": number, "table": "bad", "status": "failed"}, {"m": 1, "table": "ok", "status": "failed"}]})
+
+    assert [r.values["table"] for r in records] == ["ok"] and rejected == 1
 
 
 def test_values_are_text_cut_to_a_label_and_undeclared_keys_are_dropped():

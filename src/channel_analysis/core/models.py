@@ -184,6 +184,7 @@ class Analysis:
     fields: tuple[str, ...]
     group_by: tuple[str, ...]
     messages_read: int
+    messages_cut: int
     scanned: int
     chunks: int
     failed_chunks: tuple[FailedChunk, ...]

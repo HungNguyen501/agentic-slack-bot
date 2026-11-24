@@ -79,6 +79,29 @@ class AgentTool:
         }
 
 
+def _window_properties(**descriptions: str) -> dict:
+    """The tool parameters that pick a channel window and a page of it, shared by read_channel_messages and analyze_channel.
+
+    `descriptions` replaces the description of a parameter for the tool that needs its own wording (keyed by parameter name).
+    """
+    properties = {
+        "lookback_days": {"type": "integer", "description": "Window length in days. Default 30. lookback_days + end_days_ago <= 30."},
+        "end_days_ago": {
+            "type": "integer",
+            "description": "Where the window ends, in days before now. Default 0. To compare periods: last week = lookback_days 7, end_days_ago 7.",
+        },
+        "contains": {"type": "array", "items": {"type": "string"}, "description": "Up to 5 case-insensitive terms; only messages containing any of them count."},
+        "include_replies": {"type": "boolean", "description": "Also read thread replies. Default true."},
+        "before": {
+            "type": "string",
+            "description": "Resume cursor: the `before` value from the previous result, copied exactly (it also fixes the window). Omit on the first call.",
+        },
+    }
+    for name, description in descriptions.items():
+        properties[name] = {**properties[name], "description": description}
+    return properties
+
+
 @dataclass(frozen=True)
 class AgentConfigs:
     """Agent loop constants (`agent/agent.py`)."""
@@ -397,21 +420,10 @@ class AgentConfigs:
                 "type": "object",
                 "properties": {
                     "channel": {"type": "string", "description": "Channel ID (C…), a channel link like <#C123|name>, or the channel name."},
-                    "lookback_days": {"type": "integer", "description": "Window length in days. Default 30. lookback_days + end_days_ago <= 30."},
-                    "end_days_ago": {
-                        "type": "integer",
-                        "description": "Where the window ends, in days before now. Default 0. To compare periods: last week = lookback_days 7, end_days_ago 7.",
-                    },
-                    "contains": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Up to 5 case-insensitive terms; a message is kept if any appears in its text, author, file names or replies.",
-                    },
-                    "include_replies": {"type": "boolean", "description": "Also read thread replies. Default true; false is faster when threads don't matter."},
-                    "before": {
-                        "type": "string",
-                        "description": "Resume cursor: the `before` value from the previous result, copied exactly (it also fixes the window). Omit on the first call.",
-                    },
+                    **_window_properties(
+                        contains="Up to 5 case-insensitive terms; a message is kept if any appears in its text, author, file names or replies.",
+                        include_replies="Also read thread replies. Default true; false is faster when threads don't matter.",
+                    ),
                 },
                 "required": ["channel"],
             },
@@ -468,15 +480,11 @@ class AgentConfigs:
                         },
                     },
                     "group_by": {"type": "array", "items": {"type": "string"}, "description": "Up to 3 field names to count by; omit for one overall total."},
-                    "lookback_days": {"type": "integer", "description": "Window length in days. Default 30. lookback_days + end_days_ago <= 30."},
-                    "end_days_ago": {
-                        "type": "integer",
-                        "description": "Where the window ends, in days before now. Default 0. To compare periods: last week = lookback_days 7, end_days_ago 7.",
-                    },
-                    "contains": {"type": "array", "items": {"type": "string"}, "description": "Up to 5 terms; only messages containing any of them are analyzed."},
-                    "include_replies": {"type": "boolean", "description": "Also analyze thread replies. Default true."},
+                    **_window_properties(
+                        contains="Up to 5 terms; only messages containing any of them are analyzed.",
+                        include_replies="Also analyze thread replies. Default true.",
+                    ),
                     "include_files": {"type": "boolean", "description": "Also extract from attached files (CSV, text, PDF, Excel). Default false."},
-                    "before": {"type": "string", "description": "Resume cursor: the `before` value from the previous result, copied exactly. Omit on the first call."},
                 },
                 "required": ["channel", "instruction", "fields"],
             },
