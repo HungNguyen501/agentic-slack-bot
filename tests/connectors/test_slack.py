@@ -94,9 +94,32 @@ def test_conversations_history_asks_for_messages_after_oldest():
     with patch("connectors.slack.WebClient", autospec=True, return_value=client):
         messages, truncated = slack.conversations_history("C1", 1234.5, token="t", max_messages=10)
 
-    client.conversations_history.assert_called_once_with(channel="C1", oldest="1234.500000", limit=200, cursor=None)
+    client.conversations_history.assert_called_once_with(channel="C1", oldest="1234.500000", limit=10, cursor=None)
     assert messages == [{"ts": "9"}]
     assert truncated is False
+
+
+def test_conversations_history_asks_slack_for_at_most_200_per_page():
+    client = MagicMock()
+    client.conversations_history.return_value = page([])
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        slack.conversations_history("C1", 0, token="t", max_messages=1000)
+
+    assert client.conversations_history.call_args.kwargs["limit"] == 200
+
+
+def test_conversations_history_passes_latest_through_untouched_and_only_when_given():
+    client = MagicMock()
+    client.conversations_history.return_value = page([])
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        slack.conversations_history("C1", 0, token="t", max_messages=5, latest="1763900000.123456")
+        slack.conversations_history("C1", 0, token="t", max_messages=5)
+
+    first, second = client.conversations_history.call_args_list
+    assert first.kwargs["latest"] == "1763900000.123456"
+    assert "latest" not in second.kwargs
 
 
 def test_conversations_history_stops_at_max_messages_and_says_it_left_some_unread():
@@ -328,3 +351,131 @@ def test_the_app_is_not_marked_when_the_retry_as_the_bot_fails_too(redis):
         slack.post_message("C1", "one", token="xoxb-1", username="Anna")
 
     assert redis.marks == {}
+
+
+# --- channel analysis reads
+
+
+def channels_page(names, next_cursor=""):
+    return {"channels": [{"id": f"C{n}", "name": n} for n in names], "response_metadata": {"next_cursor": next_cursor}}
+
+
+def test_find_channel_id_follows_the_cursor_until_the_name_is_found():
+    client = MagicMock()
+    client.conversations_list.side_effect = [channels_page(["a", "b"], "c2"), channels_page(["mail", "z"])]
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        found = slack.find_channel_id("mail", token="t")
+
+    assert found == "Cmail"
+    assert [c.kwargs["cursor"] for c in client.conversations_list.call_args_list] == [None, "c2"]
+    assert client.conversations_list.call_args.kwargs["exclude_archived"] is True
+    assert client.conversations_list.call_args.kwargs["types"] == "public_channel,private_channel"
+
+
+def test_find_channel_id_returns_none_after_the_last_page_and_after_the_page_cap():
+    client = MagicMock()
+    client.conversations_list.return_value = channels_page(["a"])
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.find_channel_id("nope", token="t") is None
+
+    client.conversations_list.reset_mock()
+    client.conversations_list.return_value = channels_page(["a"], "more")
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.find_channel_id("nope", token="t", max_pages=3) is None
+    assert client.conversations_list.call_count == 3
+
+
+def test_get_channel_info_returns_the_channel_dict():
+    client = MagicMock()
+    client.conversations_info.return_value = {"channel": {"id": "C1", "is_private": True}}
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.get_channel_info("C1", token="t") == {"id": "C1", "is_private": True}
+
+
+def test_is_channel_member_pages_through_the_members_and_gives_up_at_the_cap():
+    client = MagicMock()
+    client.conversations_members.side_effect = [
+        {"members": ["U1"], "response_metadata": {"next_cursor": "c2"}},
+        {"members": ["U2"], "response_metadata": {"next_cursor": ""}},
+    ]
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.is_channel_member("C1", "U2", token="t", max_pages=5) is True
+
+    client.conversations_members.side_effect = None
+    client.conversations_members.return_value = {"members": ["U1"], "response_metadata": {"next_cursor": "more"}}
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.is_channel_member("C1", "UX", token="t", max_pages=2) is None
+
+    client.conversations_members.return_value = {"members": ["U1"], "response_metadata": {"next_cursor": ""}}
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.is_channel_member("C1", "UX", token="t", max_pages=2) is False
+
+
+def test_workspace_url_file_info_and_file_listing_pass_the_answer_through():
+    client = MagicMock()
+    client.auth_test.return_value = {"url": "https://acme.slack.com/"}
+    client.files_info.return_value = {"file": {"id": "F1"}}
+    client.files_list.return_value = {"files": [{"id": "F1"}]}
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.get_workspace_url("t") == "https://acme.slack.com/"
+        assert slack.get_file_info("F1", token="t") == {"id": "F1"}
+        assert slack.list_files("C1", token="t") == [{"id": "F1"}]
+
+    client.files_list.assert_called_once_with(channel="C1", count=1)
+
+
+class FakeStream:
+    def __init__(self, status=200, content_type="text/csv", chunks=(b"id\n", b"1\n")):
+        self.status_code = status
+        self.headers = {"content-type": content_type}
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_bytes(self):
+        return iter(self._chunks)
+
+
+URL = "https://files.slack.com/files-pri/T-F1/download/rows.csv"
+
+
+def download(stream, url=URL, max_bytes=100):
+    with patch("connectors.slack.httpx.stream", autospec=True, return_value=stream) as fake:
+        return slack.download_file(url, token="xoxb-t", max_bytes=max_bytes), fake
+
+
+def test_download_file_sends_the_token_and_returns_the_bytes():
+    data, fake = download(FakeStream())
+
+    assert data == b"id\n1\n"
+    assert fake.call_args.kwargs["headers"] == {"Authorization": "Bearer xoxb-t"}
+    assert fake.call_args.kwargs["follow_redirects"] is False
+
+
+@pytest.mark.parametrize("url", ["https://evil.test/f.csv", "http://files.slack.com/f.csv", "https://slack.com.evil.test/f.csv", "https://notslack.com/f.csv"])
+def test_download_file_refuses_a_url_that_is_not_slacks_and_never_sends_the_token(url):
+    with patch("connectors.slack.httpx.stream", autospec=True) as fake, pytest.raises(slack.FileDownloadError, match="not hosted on Slack"):
+        slack.download_file(url, token="xoxb-t", max_bytes=100)
+
+    fake.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "stream, message",
+    [
+        (FakeStream(status=403), "403"),
+        (FakeStream(content_type="text/html; charset=utf-8"), "files:read"),
+        (FakeStream(chunks=(b"x" * 60, b"x" * 60)), "larger than"),
+    ],
+    ids=["status", "html-login-page", "too-big"],
+)
+def test_download_file_explains_why_it_gave_up(stream, message):
+    with pytest.raises(slack.FileDownloadError, match=message):
+        download(stream)

@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 from redis import RedisError
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -154,7 +155,7 @@ def conversations_replies(channel: str, ts: str, *, token: str) -> list[dict]:
     return _collect_pages(lambda cursor: client.conversations_replies(channel=channel, ts=ts, limit=200, cursor=cursor))[0]
 
 
-def conversations_history(channel: str, oldest: float, *, token: str, max_messages: int) -> tuple[list[dict], bool]:
+def conversations_history(channel: str, oldest: float, *, token: str, max_messages: int, latest: str | None = None) -> tuple[list[dict], bool]:
     """Fetch top-level channel messages posted after `oldest` (needs the channels:history / groups:history scope).
 
     Args:
@@ -162,16 +163,103 @@ def conversations_history(channel: str, oldest: float, *, token: str, max_messag
         oldest: Unix time; only messages newer than this are returned.
         token: Bot OAuth token (xoxb-...) to authenticate the request.
         max_messages: Stop paginating once this many messages were collected.
+        latest: A Slack ts; only messages older than this are returned (exclusive). Passed through as is, so a ts read
+            from an earlier call keeps its microseconds.
 
     Returns:
         At most `max_messages` messages, newest first, and whether older ones in the window were left unread. Thread
         replies are not included, only thread roots.
     """
     client = WebClient(token=token)
+    extra = {"latest": latest} if latest is not None else {}
     return _collect_pages(
-        lambda cursor: client.conversations_history(channel=channel, oldest=f"{oldest:.6f}", limit=200, cursor=cursor),
+        lambda cursor: client.conversations_history(channel=channel, oldest=f"{oldest:.6f}", limit=min(200, max_messages), cursor=cursor, **extra),
         max_messages,
     )
+
+
+def get_channel_info(channel: str, *, token: str) -> dict:
+    """Return Slack's description of a channel: `is_private`, `is_archived`, `is_member`, `is_im`, `name`... (needs channels:read / groups:read)."""
+    return dict(WebClient(token=token).conversations_info(channel=channel)["channel"])
+
+
+def find_channel_id(name: str, *, token: str, max_pages: int = 20) -> str | None:
+    """Return the ID of the non-archived public or private channel called `name` (lower case, no `#`), or None (needs channels:read / groups:read).
+
+    Only channels the bot can see are listed, so a private channel it is not in looks like a missing one.
+    """
+    client = WebClient(token=token)
+    cursor = None
+    for _ in range(max_pages):
+        response = client.conversations_list(types="public_channel,private_channel", exclude_archived=True, limit=200, cursor=cursor)
+        for channel in response["channels"]:
+            if channel.get("name") == name:
+                return str(channel["id"])
+        cursor = (response.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            return None
+    return None
+
+
+def get_workspace_url(token: str) -> str:
+    """Return the workspace's base URL (e.g. https://acme.slack.com/), the start of every message link."""
+    return str(WebClient(token=token).auth_test()["url"])
+
+
+def is_channel_member(channel: str, user_id: str, *, token: str, max_pages: int) -> bool | None:
+    """Whether `user_id` is in the channel, reading at most `max_pages` pages of 1,000 members; None if not found and members are left unread."""
+    client = WebClient(token=token)
+    cursor = None
+    for _ in range(max_pages):
+        response = client.conversations_members(channel=channel, limit=1000, cursor=cursor)
+        if user_id in response["members"]:
+            return True
+        cursor = (response.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            return False
+    return None
+
+
+def list_files(channel: str, *, token: str) -> list[dict]:
+    """List one file shared in the channel; only useful to learn whether the token has the files:read scope."""
+    return list(WebClient(token=token).files_list(channel=channel, count=1)["files"])
+
+
+def get_file_info(file_id: str, *, token: str) -> dict:
+    """Return Slack's description of a file: name, filetype, size, the channels it is shared in and its private download URL (needs files:read)."""
+    return dict(WebClient(token=token).files_info(file=file_id)["file"])
+
+
+class FileDownloadError(Exception):
+    """A file couldn't be downloaded; the message says why."""
+
+
+def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
+    """Download a file Slack hosts, refusing anything bigger than `max_bytes`.
+
+    Only https URLs on slack.com are fetched, and `url` must come from Slack's own file info, never from a user, because the
+    bot's token is sent along.
+
+    Raises:
+        FileDownloadError: another host, an error status, an HTML page (what Slack returns when the token can't read files) or too many bytes.
+    """
+    parsed = httpx.URL(url)
+    if parsed.scheme != "https" or not (parsed.host == "slack.com" or parsed.host.endswith(".slack.com")):
+        raise FileDownloadError("The file is not hosted on Slack.")
+    data = bytearray()
+    try:
+        with httpx.stream("GET", url, headers={"Authorization": f"Bearer {token}"}, timeout=30.0, follow_redirects=False) as response:
+            if response.status_code != 200:
+                raise FileDownloadError(f"Slack answered {response.status_code} for the file.")
+            if response.headers.get("content-type", "").startswith("text/html"):
+                raise FileDownloadError("Slack returned a web page instead of the file; the app probably lacks the files:read scope.")
+            for chunk in response.iter_bytes():
+                data.extend(chunk)
+                if len(data) > max_bytes:
+                    raise FileDownloadError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
+    except httpx.HTTPError as exc:
+        raise FileDownloadError(f"Could not download the file: {exc}") from exc
+    return bytes(data)
 
 
 def get_bot_user_id(token: str) -> str:

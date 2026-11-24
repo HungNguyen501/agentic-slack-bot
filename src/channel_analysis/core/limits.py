@@ -1,0 +1,30 @@
+DEFAULT_LOOKBACK_DAYS = 30
+# How far back a window may reach: `lookback_days + end_days_ago` can't exceed it.
+MAX_REACH_DAYS = 30
+MAX_CONTAINS_TERMS = 5
+
+# About 10k tokens: one page fits in the agent's context with room to reason, and a request has 10 iterations in all.
+PAGE_CHAR_BUDGET = 40_000
+MESSAGE_CHAR_LIMIT = 3_000
+# What one thread's replies may add to a page; the rest is counted, not shown.
+REPLIES_CHAR_LIMIT = 10_000
+# Per message, on top of its text: the author, time, link and reaction lines.
+MESSAGE_OVERHEAD_CHARS = 200
+# What a `[file F…: name, type, size]` line adds besides the name and the type.
+FILE_LINE_OVERHEAD_CHARS = 50
+
+# Messages asked of Slack in one call, and how many a single tool call may scan while looking for matches. With replies
+# on, each message with a thread costs one more Slack call (about 50 a minute are allowed), so both are smaller.
+FETCH_BATCH = 200
+FETCH_BATCH_WITH_REPLIES = 50
+MAX_SCAN_PER_CALL = 600
+MAX_SCAN_PER_CALL_WITH_REPLIES = 100
+
+FILE_PAGE_CHARS = 40_000
+FILE_MAX_BYTES = 5 * 1024 * 1024
+# A spreadsheet of 5 MB can unpack to far more text than a page tool will ever serve; stop extracting here.
+FILE_MAX_CHARS = 2_000_000
+TABULAR_FILE_TYPES = frozenset({"csv", "tsv"})
+
+# 1,000 members per page.
+MEMBER_PAGES_MAX = 10

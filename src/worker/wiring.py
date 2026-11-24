@@ -5,6 +5,9 @@ from agent.dispatch import ToolServices
 from agent.pr_reminders.message import VOICE_SPEC as PR_REMINDER_VOICE_SPEC
 from bots.core.ports import BotRepository
 from bots.infra.supabase_bots import SupabaseBotRepository
+from channel_analysis.core.service import ChannelAnalysisService
+from channel_analysis.infra.slack_files import SlackChannelFiles
+from channel_analysis.infra.slack_history import SlackChannelHistory
 from characters.core.models import FEATURE_PR_REMINDER
 from characters.core.service import CharacterService
 from characters.infra.files_source import FilesCharacterSource
@@ -48,5 +51,15 @@ def character_service() -> CharacterService:
 
 
 @functools.cache
+def channel_analysis_service() -> ChannelAnalysisService:
+    return ChannelAnalysisService(SlackChannelHistory(), SlackChannelFiles())
+
+
+@functools.cache
 def tool_services() -> ToolServices:
-    return ToolServices(schedules=schedule_repository(), dataset_sync=dataset_sync_service(), characters=character_service())
+    return ToolServices(
+        schedules=schedule_repository(),
+        dataset_sync=dataset_sync_service(),
+        characters=character_service(),
+        channel_analysis=channel_analysis_service(),
+    )

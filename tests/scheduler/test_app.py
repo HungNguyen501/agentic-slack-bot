@@ -21,7 +21,7 @@ def test_a_question_schedule_enqueues_the_scheduled_question_job():
     queue.enqueue.assert_called_once()
     assert queue.enqueue.call_args.args == ("worker.tasks.process_scheduled_question",)
     kwargs = queue.enqueue.call_args.kwargs
-    assert (kwargs["channel"], kwargs["question"], kwargs["bot_id"], kwargs["job_timeout"]) == ("C1", "what failed?", "bot-a", 120)
+    assert (kwargs["channel"], kwargs["question"], kwargs["bot_id"], kwargs["job_timeout"]) == ("C1", "what failed?", "bot-a", 600)
     assert kwargs["retry"].max == 3
 
 

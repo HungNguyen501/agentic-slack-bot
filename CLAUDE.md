@@ -85,11 +85,20 @@ PR reminder (check_and_remind, run_reminder) → CharacterService.character_for_
 One character per thread: thread_character:{channel}:{thread_ts} in Redis (14 days); a character bound to skill:core is the default voice of every task (none of the seed characters is).
 ```
 
+**Channel analysis** (admins ask the agent to read a channel over a period and report insights; see `.claude/rules/architecture.md` "Channel Analysis"):
+```
+admin asks → check_channel_access (bot can read it? requester may see it?) → read_channel_messages pages (newest first, `before` cursor)
+  → read_channel_file for a CSV / text / PDF / Excel attached to a message, only when the question needs it
+  → the agent counts and writes the answer (window, messages read, whether the whole window was covered)
+scheduled: an admin schedules a self-contained question (add_schedule); the scheduler job runs the agent with no requester,
+  and only the channel_analysis tools are allowed in such a run
+```
+
 **Agent loop** (`src/agent/agent.py`):
 1. Router model (gpt-6.1-sol) picks skills from `src/agent/skills/files/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date, then the persona of the thread's character (picked from the characters bound to the routed skills, else to `skill:core`)
-3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret / list_synced_datasets / sync_dataset / schedule_dataset_sync / list_characters / add_character / update_character / remove_character (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
-4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
+3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret / list_synced_datasets / sync_dataset / schedule_dataset_sync / list_characters / add_character / update_character / remove_character / check_channel_access / read_channel_messages / read_channel_file (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
+4. Up to 10 iterations; history trimmed to last 20 pairs in Redis. After a channel or file was read in a run, only the read-only tools (`dispatch.READ_ONLY_TOOLS`) are offered or run in the rest of it
 
 ## Quick Commands
 
@@ -220,6 +229,10 @@ src/
     infra/                   # supabase_characters.py, file_format.py + files_source.py (the seed files), known_skills.py, redis_thread_characters.py
     presentation/tools.py    # list_characters / add_character / update_character / remove_character handlers
     files/                   # seed files (character per file), inserted into the table by worker.seed_characters when a worker starts
+  channel_analysis/
+    core/                    # models (ChannelMessage, FileRef, ChannelSlice, ChannelAccess, FilePage), errors (ACCESS_MESSAGES: the wording of every access problem), limits, reference (channel ID / link / name parsing, pure), file_pages (page cutting, pure), ports (ChannelHistory, ChannelFiles), ChannelAnalysisService (check_access, read with window / filter / paging, read_file)
+    infra/                   # slack_history.py (ChannelHistory on connectors/slack.py; Slack errors -> ChannelAccessError), message_text.py (blocks / attachments / rich text -> text), slack_files.py + file_text.py (download and extract CSV / text / PDF / Excel)
+    presentation/tools.py    # check_channel_access / read_channel_messages / read_channel_file handlers (format the pages the agent reads)
   agent/                     # Everything the agent does, by task
     agent.py                 # Agent loop (OpenAI Responses API) + summarize_answer; returns an AgentReply (text + the character it spoke as)
     dispatch.py              # Tool schema exposure + per-call routing
@@ -270,7 +283,7 @@ src/
       scim.py                    # SCIM list / create service principal / add group member
       service_principal_secrets.py # OAuth client secret generation
     github.py                # GitHub REST primitives (file, branch, PR) for 100xteam-ai/vireox-data-platform, plus a generic GraphQL call
-    slack.py                 # Slack Web API — message posting, modal views, mrkdwn chunking
+    slack.py                 # Slack Web API — message posting, history / replies / channel info / members / files reads, size-capped file download, modal views, mrkdwn chunking
     openai_client.py         # Shared OpenAI client + Chat Completions / Responses wrappers
     redis_client.py          # Shared Redis client
   databricks/metric_views/   # SQL views for semantic layer

@@ -6,6 +6,8 @@ from agent.access_control.tools import dispatch_data_access_tool
 from agent.pr_reminders.tools import dispatch_pr_reminder_tool
 from agent.service_principal_secrets.tools import dispatch_secret_generation_tool
 from bots.core.models import BotConfig
+from channel_analysis.core.service import ChannelAnalysisService
+from channel_analysis.presentation.tools import dispatch_channel_analysis_tool
 from characters.core.service import CharacterService
 from characters.presentation.tools import dispatch_character_tool
 from common.configs import AgentConfigs
@@ -17,6 +19,13 @@ from schedules.presentation.tools import dispatch_schedule_tool
 
 log = logging.getLogger("agent.dispatch")
 
+# Tools that return what channels and files hold; text in them is not the admin's, so once one has run, the rest of that run
+# may use only the read-only tools below (a crafted post must not be able to remove a schedule or add a character).
+UNTRUSTED_CONTENT_TOOLS = frozenset({"read_channel_messages", "read_channel_file"})
+READ_ONLY_TOOLS = frozenset(
+    {"execute_query", "get_job_run_details", "list_schedules", "list_synced_datasets", "list_characters", "check_channel_access"} | UNTRUSTED_CONTENT_TOOLS
+)
+
 
 @dataclass(frozen=True)
 class ToolServices:
@@ -25,11 +34,12 @@ class ToolServices:
     schedules: ScheduleRepository
     dataset_sync: DatasetSyncService
     characters: CharacterService
+    channel_analysis: ChannelAnalysisService
 
 
-def get_agent_tools() -> list[dict]:
-    """Return the OpenAI function-calling tool schema for all agent tools."""
-    return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS]
+def get_agent_tools(read_only: bool = False) -> list[dict]:
+    """Return the OpenAI function-calling tool schema for all agent tools, or only the read-only ones after untrusted content was read."""
+    return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS if not read_only or tool.name in READ_ONLY_TOOLS]
 
 
 def tool_category(name: str) -> str | None:
@@ -46,6 +56,7 @@ def dispatch_tool(
     channel: str,
     thread_ts: str,
     services: ToolServices,
+    unattended_categories: frozenset[str] = frozenset(),
 ) -> str:
     """Route a single tool call to the correct handler, enforcing the per-bot admin whitelist.
 
@@ -58,6 +69,8 @@ def dispatch_tool(
         channel: Slack channel ID the request was made in.
         thread_ts: Thread timestamp of the conversation.
         services: Use cases and stores for the tools that run on them.
+        unattended_categories: Tool categories a run with no requester (`user_id` None, a scheduled question) may use; every
+            other admin-only category stays refused for it.
 
     Returns:
         String result to pass back to the LLM as the tool response.
@@ -88,6 +101,12 @@ def dispatch_tool(
         if user_id not in admin_users:
             return "You are not authorized to manage characters."
         return dispatch_character_tool(name, args, services.characters)
+
+    if tool_category(name) == "channel_analysis":
+        allowed = user_id in admin_users if user_id is not None else "channel_analysis" in unattended_categories
+        if not allowed:
+            return "You are not authorized to read channels for analysis."
+        return dispatch_channel_analysis_tool(name, args, user_id, bot, services.channel_analysis)
 
     if tool_category(name) == "pr_reminder":
         return dispatch_pr_reminder_tool(name, args, user_id, channel, thread_ts, bot, services.characters)

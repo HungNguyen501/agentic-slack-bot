@@ -1,0 +1,56 @@
+from slack_sdk.errors import SlackApiError
+
+from channel_analysis.core import limits
+from channel_analysis.core.errors import ChannelAnalysisError, FileUnreadableError
+from channel_analysis.core.models import FileMeta
+from channel_analysis.infra import file_text
+from channel_analysis.infra.slack_history import slack_access_errors
+from connectors import slack
+
+
+def _shared_in(raw: dict) -> frozenset[str]:
+    ids = set(raw.get("channels") or []) | set(raw.get("groups") or [])
+    for kind in ("public", "private"):
+        ids |= set((raw.get("shares") or {}).get(kind) or {})
+    return frozenset(ids)
+
+
+class SlackChannelFiles:
+    def __init__(self) -> None:
+        # One forked process serves one agent run, which reads a file page by page: keep the last file's text instead of
+        # downloading and extracting it again for every page.
+        self._last: tuple[str, str] | None = None
+
+    def describe(self, file_id: str, token: str) -> FileMeta:
+        raw = self._info(file_id, token)
+        return FileMeta(
+            name=str(raw.get("name") or raw.get("title") or file_id),
+            filetype=str(raw.get("filetype") or "unknown"),
+            size=int(raw.get("size") or 0),
+            shared_in=_shared_in(raw),
+        )
+
+    def text(self, file_id: str, token: str) -> str:
+        if self._last and self._last[0] == file_id:
+            return self._last[1]
+        raw = self._info(file_id, token)
+        url = raw.get("url_private_download") or raw.get("url_private")
+        if not url:
+            raise FileUnreadableError("Slack gave me no download link for that file.")
+        try:
+            data = slack.download_file(url, token=token, max_bytes=limits.FILE_MAX_BYTES)
+        except slack.FileDownloadError as exc:
+            raise FileUnreadableError(str(exc)) from exc
+        text = file_text.extract_text(str(raw.get("name") or ""), str(raw.get("filetype") or ""), data, limits.FILE_MAX_CHARS)
+        self._last = (file_id, text)
+        return text
+
+    @staticmethod
+    def _info(file_id: str, token: str) -> dict:
+        try:
+            with slack_access_errors(files=True):
+                return slack.get_file_info(file_id, token=token)
+        except SlackApiError as exc:
+            if exc.response and exc.response.get("error") in ("file_not_found", "file_deleted"):
+                raise ChannelAnalysisError("I can't find that file.") from exc
+            raise

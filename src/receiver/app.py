@@ -128,7 +128,8 @@ async def slack_events(request: Request) -> dict:
                 user=event.get("user"),
                 text=event.get("text", ""),
                 bot_id=bot.bot_id,
-                job_timeout=120,
+                # A channel analysis reads several pages with a model call between them and can take minutes.
+                job_timeout=600,
                 retry=Retry(max=3, interval=[10, 30, 60]),
             )
             log.info("Enqueued job %s for event %s (bot_id=%s)", job.id, event_id, bot.bot_id)

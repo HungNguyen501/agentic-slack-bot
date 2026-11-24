@@ -63,7 +63,7 @@ class AgentTool:
     name: str
     description: str
     parameters: dict
-    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder", "dataset_sync", "characters"] = "core"
+    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder", "dataset_sync", "characters", "channel_analysis"] = "core"
 
     def to_openai_schema(self) -> dict:
         # Responses API tools are flat (no nested "function" key) and default to strict=True,
@@ -364,6 +364,74 @@ class AgentConfigs:
                 "required": ["dataset", "cron"],
             },
             category="dataset_sync",
+        ),
+        AgentTool(
+            name="check_channel_access",
+            description=(
+                "Check whether the bot and the requester may read a Slack channel, before reading it. Admin-only. Call it first, "
+                "before read_channel_messages / read_channel_file and before scheduling a recurring channel analysis. It reads no "
+                "messages. It returns OK, or every problem found (not a member, missing Slack permission, private channel the requester "
+                "is not in, archived, not found) with how to fix each; when a problem is blocking, stop and tell the admin."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel ID (C…), a channel link like <#C123|name>, or the channel name."},
+                },
+                "required": ["channel"],
+            },
+            category="channel_analysis",
+        ),
+        AgentTool(
+            name="read_channel_messages",
+            description=(
+                "Read the messages of a Slack channel for a time window, newest first, in pages, to analyze them (count, compare, "
+                "summarize, find what is missing). Admin-only; run check_channel_access first. Bot reports are flattened to text; "
+                "files are listed with their id (open one with read_channel_file). The result says how many messages the page holds "
+                "and whether the window is finished; if it is not, call again with `before` from the result and the same other "
+                "arguments until it is, or say that you covered only part of the window. Reaches at most 30 days back."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel ID (C…), a channel link like <#C123|name>, or the channel name."},
+                    "lookback_days": {"type": "integer", "description": "Window length in days. Default 30. lookback_days + end_days_ago <= 30."},
+                    "end_days_ago": {
+                        "type": "integer",
+                        "description": "Where the window ends, in days before now. Default 0. To compare periods: last week = lookback_days 7, end_days_ago 7.",
+                    },
+                    "contains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Up to 5 case-insensitive terms; a message is kept if any appears in its text, author, file names or replies.",
+                    },
+                    "include_replies": {"type": "boolean", "description": "Also read thread replies. Default true; false is faster when threads don't matter."},
+                    "before": {
+                        "type": "string",
+                        "description": "Resume cursor: the `before` value from the previous result, copied exactly (it also fixes the window). Omit on the first call.",
+                    },
+                },
+                "required": ["channel"],
+            },
+            category="channel_analysis",
+        ),
+        AgentTool(
+            name="read_channel_file",
+            description=(
+                "Read the text of a file attached to a message in a Slack channel (CSV, TSV, text, JSON, PDF with text, Excel .xlsx), "
+                "in pages. Admin-only. Use it only when the question needs what is inside a file; the file id (F…) is shown next to the "
+                "file in read_channel_messages. The result says where the next page starts; pass it as `offset`."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "The channel the file was posted in (same forms as read_channel_messages)."},
+                    "file_id": {"type": "string", "description": "File ID, e.g. F0123ABCD, as shown in the message."},
+                    "offset": {"type": "integer", "description": "Character offset to start at, from the previous result. Default 0."},
+                },
+                "required": ["channel", "file_id"],
+            },
+            category="channel_analysis",
         ),
         AgentTool(
             name="generate_service_principal_secret",

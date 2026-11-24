@@ -251,7 +251,9 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
     header_ts = slack.post_message(channel, f"*Scheduled question:* _{question}_", token=bot.bot_token)
 
     try:
-        answer, character = run_agent(question, header_ts, channel, bot=bot, services=wiring.tool_services())
+        answer, character = run_agent(
+            question, header_ts, channel, bot=bot, services=wiring.tool_services(), unattended_categories=frozenset({"channel_analysis"})
+        )
         summary = summarize_answer(question, answer, character)
     except Exception as exc:
         log.exception("Scheduled agent error: %s", exc)

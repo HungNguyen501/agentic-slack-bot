@@ -6,6 +6,7 @@ from agent import agent
 from agent.dispatch import ToolServices
 from agent.skills.loader import SystemPrompt
 from bots.core.models import BotConfig
+from channel_analysis.core.service import ChannelAnalysisService
 from characters.core.models import Character
 from characters.core.service import CharacterService
 from dataset_sync.core.service import DatasetSyncService
@@ -24,7 +25,12 @@ def characters():
 
 @pytest.fixture
 def services(characters):
-    return ToolServices(schedules=create_autospec(ScheduleRepository), dataset_sync=create_autospec(DatasetSyncService), characters=characters)
+    return ToolServices(
+        schedules=create_autospec(ScheduleRepository),
+        dataset_sync=create_autospec(DatasetSyncService),
+        characters=characters,
+        channel_analysis=create_autospec(ChannelAnalysisService),
+    )
 
 
 @pytest.fixture
@@ -115,3 +121,102 @@ def test_the_summary_without_a_character_is_unchanged():
         agent.summarize_answer("q", "answer")
 
     assert "## Voice" not in openai.chat_completion.call_args.args[0][0]["content"]
+
+
+def tool_call(name, call_id="c1", arguments="{}"):
+    call = MagicMock(type="function_call", arguments=arguments, call_id=call_id)
+    call.name = name
+    call.model_dump.return_value = {"type": "function_call", "name": name, "call_id": call_id}
+    return call
+
+
+def test_before_any_channel_read_every_tool_is_offered_and_after_it_only_the_read_only_ones(llm, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("read_channel_messages")], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="page") as dispatch_tool:
+        reply = run(services)
+
+    first, second = (c.kwargs["tools"] for c in llm.create_response.call_args_list)
+    assert "remove_schedule" in {t["name"] for t in first}
+    assert {t["name"] for t in second} == agent.READ_ONLY_TOOLS
+    assert dispatch_tool.call_count == 1
+    assert reply.text == "the answer"
+
+
+def test_a_write_tool_called_after_a_channel_read_is_refused_without_running(llm, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("read_channel_file")], output_text=""),
+        MagicMock(output=[tool_call("remove_schedule", "c2", '{"id": "s1"}')], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="page") as dispatch_tool:
+        run(services)
+
+    assert [c.args[0] for c in dispatch_tool.call_args_list] == ["read_channel_file"]
+    outputs = [m for m in llm.create_response.call_args_list[2].kwargs["input"] if m.get("type") == "function_call_output"]
+    assert outputs[-1]["output"].startswith("Refused: channel or file content was read")
+
+
+def test_a_read_only_tool_still_runs_after_a_channel_read(llm, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("read_channel_messages")], output_text=""),
+        MagicMock(output=[tool_call("execute_query", "c2", '{"sql": "select 1"}')], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="rows") as dispatch_tool:
+        run(services)
+
+    assert [c.args[0] for c in dispatch_tool.call_args_list] == ["read_channel_messages", "execute_query"]
+
+
+def test_a_check_alone_does_not_narrow_the_tools(llm, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("check_channel_access")], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="OK"):
+        run(services)
+
+    assert "remove_schedule" in {t["name"] for t in llm.create_response.call_args_list[1].kwargs["tools"]}
+
+
+def test_the_unattended_categories_reach_the_tool_dispatch_and_the_auth_note(llm, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("read_channel_messages")], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="page") as dispatch_tool:
+        agent.run_agent("analyze", "1.0", "C1", bot=BOT, services=services, unattended_categories=frozenset({"channel_analysis"}))
+
+    assert dispatch_tool.call_args.args[2] is None
+    assert dispatch_tool.call_args.args[-1] == frozenset({"channel_analysis"})
+    note = next(m["content"] for m in llm.create_response.call_args_list[0].kwargs["input"] if m.get("role") == "user")
+    assert note.startswith("[Scheduled run, no requester — authorized only for: channel_analysis]")
+
+
+def test_an_answer_built_from_channel_content_is_marked_as_data_in_the_saved_history(llm, saved_history, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("read_channel_messages")], output_text=""),
+        MagicMock(output=[], output_text="11 of 34 reports were empty"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="page"):
+        reply = run(services)
+
+    saved = saved_history.call_args.args[1]
+    assert reply.text == "11 of 34 reports were empty"
+    assert saved[-1] == {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_MARK + "11 of 34 reports were empty"}
+    assert saved[-2] == {"role": "user", "content": "which tables?"}
+
+
+def test_an_answer_that_never_touched_channel_content_is_saved_as_it_is(llm, saved_history, services):
+    run(services)
+
+    assert saved_history.call_args.args[1][-1] == {"role": "assistant", "content": "the answer"}
