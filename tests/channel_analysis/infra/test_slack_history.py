@@ -6,6 +6,7 @@ from slack_sdk.errors import SlackApiError
 from channel_analysis.core.errors import ChannelAccessError
 from channel_analysis.core.models import ChannelMessage
 from channel_analysis.infra.slack_history import SlackChannelHistory
+from connectors.slack import ChannelListIncompleteError
 
 TOKEN = "xoxb-test"
 CHANNEL = "C0123456789"
@@ -88,7 +89,7 @@ def test_fetch_reads_replies_only_of_threads_and_only_when_asked(slack):
 
     root = with_replies.messages[0]
     assert [(r.author, r.text) for r in root.replies] == [("<@U1>", "r1")]
-    assert root.reply_count == 2
+    assert root.reply_count == 1  # the join notice is no reply
     assert with_replies.messages[1].replies == ()
     slack.conversations_replies.assert_not_called()
     assert without.messages[0].replies == ()
@@ -326,3 +327,68 @@ def test_replies_that_could_not_be_fetched_stay_counted_as_omitted_whatever_the_
 
     message = batch.messages[0]
     assert (len(message.replies), message.omitted_replies, message.reply_count) == (1, 3, 4)
+
+
+def test_a_channel_search_that_ran_out_of_pages_is_an_access_problem_asking_for_the_link(slack):
+    slack.ChannelListIncompleteError = ChannelListIncompleteError
+    slack.find_channel_id.side_effect = ChannelListIncompleteError("more pages")
+
+    with pytest.raises(ChannelAccessError) as raised:
+        SlackChannelHistory().find_channel_id("mail", TOKEN)
+
+    assert raised.value.code == "channel_search_incomplete" and "link or its ID" in str(raised.value)
+
+
+def thread_of(replies, reply_count):
+    return {"ts": "5.0", "thread_ts": "5.0", "reply_count": reply_count, "text": "root"}, [{"ts": "5.0", "text": "root"}, *replies]
+
+
+def reply(ts, text="r"):
+    return {"ts": ts, "user": "U1", "text": text}
+
+
+def test_a_thread_read_up_to_the_window_end_and_cut_short_counts_the_rest_as_unread(slack):
+    root, replies = thread_of([reply("5.1"), reply("5.2")], reply_count=10)
+    slack.conversations_history.return_value = ([root], False)
+    slack.conversations_replies.return_value = replies
+
+    message = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN, replies_until=6.0).messages[0]
+
+    assert (len(message.replies), message.omitted_replies, message.reply_count) == (2, 8, 10)
+
+
+def test_once_the_replies_read_pass_the_window_end_the_unread_rest_is_past_it_too_and_not_counted_as_missing(slack):
+    root, replies = thread_of([reply("5.1"), reply("5.2"), reply("900.0"), reply("901.0")], reply_count=500)
+    slack.conversations_history.return_value = ([root], False)
+    slack.conversations_replies.return_value = replies
+
+    message = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN, replies_until=6.0).messages[0]
+
+    assert [r.text for r in message.replies] == ["r", "r"]
+    assert (message.omitted_replies, message.reply_count) == (0, 2)
+
+
+def test_a_thread_that_was_read_to_its_end_in_the_window_has_nothing_unread(slack):
+    root, replies = thread_of([reply("5.1"), reply("5.2")], reply_count=2)
+    slack.conversations_history.return_value = ([root], False)
+    slack.conversations_replies.return_value = replies
+
+    message = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN, replies_until=6.0).messages[0]
+
+    assert (message.omitted_replies, message.reply_count) == (0, 2)
+
+
+@pytest.mark.parametrize("subtype", ["thread_broadcast", "reply_broadcast"])
+def test_a_broadcast_reply_is_the_channels_message_not_also_a_reply_of_the_thread(slack, subtype):
+    root, replies = thread_of([reply("5.1", "plain"), {**reply("5.2", "also to the channel"), "subtype": subtype}], reply_count=2)
+    broadcast = {"ts": "5.2", "thread_ts": "5.0", "user": "U1", "text": "also to the channel", "subtype": subtype}
+    slack.conversations_history.return_value = ([broadcast, root], False)
+    slack.conversations_replies.return_value = replies
+
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN)
+
+    standalone, parent = batch.messages
+    assert standalone.text == "also to the channel" and standalone.replies == ()
+    assert [r.text for r in parent.replies] == ["plain"]
+    assert (parent.omitted_replies, parent.reply_count) == (0, 1)
+    slack.conversations_replies.assert_called_once()

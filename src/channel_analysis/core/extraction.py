@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAnalysisError, ExtractionShapeError
-from channel_analysis.core.file_pages import cut_page, repeated_header
+from channel_analysis.core.file_pages import cut_page, is_tabular, repeated_header
 from channel_analysis.core.models import ChannelMessage, ExtractionItem, ExtractionSpec, FileRef, GroupCount, Record
 
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -93,7 +93,7 @@ def file_items(message: ChannelMessage, file: FileRef, text: str, room: int, sou
     items: list[ExtractionItem] = []
     offset: int | None = 0
     while offset is not None and len(items) < room:
-        piece, offset = cut_page(text, offset, limits.ITEM_CHAR_LIMIT, repeated_header(text, offset, file.filetype))
+        piece, offset = cut_page(text, offset, limits.ITEM_CHAR_LIMIT, repeated_header(text, offset, file.filetype), is_tabular(file.filetype))
         heading = f"{format_when(shown.ts)} · {shown.author} · file {file.name} (part {len(items) + 1})"
         items.append(ExtractionItem(message.ts, message.link, heading, piece))
     return items, offset is None

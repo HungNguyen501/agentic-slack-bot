@@ -185,10 +185,17 @@ def get_channel_info(channel: str, *, token: str) -> dict:
     return dict(WebClient(token=token).conversations_info(channel=channel)["channel"])
 
 
+class ChannelListIncompleteError(Exception):
+    """The channel list has more pages than were read, so a channel not found in them may still exist."""
+
+
 def find_channel_id(name: str, *, token: str, max_pages: int = 20) -> str | None:
     """Return the ID of the non-archived public or private channel called `name` (lower case, no `#`), or None (needs channels:read / groups:read).
 
     Only channels the bot can see are listed, so a private channel it is not in looks like a missing one.
+
+    Raises:
+        ChannelListIncompleteError: `max_pages` pages were read and the list goes on; None is reserved for a listing read to its end.
     """
     client = WebClient(token=token)
     cursor = None
@@ -200,7 +207,7 @@ def find_channel_id(name: str, *, token: str, max_pages: int = 20) -> str | None
         cursor = (response.get("response_metadata") or {}).get("next_cursor")
         if not cursor:
             return None
-    return None
+    raise ChannelListIncompleteError(f"The first {max_pages} pages of channels don't hold {name!r} and there are more.")
 
 
 def get_workspace_url(token: str) -> str:

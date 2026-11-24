@@ -373,17 +373,30 @@ def test_find_channel_id_follows_the_cursor_until_the_name_is_found():
     assert client.conversations_list.call_args.kwargs["types"] == "public_channel,private_channel"
 
 
-def test_find_channel_id_returns_none_after_the_last_page_and_after_the_page_cap():
+def test_find_channel_id_returns_none_only_for_a_listing_read_to_its_end():
     client = MagicMock()
     client.conversations_list.return_value = channels_page(["a"])
+
     with patch("connectors.slack.WebClient", autospec=True, return_value=client):
         assert slack.find_channel_id("nope", token="t") is None
 
-    client.conversations_list.reset_mock()
+
+def test_find_channel_id_says_so_when_it_ran_out_of_pages_instead_of_claiming_the_channel_does_not_exist():
+    client = MagicMock()
     client.conversations_list.return_value = channels_page(["a"], "more")
-    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
-        assert slack.find_channel_id("nope", token="t", max_pages=3) is None
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client), pytest.raises(slack.ChannelListIncompleteError, match="more"):
+        slack.find_channel_id("nope", token="t", max_pages=3)
+
     assert client.conversations_list.call_count == 3
+
+
+def test_a_channel_found_on_the_last_page_that_is_read_is_still_found():
+    client = MagicMock()
+    client.conversations_list.side_effect = [channels_page(["a"], "c2"), channels_page(["b"], "c3"), channels_page(["target"], "c4")]
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        assert slack.find_channel_id("target", token="t", max_pages=3) == "Ctarget"
 
 
 def test_get_channel_info_returns_the_channel_dict():

@@ -128,6 +128,29 @@ def test_a_table_next_to_a_short_fallback_text_keeps_its_data():
     assert message_text.flatten_text(message) == "Daily report\npo_costs | 0 rows"
 
 
+def rich(*elements):
+    return {"text": "", "blocks": [{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": list(elements)}]}]}
+
+
+def test_a_date_element_shows_its_fallback_text():
+    message = rich({"type": "text", "text": "Deadline: "}, {"type": "date", "timestamp": 1800000000, "format": "{date_short}", "fallback": "Jan 15, 2027"})
+
+    assert message_text.flatten_text(message) == "Deadline: Jan 15, 2027"
+
+
+def test_a_date_element_without_a_fallback_shows_its_timestamp_in_utc():
+    message = rich({"type": "text", "text": "Deadline: "}, {"type": "date", "timestamp": 1800000000, "format": "{date_short}"})
+
+    assert message_text.flatten_text(message) == "Deadline: 2027-01-15 08:00 UTC"
+
+
+@pytest.mark.parametrize(
+    "element", [{"type": "date"}, {"type": "date", "timestamp": "soon"}, {"type": "date", "timestamp": 10**30}], ids=["no-timestamp", "word", "huge"]
+)
+def test_a_date_element_that_cannot_be_read_gives_nothing_instead_of_failing_the_message(element):
+    assert message_text.flatten_text(rich({"type": "text", "text": "Due "}, element)) == "Due"
+
+
 def test_an_attachment_with_only_a_fallback_uses_it():
     assert message_text.flatten_text({"attachments": [{"fallback": "PR #1 opened"}]}) == "PR #1 opened"
 

@@ -301,7 +301,7 @@ def test_replies_that_were_not_read_are_said_to_be_missing_from_the_counts(servi
 
     reply = run(service, "analyze_channel", ANALYZE_ARGS)
 
-    assert "Replies not read (rate limited, no access, or over the cap on one thread): 42; the counts leave them out." in reply
+    assert "Replies not read (rate limited, no access, or over the cap on one thread): up to 42; the counts leave them out." in reply
 
 
 def test_a_clean_analysis_mentions_neither_cut_messages_nor_missing_replies(service):

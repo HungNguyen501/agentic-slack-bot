@@ -60,6 +60,8 @@ def extract_chunk(extractor: ExtractionModel, spec: ExtractionSpec, chunk: list[
             return ChunkOutcome(chunk, records, rejected, None, prompt_tokens, completion_tokens, time.monotonic() - started)
         except ExtractionShapeError as exc:
             failure = str(exc)
+            prompt_tokens += exc.prompt_tokens
+            completion_tokens += exc.completion_tokens
         except ExtractionError as exc:
             failure = str(exc)
             break

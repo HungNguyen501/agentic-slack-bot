@@ -175,7 +175,7 @@ def _analysis_coverage(result: Analysis) -> list[str]:
     if result.messages_cut:
         lines.append(f"Messages longer than one message may add (their end was not read): {result.messages_cut}")
     if result.replies_omitted:
-        lines.append(f"Replies not read (rate limited, no access, or over the cap on one thread): {result.replies_omitted}; the counts leave them out.")
+        lines.append(f"Replies not read (rate limited, no access, or over the cap on one thread): up to {result.replies_omitted}; the counts leave them out.")
     lines.append("Files not read: " + ("; ".join(f"{name} ({reason})" for name, reason in result.files_not_read) or "none"))
     return lines
 

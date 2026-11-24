@@ -8,7 +8,7 @@ from bots.core.models import BotConfig
 from channel_analysis.core import extraction, limits
 from channel_analysis.core.errors import ACCESS_MESSAGES, ChannelAccessError, ChannelAnalysisError
 from channel_analysis.core.extraction_run import ChunkOutcome, Totals, count_outcomes, run_extraction
-from channel_analysis.core.file_pages import cut_page, repeated_header
+from channel_analysis.core.file_pages import cut_page, is_tabular, repeated_header
 from channel_analysis.core.models import (
     AccessProblem,
     Analysis,
@@ -328,7 +328,7 @@ class ChannelAnalysisService:
         if meta.size > limits.FILE_MAX_BYTES:
             raise ChannelAnalysisError(f"`{meta.name}` is {meta.size // 1024} KB; I only open files up to {limits.FILE_MAX_BYTES // (1024 * 1024)} MB.")
         text = self._files.text(file_id, bot.bot_token)
-        page, next_offset = cut_page(text, offset, limits.FILE_PAGE_CHARS, repeated_header(text, offset, meta.filetype))
+        page, next_offset = cut_page(text, offset, limits.FILE_PAGE_CHARS, repeated_header(text, offset, meta.filetype), is_tabular(meta.filetype))
         return FilePage(meta.name, meta.filetype, meta.size, page, offset, next_offset, len(text))
 
     def _window(self, lookback_days: int, end_days_ago: int, before: str | None) -> tuple[float, float, str]:

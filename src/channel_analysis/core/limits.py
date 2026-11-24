@@ -27,7 +27,6 @@ FILE_PAGE_CHARS = 40_000
 FILE_MAX_BYTES = 5 * 1024 * 1024
 # A spreadsheet of 5 MB can unpack to far more text than a page tool will ever serve; stop extracting here.
 FILE_MAX_CHARS = 2_000_000
-TABULAR_FILE_TYPES = frozenset({"csv", "tsv"})
 # A CSV header is repeated on every page after the first only if it takes at most this share of a page.
 HEADER_MAX_PAGE_SHARE = 0.25
 

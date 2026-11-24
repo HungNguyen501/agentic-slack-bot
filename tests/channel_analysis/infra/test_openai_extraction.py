@@ -40,6 +40,16 @@ def test_an_answer_that_is_not_a_json_object_is_a_shape_error_so_the_chunk_is_as
         OpenAIExtractionModel("m").complete_json("s", "u", 90)
 
 
+@pytest.mark.parametrize("text", ["not json", "[1, 2]"], ids=["not-json", "not-an-object"])
+def test_a_shape_error_carries_what_the_call_used_because_it_was_paid_for(chat, text):
+    chat.return_value = ChatResult(text, 1200, 80)
+
+    with pytest.raises(ExtractionShapeError) as raised:
+        OpenAIExtractionModel("m").complete_json("s", "u", 90)
+
+    assert (raised.value.prompt_tokens, raised.value.completion_tokens) == (1200, 80)
+
+
 def test_a_failed_call_is_an_extraction_error_that_names_what_failed_and_not_the_request(chat):
     chat.side_effect = APITimeoutError(request=httpx.Request("POST", "https://api.openai.test/v1/chat/completions"))
 

@@ -325,6 +325,46 @@ def test_the_cost_and_time_of_a_call_are_logged(service, history, extractor, cap
     assert "prompt_tokens=1200" in line and "completion_tokens=300" in line and "chunks=1" in line and "failed=0" in line and "chunk_seconds=[" in line
 
 
+def logged(caplog) -> str:
+    return next(r.getMessage() for r in caplog.records if r.getMessage().startswith("analyze "))
+
+
+def test_a_wrong_shaped_answer_was_paid_for_so_its_tokens_are_counted_and_the_retry_is_too(service, history, extractor, caplog):
+    history.messages = [make_message(1, "a")]
+    answers = [ExtractionShapeError("The answer was not JSON.", 700, 40), {"records": [{"m": 1, "table": "t", "status": "failed"}]}]
+    extractor.respond = lambda system, user: answers.pop(0)
+    extractor.tokens = (500, 20)
+
+    with caplog.at_level(logging.INFO, logger="channel_analysis.service"):
+        analyze(service)
+
+    line = logged(caplog)
+    assert "prompt_tokens=1200" in line and "completion_tokens=60" in line
+
+
+def test_a_chunk_that_failed_twice_on_shape_still_reports_what_both_calls_cost(service, history, extractor, caplog):
+    history.messages = [make_message(1, "a")]
+    extractor.respond = lambda system, user: ExtractionShapeError("The answer was not JSON.", 900, 100)
+
+    with caplog.at_level(logging.INFO, logger="channel_analysis.service"):
+        result = analyze(service)
+
+    line = logged(caplog)
+    assert len(result.failed_chunks) == 1
+    assert "prompt_tokens=1800" in line and "completion_tokens=200" in line and "failed=1" in line
+
+
+def test_an_answer_with_no_records_list_counts_the_call_once_not_twice(service, history, extractor, caplog):
+    history.messages = [make_message(1, "a")]
+    extractor.respond = lambda system, user: {"nope": 1}
+    extractor.tokens = (100, 10)
+
+    with caplog.at_level(logging.INFO, logger="channel_analysis.service"):
+        analyze(service)
+
+    assert "prompt_tokens=200" in logged(caplog) and "completion_tokens=20" in logged(caplog)
+
+
 # --- files
 
 

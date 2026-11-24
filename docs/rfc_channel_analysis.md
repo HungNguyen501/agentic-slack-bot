@@ -372,6 +372,7 @@ Core accepts a record only if all of this holds, and counts the ones it rejects:
 - Only declared fields are kept; other keys are dropped.
 - A value is turned into text and cut at `MAX_VALUE_CHARS`; a missing value is null.
 - A field can't be named `m`: that key numbers the item in each record.
+- A broadcast reply ("also send to the channel") is a message of the channel; the thread's replies leave it out so it is not counted twice.
 - A missing value stays missing when records are grouped (`None` in the key, `(missing)` in the output), so it is never counted together with a value that happens to read `(none)`.
 - Thread replies that could not be read are counted and reported ("Replies not read: N; the counts leave them out"), like cut messages and files not read.
 - An item number that is not a whole number (including digit-like characters Python can't convert) rejects the record, it does not fail the call.

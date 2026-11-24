@@ -22,10 +22,13 @@ class FakeHistory:
         self.fetch_error: ChannelAccessError | None = None
         self.members_error: ChannelAccessError | None = None
         self.files_error: ChannelAccessError | None = None
+        self.find_error: ChannelAccessError | None = None
         self.fetches: list[dict] = []
         self.member_checks: list[str] = []
 
     def find_channel_id(self, name: str, token: str) -> str | None:
+        if self.find_error:
+            raise self.find_error
         return self.names.get(name)
 
     def get_channel_info(self, channel_id: str, token: str) -> ChannelInfo:

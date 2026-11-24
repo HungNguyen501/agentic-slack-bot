@@ -1,5 +1,6 @@
 """Turns a Slack message payload into the plain text, author, reactions and files the agent reads."""
 import re
+from datetime import UTC, datetime
 
 from channel_analysis.core.models import FileRef
 
@@ -14,6 +15,14 @@ NOISE_SUBTYPES = frozenset(
 
 def is_noise(message: dict) -> bool:
     return message.get("subtype") in NOISE_SUBTYPES
+
+
+# A reply posted "also to the channel" is in the channel's history as a message of its own, and in its thread too.
+BROADCAST_SUBTYPES = frozenset({"thread_broadcast", "reply_broadcast"})
+
+
+def is_broadcast(message: dict) -> bool:
+    return message.get("subtype") in BROADCAST_SUBTYPES
 
 
 def author_of(message: dict) -> str:
@@ -115,7 +124,19 @@ def _inline(element: dict) -> str:
         return f":{element.get('name')}:"
     if kind == "broadcast":
         return f"@{element.get('range')}"
+    if kind == "date":
+        return _date_text(element)
     return ""
+
+
+def _date_text(element: dict) -> str:
+    """A date element shows its fallback text, else its timestamp in UTC (Slack formats it for each reader, so the format is dropped)."""
+    if element.get("fallback"):
+        return str(element["fallback"])
+    try:
+        return f"{datetime.fromtimestamp(int(element['timestamp']), UTC):%Y-%m-%d %H:%M} UTC"
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return ""
 
 
 def _attachment_text(attachment: dict) -> str:

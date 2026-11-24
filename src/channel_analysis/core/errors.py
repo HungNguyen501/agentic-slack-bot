@@ -4,6 +4,9 @@ ACCESS_MESSAGES: dict[str, str] = {
         "I can't find that channel. If it is private and I am not in it, it looks the same as a channel that does not exist: "
         "invite me, then send the channel link or ID."
     ),
+    "channel_search_incomplete": (
+        "This workspace has too many channels for me to find that one by name. Send me the channel link or its ID instead."
+    ),
     "is_dm": "That is a direct message, and I only read channels.",
     "is_archived": "That channel is archived.",
     "not_in_channel": "I'm not a member of that channel, so I can't read it. Invite me with `/invite` and try again.",
@@ -43,4 +46,10 @@ class ExtractionError(ChannelAnalysisError):
 
 
 class ExtractionShapeError(ExtractionError):
-    """The model answered, but not with the expected JSON; the chunk is asked once more."""
+    """The model answered, but not with the expected JSON; the chunk is asked once more. The call was made and paid for, so
+    what it used travels with the error."""
+
+    def __init__(self, message: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+        super().__init__(message)
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens

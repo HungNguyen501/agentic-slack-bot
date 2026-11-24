@@ -260,6 +260,17 @@ def test_read_refuses_a_channel_it_cannot_find(service):
         read(service, channel="#nope")
 
 
+def test_a_name_that_could_not_be_searched_in_a_big_workspace_asks_for_the_link_and_is_not_called_missing(service, history):
+    history.find_error = ChannelAccessError("channel_search_incomplete")
+
+    with pytest.raises(ChannelAnalysisError, match="link or its ID"):
+        read(service, channel="#mail")
+    access = check(service, "#mail")
+
+    assert [(p.code, p.blocking) for p in access.problems] == [("channel_search_incomplete", True)]
+    assert history.fetches == []
+
+
 def test_read_refuses_a_channel_the_bot_is_not_in_without_reading_anything(service, history):
     history.infos[CHANNEL] = make_info(is_member=False)
 

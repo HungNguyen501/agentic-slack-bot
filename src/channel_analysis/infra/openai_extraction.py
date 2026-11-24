@@ -31,7 +31,7 @@ class OpenAIExtractionModel:
         try:
             data = json.loads(result.text)
         except ValueError as exc:
-            raise ExtractionShapeError("The answer was not JSON (it may have been cut off).") from exc
+            raise ExtractionShapeError("The answer was not JSON (it may have been cut off).", result.prompt_tokens, result.completion_tokens) from exc
         if not isinstance(data, dict):
-            raise ExtractionShapeError("The answer was not a JSON object.")
+            raise ExtractionShapeError("The answer was not a JSON object.", result.prompt_tokens, result.completion_tokens)
         return ModelAnswer(data, result.prompt_tokens, result.completion_tokens)

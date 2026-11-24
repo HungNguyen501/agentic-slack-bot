@@ -88,8 +88,11 @@ class SlackChannelHistory:
 
     def find_channel_id(self, name: str, token: str) -> str | None:
         if (token, name) not in self._channel_ids:
-            with slack_access_errors():
-                channel_id = slack.find_channel_id(name, token=token)
+            try:
+                with slack_access_errors():
+                    channel_id = slack.find_channel_id(name, token=token)
+            except slack.ChannelListIncompleteError as exc:
+                raise ChannelAccessError("channel_search_incomplete") from exc
             if channel_id is None:
                 return None
             self._channel_ids[(token, name)] = channel_id
@@ -148,11 +151,16 @@ class SlackChannelHistory:
             if thread is None:
                 omitted = reply_count
             else:
+                fetched = [r for r in thread if r["ts"] != raw["ts"]]
                 # A reply posted after the window's end isn't part of the window, however late it came.
-                in_window = [r for r in thread if r["ts"] != raw["ts"] and (replies_until is None or float(r["ts"]) <= replies_until)]
-                replies = tuple(self._reply(r) for r in in_window if not message_text.is_noise(r))
-                omitted = max(reply_count - sum(1 for r in thread if r["ts"] != raw["ts"]), 0)
-                reply_count = len(in_window) + omitted
+                in_window = [r for r in fetched if replies_until is None or float(r["ts"]) <= replies_until]
+                # A broadcast reply is also a message of the channel, counted there; nested here it would be counted twice.
+                shown = [r for r in in_window if not message_text.is_noise(r) and not message_text.is_broadcast(r)]
+                replies = tuple(self._reply(r) for r in shown)
+                # Replies come oldest first: once the ones read reach past the window's end, the unread rest is past it too.
+                past_the_window = replies_until is not None and len(in_window) < len(fetched)
+                omitted = 0 if past_the_window else max(reply_count - len(fetched), 0)
+                reply_count = len(shown) + omitted
         return ChannelMessage(
             ts=raw["ts"],
             author=message_text.author_of(raw),

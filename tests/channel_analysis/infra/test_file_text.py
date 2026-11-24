@@ -118,3 +118,12 @@ def _with_dimension(workbook: bytes, ref: str) -> bytes:
         sheet = archive.read("xl/worksheets/sheet1.xml").decode()
     start = sheet.index("<dimension ref=\"") + len("<dimension ref=\"")
     return (sheet[:start] + ref + sheet[sheet.index("\"", start):]).encode()
+
+
+def test_a_quote_in_a_sheet_name_does_not_change_where_the_records_end():
+    data = xlsx_with({'Q"1 report': [["note"], ["line one\nline two"], ["plain"]]})
+
+    text = extract_text("q.xlsx", "xlsx", data, MAX)
+
+    assert text.startswith("## Sheet: Q'1 report\n")
+    assert text.count('"') % 2 == 0

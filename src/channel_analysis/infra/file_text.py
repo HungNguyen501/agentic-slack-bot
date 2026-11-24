@@ -91,7 +91,9 @@ def _xlsx_text(data: bytes, max_chars: int) -> str:
 def _sheets_text(workbook, max_chars: int) -> str:
     out = io.StringIO()
     for sheet in workbook.worksheets:
-        out.write(f"## Sheet: {sheet.title}\n")
+        # A quote in the name would flip the quote count that tells a record's end from a newline inside a cell.
+        title = sheet.title.replace('"', "'")
+        out.write(f"## Sheet: {title}\n")
         writer = csv.writer(out, lineterminator="\n")
         # A generated sheet can declare a million rows by 16,000 columns in its header and hold ten: read the rows that are there.
         sheet.reset_dimensions()
