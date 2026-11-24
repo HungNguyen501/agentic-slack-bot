@@ -34,7 +34,8 @@ def _terms_arg(args: dict) -> tuple[str, ...]:
 
 
 def _format_access(access: ChannelAccess) -> str:
-    where = f"#{access.channel_name} ({access.channel_id})" if access.channel_name else access.channel_id or "that channel"
+    # Only the ID: a channel's name is typed by whoever can rename it, and this text goes in front of the model, which can call tools.
+    where = access.channel_id or "that channel"
     if not access.problems:
         lines = [f"Access check for {where}: OK. I can read it and you may see it."]
     elif access.ok:

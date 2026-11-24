@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from channel_analysis.core.limits import FILE_LINE_OVERHEAD_CHARS, ITEM_MARKER_OVERHEAD_CHARS, MESSAGE_OVERHEAD_CHARS
+from channel_analysis.core.limits import FILE_LINE_OVERHEAD_CHARS, ITEM_MARKER_OVERHEAD_CHARS, MESSAGE_OVERHEAD_CHARS, REACTION_OVERHEAD_CHARS
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,8 @@ class ChannelMessage:
     def size(self) -> int:
         """Characters this message takes in a page, replies included."""
         files = sum(len(f.name) + len(f.filetype) + FILE_LINE_OVERHEAD_CHARS for f in self.files)
-        return len(self.author) + len(self.text) + files + MESSAGE_OVERHEAD_CHARS + sum(reply.size for reply in self.replies)
+        reactions = sum(len(name) + len(str(count)) + REACTION_OVERHEAD_CHARS for name, count in self.reactions)
+        return len(self.author) + len(self.text) + files + reactions + MESSAGE_OVERHEAD_CHARS + sum(reply.size for reply in self.replies)
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,6 @@ class HistoryBatch:
 
 @dataclass(frozen=True)
 class ChannelInfo:
-    name: str
     is_private: bool
     is_archived: bool
     is_member: bool
@@ -85,7 +85,6 @@ class AccessProblem:
 @dataclass(frozen=True)
 class ChannelAccess:
     channel_id: str | None
-    channel_name: str | None
     problems: tuple[AccessProblem, ...]
     empty_window: bool = False
 

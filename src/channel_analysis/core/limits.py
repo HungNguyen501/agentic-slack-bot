@@ -12,6 +12,8 @@ REPLIES_CHAR_LIMIT = 10_000
 MESSAGE_OVERHEAD_CHARS = 200
 # What a `[file F…: name, type, size]` line adds besides the name and the type.
 FILE_LINE_OVERHEAD_CHARS = 50
+# What one `:name:×3` reaction adds besides its name and its count: the colons, the ×, and the space after it.
+REACTION_OVERHEAD_CHARS = 4
 
 # Messages asked of Slack in one call, and how many a single tool call may scan while looking for matches. With replies
 # on, each message with a thread costs one more Slack call (about 50 a minute are allowed), so both are smaller.

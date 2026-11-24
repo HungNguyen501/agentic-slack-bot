@@ -53,6 +53,24 @@ def test_end_days_ago_moves_the_window_back(service, history):
     assert page.window_start == NOW - 14 * 86400
 
 
+def test_a_messages_size_counts_the_reactions_it_will_show():
+    plain = make_message(1, "x")
+    reacted = make_message(1, "x", reactions=tuple((f"custom_emoji_{n}", 12) for n in range(50)))
+
+    assert reacted.size - plain.size >= sum(len(f"custom_emoji_{n}") + 2 for n in range(50))
+
+
+def test_reaction_heavy_messages_fill_a_page_sooner_so_a_page_stays_within_its_budget(service, history, monkeypatch):
+    monkeypatch.setattr(limits, "PAGE_CHAR_BUDGET", 2500)
+    reactions = tuple((f"custom_emoji_{n}", 12) for n in range(40))
+    history.messages = [make_message(n, "x", reactions=reactions) for n in range(1, 7)]
+
+    page = read(service)
+
+    assert 0 < len(page.messages) < 6 and page.next_before is not None
+    assert sum(m.size for m in page.messages) <= 2500
+
+
 def test_a_before_cursor_resumes_below_it_and_never_above_the_window_end(service, history):
     history.messages = [make_message(1, "new"), make_message(30, "old")]
 
@@ -333,7 +351,7 @@ def test_check_access_is_ok_for_a_readable_public_channel(service, history):
 
     assert access.ok
     assert access.problems == ()
-    assert (access.channel_id, access.channel_name, access.empty_window) == (CHANNEL, "mail-reports", False)
+    assert (access.channel_id, access.empty_window) == (CHANNEL, False)
 
 
 def test_check_access_flags_a_channel_without_messages(service):
@@ -441,7 +459,6 @@ def test_a_slack_error_while_probing_files_is_a_warning_that_keeps_the_other_res
 
     assert access.ok
     assert [(p.code, p.blocking) for p in access.problems] == [("ratelimited", False)]
-    assert access.channel_name == "mail-reports"
 
 
 # --- read_file

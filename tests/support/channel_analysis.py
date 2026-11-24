@@ -23,5 +23,5 @@ def make_message(hours_ago: float, text: str = "report", **overrides) -> Channel
 
 
 def make_info(**overrides) -> ChannelInfo:
-    fields = {"name": "mail-reports", "is_private": False, "is_archived": False, "is_member": True, "is_dm": False} | overrides
+    fields = {"is_private": False, "is_archived": False, "is_member": True, "is_dm": False} | overrides
     return ChannelInfo(**fields)

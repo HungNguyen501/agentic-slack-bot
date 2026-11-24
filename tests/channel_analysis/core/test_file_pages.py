@@ -266,3 +266,16 @@ def test_the_header_of_a_tsv_is_its_first_line_even_if_a_cell_has_a_quote_in_it(
     text = 'id\tnote"\n1\tx\n2\ty\n'
 
     assert repeated_header(text, 8, "tsv") == 'id\tnote"'
+
+
+def test_a_line_that_looks_like_a_sheet_marker_inside_a_quoted_cell_is_not_a_sheet():
+    text = '## Sheet: Real\nid,note\n1,"notes\n## Sheet: Fake\ncontinued"\n2,after\n3,more\n'
+
+    assert sheet_header(text, text.index("3,more")) == "## Sheet: Real\nid,note"
+    assert sheet_header(text, text.index("2,after")) == "## Sheet: Real\nid,note"
+
+
+def test_a_real_sheet_after_a_cell_that_mentions_a_marker_is_still_found():
+    text = '## Sheet: One\nid,note\n1,"## Sheet: Fake\nstill the cell"\n## Sheet: Two\ncol,x\na,1\nb,2\n'
+
+    assert sheet_header(text, text.index("b,2")) == "## Sheet: Two\ncol,x"

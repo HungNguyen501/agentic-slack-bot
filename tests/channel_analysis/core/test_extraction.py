@@ -38,10 +38,12 @@ def test_a_valid_spec_passes():
         (SPEC, ("table", "status", "x", "y"), "different fields"),
         (SPEC, ("nope",), "not one of the fields"),
         (ExtractionSpec("i", (ExtractionField("m", "the item number"),)), (), "reserved"),
+        (ExtractionSpec("i", (ExtractionField("status\n", ""),)), (), "snake_case"),
+        (ExtractionSpec("i", (ExtractionField("status ", ""),)), (), "snake_case"),
     ],
     ids=[
         "no-instruction", "long-instruction", "no-fields", "too-many-fields", "bad-name", "digit-first", "repeated-name", "long-description",
-        "long-value", "many-values", "repeated-group", "too-many-groups", "unknown-group", "reserved-m",
+        "long-value", "many-values", "repeated-group", "too-many-groups", "unknown-group", "reserved-m", "trailing-newline", "trailing-space",
     ],
 )  # fmt: skip
 def test_a_bad_spec_is_refused_in_words(spec, group_by, message):

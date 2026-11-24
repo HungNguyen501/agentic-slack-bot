@@ -33,7 +33,7 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
     for field in spec.fields:
         if field.name in _RESERVED_FIELD_NAMES:
             raise ChannelAnalysisError(f"`{field.name}` is reserved (it numbers the items in the answer); give the field another name.")
-        if not _FIELD_NAME.match(field.name):
+        if not _FIELD_NAME.fullmatch(field.name):
             raise ChannelAnalysisError(f"Field name `{field.name}` must be snake_case: lower case letters, digits and underscores, starting with a letter.")
         if len(field.description) > limits.MAX_FIELD_DESCRIPTION_CHARS:
             raise ChannelAnalysisError(f"The description of `{field.name}` can be at most {limits.MAX_FIELD_DESCRIPTION_CHARS} characters.")

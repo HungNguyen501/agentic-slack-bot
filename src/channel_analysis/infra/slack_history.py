@@ -102,7 +102,6 @@ class SlackChannelHistory:
         with slack_access_errors():
             raw = slack.get_channel_info(channel_id, token=token)
         return ChannelInfo(
-            name=str(raw.get("name") or channel_id),
             is_private=bool(raw.get("is_private") or raw.get("is_group")),
             is_archived=bool(raw.get("is_archived")),
             is_member=bool(raw.get("is_member")),

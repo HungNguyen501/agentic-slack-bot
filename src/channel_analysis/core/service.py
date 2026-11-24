@@ -125,7 +125,7 @@ class ChannelAnalysisService:
         # Probing reads a message, so it only runs when nothing blocks: a refused check can't tell the requester whether the channel has messages.
         if channel_id and not any(p.blocking for p in problems):
             empty_window = self._probe(bot, channel_id, problems)
-        return ChannelAccess(channel_id, info.name if info else None, tuple(problems), empty_window)
+        return ChannelAccess(channel_id, tuple(problems), empty_window)
 
     def read(
         self,
@@ -200,10 +200,26 @@ class ChannelAnalysisService:
         outcomes = run_extraction(self._extractor, spec, collected.chunks)
         totals = count_outcomes(outcomes, group_by)
         self._log_analysis(channel_id, collected, outcomes, totals, time.monotonic() - started)
+        return self._build_analysis(
+            channel_id, (window_start, window_end), terms, spec, group_by, collected, outcomes, totals
+        )
+
+    @staticmethod
+    def _build_analysis(
+        channel_id: str,
+        window: tuple[float, float],
+        terms: tuple[str, ...],
+        spec: ExtractionSpec,
+        group_by: tuple[str, ...],
+        collected: _Collected,
+        outcomes: list[ChunkOutcome],
+        totals: Totals,
+    ) -> Analysis:
+        """Put what was gathered, extracted and counted into the result, with how far the window got."""
         return Analysis(
             channel_id=channel_id,
-            window_start=window_start,
-            window_end=window_end,
+            window_start=window[0],
+            window_end=window[1],
             terms=terms,
             fields=tuple(f.name for f in spec.fields),
             group_by=group_by,
@@ -220,7 +236,7 @@ class ChannelAnalysisService:
             groups_omitted=totals.groups_omitted,
             records_omitted=totals.records_omitted,
             sample=totals.sample,
-            next_before=_resume_token(collected.resume_at, window_start) if collected.resume_at else None,
+            next_before=_resume_token(collected.resume_at, window[0]) if collected.resume_at else None,
         )
 
     def _collect(

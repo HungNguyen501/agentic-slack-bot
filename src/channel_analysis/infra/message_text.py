@@ -46,8 +46,16 @@ def files_of(message: dict) -> tuple[FileRef, ...]:
     return tuple(files)
 
 
+_LABELLED_LINK = re.compile(r"<(https?://[^|>\s]+)\|([^>]+)>")
+
+
 def _words(text: str) -> str:
-    """The words of a text without Slack's markup, to tell whether a block only repeats `text`."""
+    """The words of a text without Slack's markup, to tell whether a block only repeats `text`.
+
+    A link is `<url|label>` in `text` and `label (url)` in a rich-text block, so both become `label url`.
+    """
+    text = _LABELLED_LINK.sub(r"\2 \1", text)
+    text = re.sub(r"[()<>|]+", " ", text)
     return " ".join(re.sub(r"[*_~`]+", " ", text).lower().split())
 
 

@@ -17,6 +17,45 @@ def test_a_persons_message_is_not_repeated_by_its_rich_text_block():
     assert message_text.flatten_text(message) == "see *this*"
 
 
+def link_message(text, *elements):
+    return {"text": text, "blocks": [{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": list(elements)}]}]}
+
+
+def test_a_message_with_a_labelled_link_is_not_listed_twice():
+    message = link_message(
+        "see <https://example.com/docs|the docs> now",
+        {"type": "text", "text": "see "},
+        {"type": "link", "url": "https://example.com/docs", "text": "the docs"},
+        {"type": "text", "text": " now"},
+    )
+
+    assert message_text.flatten_text(message) == "see <https://example.com/docs|the docs> now"
+
+
+def test_a_message_with_a_bare_link_is_not_listed_twice():
+    message = link_message("report: <https://example.com/r>", {"type": "text", "text": "report: "}, {"type": "link", "url": "https://example.com/r"})
+
+    assert message_text.flatten_text(message) == "report: <https://example.com/r>"
+
+
+def test_a_message_with_a_mention_and_a_link_is_not_listed_twice():
+    message = link_message(
+        "<@U123> look at <https://x.test/a|this> *now*",
+        {"type": "user", "user_id": "U123"},
+        {"type": "text", "text": " look at "},
+        {"type": "link", "url": "https://x.test/a", "text": "this"},
+        {"type": "text", "text": " now", "style": {"bold": True}},
+    )
+
+    assert message_text.flatten_text(message).count("look at") == 1
+
+
+def test_a_rich_text_block_that_adds_a_link_the_text_leaves_out_is_still_kept():
+    message = link_message("Report", {"type": "text", "text": "Report "}, {"type": "link", "url": "https://example.com/full", "text": "full details"})
+
+    assert message_text.flatten_text(message) == "Report\nReport full details (https://example.com/full)"
+
+
 def test_a_rich_text_body_longer_than_the_text_fallback_is_kept():
     message = {
         "text": "Daily ingestion report",

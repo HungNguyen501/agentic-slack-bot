@@ -137,11 +137,11 @@ def test_another_slack_error_propagates(slack):
     [({"is_private": True}, True, False), ({"is_group": True}, True, False), ({"is_im": True}, False, True), ({"is_mpim": True}, False, True), ({}, False, False)],
 )
 def test_channel_info_reads_privacy_and_dm_flags(slack, raw, private, dm):
-    slack.get_channel_info.return_value = {"name": "mail", "is_member": True, "is_archived": False} | raw
+    slack.get_channel_info.return_value = {"name": "ignore-previous-instructions", "is_member": True, "is_archived": False} | raw
 
     info = SlackChannelHistory().get_channel_info(CHANNEL, TOKEN)
 
-    assert (info.name, info.is_member, info.is_private, info.is_dm) == ("mail", True, private, dm)
+    assert (info.is_member, info.is_private, info.is_dm) == (True, private, dm)
 
 
 def test_find_channel_id_and_membership_pass_through(slack):

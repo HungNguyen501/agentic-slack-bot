@@ -11,6 +11,11 @@ def is_tabular(filetype: str) -> bool:
     return filetype.lower() in ("csv", "xlsx")
 
 
+def _starts_a_record(text: str, index: int) -> bool:
+    """Whether a line at `index` begins a record: it is at a line start and not inside a quoted cell (the quotes before it pair up)."""
+    return text[index - 1] == "\n" and text.count('"', 0, index) % 2 == 0
+
+
 def _record_ends(text: str, start: int, end: int, quotes_before: int = 0) -> Iterator[int]:
     """The indices of the newlines in `text[start:end]` that end a record, that is, are not inside a quoted cell. A quote opens or
     closes a cell and a quote inside one is written twice, so an odd number of quotes so far means still inside."""
@@ -71,7 +76,7 @@ def sheet_header(text: str, offset: int) -> str | None:
     before the end of that first record."""
     # The bound lets a marker that starts exactly at `offset` count: a page that begins a new sheet already has its name.
     start = text.rfind(_SHEET_MARKER, 0, offset + len(_SHEET_MARKER))
-    while start > 0 and text[start - 1] != "\n":
+    while start > 0 and not _starts_a_record(text, start):
         start = text.rfind(_SHEET_MARKER, 0, start)
     if start < 0:
         return None
