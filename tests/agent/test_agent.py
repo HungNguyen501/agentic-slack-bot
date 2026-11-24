@@ -290,3 +290,47 @@ def test_each_tool_that_returns_channel_content_narrows_the_run_and_marks_the_sa
 
     assert [c.args[0] for c in dispatch_tool.call_args_list] == [name]
     assert saved_history.call_args.args[1][-1]["content"].startswith(agent.UNTRUSTED_ANSWER_MARK)
+
+
+def test_when_every_iteration_asks_for_another_tool_the_collected_results_still_become_an_answer(llm, saved_history, services):
+    looping = MagicMock(output=[tool_call("read_channel_messages")], output_text="")
+    final = MagicMock(output=[], output_text="Partial: 11 of the 20 reports I read were empty; I could not read the rest.")
+    llm.create_response.side_effect = [looping] * 10 + [final]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="page"):
+        reply = run(services)
+
+    last = llm.create_response.call_args_list[-1].kwargs
+    assert llm.create_response.call_count == 11
+    assert "tools" not in last
+    assert last["input"][-1] == {"role": "user", "content": agent.TOOL_LIMIT_NOTICE}
+    assert any(m.get("type") == "function_call_output" for m in last["input"])
+    assert reply.text == final.output_text and reply.character == ANNA
+
+
+def test_the_answer_after_the_tool_limit_is_saved_and_marked_when_channel_content_was_read(llm, saved_history, services):
+    llm.create_response.side_effect = [MagicMock(output=[tool_call("analyze_channel")], output_text="")] * 10 + [MagicMock(output=[], output_text="partial")]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="counts"):
+        run(services)
+
+    saved = saved_history.call_args.args[1]
+    assert saved[-2:] == [{"role": "user", "content": "which tables?"}, {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_MARK + "partial"}]
+
+
+def test_the_answer_after_the_tool_limit_of_a_run_that_read_no_channel_is_saved_as_it_is(llm, saved_history, services):
+    llm.create_response.side_effect = [MagicMock(output=[tool_call("get_job_run_details")], output_text="")] * 10 + [MagicMock(output=[], output_text="partial")]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="run"):
+        run(services)
+
+    assert saved_history.call_args.args[1][-1] == {"role": "assistant", "content": "partial"}
+
+
+def test_when_even_the_final_answer_comes_back_empty_the_processing_limit_message_is_used(llm, services):
+    llm.create_response.side_effect = [MagicMock(output=[tool_call("get_job_run_details")], output_text="")] * 10 + [MagicMock(output=[], output_text="")]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="run"):
+        reply = run(services)
+
+    assert reply.text == agent.PROCESSING_LIMIT_MESSAGE

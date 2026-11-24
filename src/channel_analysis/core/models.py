@@ -156,7 +156,7 @@ class Record:
 class GroupCount:
     """What one combination of the counted-by fields came to: records, distinct source messages, distinct UTC dates."""
 
-    key: tuple[str, ...]
+    key: tuple[str | None, ...]
     records: int
     messages: int
     dates: int
@@ -185,6 +185,7 @@ class Analysis:
     group_by: tuple[str, ...]
     messages_read: int
     messages_cut: int
+    replies_omitted: int
     scanned: int
     chunks: int
     failed_chunks: tuple[FailedChunk, ...]

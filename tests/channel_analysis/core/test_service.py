@@ -32,7 +32,8 @@ def test_read_asks_the_history_with_the_window_start_and_the_replies_choice(serv
 
     fetch = history.fetches[0]
     assert fetch["oldest"] == NOW - 7 * 86400
-    assert fetch["latest"] is None
+    assert fetch["latest"] == f"{NOW:.6f}"
+    assert fetch["replies_until"] == NOW
     assert (fetch["limit"], fetch["with_replies"]) == (limits.FETCH_BATCH, False)
 
 

@@ -77,9 +77,10 @@ class _ScanState:
 
 @dataclass
 class _FilesRead:
-    """What an analysis call has done with files so far: how many it read, which it left out and why, and whether Slack refused them all."""
+    """What an analysis call has done with files so far: how many it tried to read (a damaged file costs a download and a parse too),
+    which it left out and why, and whether Slack refused them all."""
 
-    read: int = 0
+    tried: int = 0
     not_read: list[tuple[str, str]] = field(default_factory=list)
     blocked: str | None = None
 
@@ -92,6 +93,7 @@ class _Collected:
     files: _FilesRead
     messages_read: int
     messages_cut: int
+    replies_omitted: int
     resume_at: str | None
     scanned: int
 
@@ -153,7 +155,7 @@ class ChannelAnalysisService:
         chars = 0
         state = _ScanState()
         resume_at: str | None = None
-        for raw, before_message in self._scan(bot, channel_id, window_start, cursor, terms, include_replies, state):
+        for raw, before_message in self._scan(bot, channel_id, (window_start, window_end), cursor, terms, include_replies, state):
             message = _clip(raw)
             if kept and chars + message.size > limits.PAGE_CHAR_BUDGET:
                 resume_at = before_message
@@ -194,7 +196,7 @@ class ChannelAnalysisService:
         channel_id = self._require_access(bot, channel, requester_id)
         window_start, window_end, cursor = self._window(lookback_days, end_days_ago, before)
 
-        collected = self._collect(bot, channel_id, window_start, cursor, terms, include_replies, include_files)
+        collected = self._collect(bot, channel_id, (window_start, window_end), cursor, terms, include_replies, include_files)
         outcomes = run_extraction(self._extractor, spec, collected.chunks)
         totals = count_outcomes(outcomes, group_by)
         self._log_analysis(channel_id, collected, outcomes, totals, time.monotonic() - started)
@@ -207,6 +209,7 @@ class ChannelAnalysisService:
             group_by=group_by,
             messages_read=collected.messages_read,
             messages_cut=collected.messages_cut,
+            replies_omitted=collected.replies_omitted,
             scanned=collected.scanned,
             chunks=len(outcomes),
             failed_chunks=totals.failed,
@@ -221,29 +224,30 @@ class ChannelAnalysisService:
         )
 
     def _collect(
-        self, bot: BotConfig, channel_id: str, window_start: float, cursor: str | None, terms: tuple[str, ...], include_replies: bool, include_files: bool
+        self, bot: BotConfig, channel_id: str, window: tuple[float, float], cursor: str, terms: tuple[str, ...], include_replies: bool, include_files: bool
     ) -> _Collected:
         """Scan the window and pack what it finds into chunks until the call's chunks are full or the window is done."""
         state = _ScanState()
         packer = extraction.ChunkPacker(limits.CHUNK_CHAR_BUDGET, limits.MAX_CHUNKS_PER_CALL)
         files = _FilesRead()
-        messages_read = messages_cut = 0
+        messages_read = messages_cut = replies_omitted = 0
         resume_at: str | None = None
         scan_cap = limits.MAX_SCAN_PER_CALL_ANALYSIS_WITH_REPLIES if include_replies else limits.MAX_SCAN_PER_CALL_ANALYSIS
-        for message, before_message in self._scan(bot, channel_id, window_start, cursor, terms, include_replies, state, scan_cap):
+        for message, before_message in self._scan(bot, channel_id, window, cursor, terms, include_replies, state, scan_cap):
             # Files are read on a copy: a message that doesn't fit is read again by the next call, and must not count twice.
-            trial = _FilesRead(files.read, list(files.not_read), files.blocked)
+            trial = _FilesRead(files.tried, list(files.not_read), files.blocked)
             items, whole = self._items(bot, message, include_files, trial)
             if not packer.add(items):
                 resume_at = before_message
                 break
             files = trial
             messages_read += 1
+            replies_omitted += message.omitted_replies
             if not whole:
                 messages_cut += 1
         else:
             resume_at = state.next_before
-        return _Collected(packer.chunks, files, messages_read, messages_cut, resume_at, state.scanned)
+        return _Collected(packer.chunks, files, messages_read, messages_cut, replies_omitted, resume_at, state.scanned)
 
     def _items(self, bot: BotConfig, message: ChannelMessage, include_files: bool, files: _FilesRead) -> tuple[list[ExtractionItem], bool]:
         """The items of one message, whole (not the display clip), and with `include_files` the readable files attached to it or to
@@ -261,6 +265,7 @@ class ChannelAnalysisService:
         reason = self._file_refusal(ref.size, items_so_far, files)
         text = None
         if reason is None:
+            files.tried += 1
             try:
                 text = self._files.text(ref.id, bot.bot_token)
             except ChannelAccessError as exc:
@@ -270,7 +275,6 @@ class ChannelAnalysisService:
         if text is None:
             files.not_read.append((ref.name, reason or "it has no text"))
             return []
-        files.read += 1
         pieces, whole = extraction.file_items(message, ref, text, limits.MAX_ITEMS_PER_MESSAGE - items_so_far, source)
         if not whole:
             files.not_read.append((ref.name, "only the start of it was read: a message can add only so much"))
@@ -282,7 +286,7 @@ class ChannelAnalysisService:
             return files.blocked
         if items_so_far >= limits.MAX_ITEMS_PER_MESSAGE:
             return "this message already has the most a message can add"
-        if files.read >= limits.MAX_FILES_PER_CALL:
+        if files.tried >= limits.MAX_FILES_PER_CALL:
             return f"a call reads at most {limits.MAX_FILES_PER_CALL} files"
         if size > limits.FILE_MAX_BYTES:
             return f"it is larger than {limits.FILE_MAX_BYTES // (1024 * 1024)} MB"
@@ -291,11 +295,12 @@ class ChannelAnalysisService:
     @staticmethod
     def _log_analysis(channel_id: str, collected: _Collected, outcomes: list[ChunkOutcome], totals: Totals, seconds: float) -> None:
         log.info(
-            "analyze channel=%s messages=%d cut=%d scanned=%d chunks=%d failed=%d records=%d rejected=%d prompt_tokens=%d completion_tokens=%d "
+            "analyze channel=%s messages=%d cut=%d replies_omitted=%d scanned=%d chunks=%d failed=%d records=%d rejected=%d prompt_tokens=%d completion_tokens=%d "
             "chunk_seconds=%s total_seconds=%.1f",
             channel_id,
             collected.messages_read,
             collected.messages_cut,
+            collected.replies_omitted,
             collected.scanned,
             len(outcomes),
             len(totals.failed),
@@ -326,7 +331,7 @@ class ChannelAnalysisService:
         page, next_offset = cut_page(text, offset, limits.FILE_PAGE_CHARS, repeated_header(text, offset, meta.filetype))
         return FilePage(meta.name, meta.filetype, meta.size, page, offset, next_offset, len(text))
 
-    def _window(self, lookback_days: int, end_days_ago: int, before: str | None) -> tuple[float, float, str | None]:
+    def _window(self, lookback_days: int, end_days_ago: int, before: str | None) -> tuple[float, float, str]:
         """The window's bounds and the cursor to read below. A `before` from an earlier result carries the window start, so
         the bounds stay the same from page to page; a bare timestamp starts a window from now.
 
@@ -344,8 +349,8 @@ class ChannelAnalysisService:
         else:
             window_end = now - end_days_ago * _DAY
             window_start = window_end - lookback_days * _DAY
-        cursor = f"{window_end:.6f}" if end_days_ago else None
-        if resumed and (cursor is None or float(resumed.group(1)) < float(cursor)):
+        cursor = f"{window_end:.6f}"
+        if resumed and float(resumed.group(1)) < float(cursor):
             cursor = resumed.group(1)
         return window_start, window_end, cursor
 
@@ -353,8 +358,8 @@ class ChannelAnalysisService:
         self,
         bot: BotConfig,
         channel_id: str,
-        window_start: float,
-        cursor: str | None,
+        window: tuple[float, float],
+        cursor: str,
         terms: tuple[str, ...],
         include_replies: bool,
         state: _ScanState,
@@ -369,7 +374,7 @@ class ChannelAnalysisService:
         batch_size = limits.FETCH_BATCH_WITH_REPLIES if include_replies else limits.FETCH_BATCH
         scan_cap = scan_cap or (limits.MAX_SCAN_PER_CALL_WITH_REPLIES if include_replies else limits.MAX_SCAN_PER_CALL)
         while True:
-            batch = self._history.fetch(channel_id, window_start, cursor, batch_size, include_replies, bot.bot_token)
+            batch = self._history.fetch(channel_id, window[0], cursor, batch_size, include_replies, bot.bot_token, replies_until=window[1])
             state.fetched += batch.fetched
             for raw in batch.messages:
                 haystack = _haystack(raw) if terms else ""

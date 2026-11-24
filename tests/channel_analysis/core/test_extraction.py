@@ -67,6 +67,17 @@ def test_a_message_becomes_an_item_with_its_files_reactions_and_replies():
     assert built.text.splitlines() == ["agility_po_costs skipped", "[file rows.csv, csv]", "reactions: :eyes:×2", reply_line, "(3 more replies not shown)"]
 
 
+def test_the_reactions_on_a_reply_are_part_of_the_item_so_they_can_be_extracted_as_a_status():
+    reply = make_message(0.5, "approved", author="<@U1>", reactions=(("white_check_mark", 3), ("eyes", 1)))
+
+    (built,), _ = extraction.message_items(make_message(1, "PR ready", reactions=(("rocket", 1),), replies=(reply,)))
+
+    lines = built.text.splitlines()
+    assert lines[1] == "reactions: :rocket:×1"
+    assert lines[-1] == "  reactions: :white_check_mark:×3 :eyes:×1"
+    assert lines[-2].endswith("<@U1>: approved")
+
+
 def test_a_message_with_no_text_still_makes_an_item():
     (built,), _ = extraction.message_items(make_message(1, ""))
 
@@ -304,11 +315,28 @@ def test_groups_are_largest_first_then_by_name_and_keep_the_links_of_the_newest_
     assert groups[0].links == ("https://x/p1", "https://x/p2", "https://x/p3")
 
 
-def test_without_group_by_everything_is_one_group_and_a_missing_value_is_labelled():
+def test_without_group_by_everything_is_one_group_and_a_missing_value_stays_missing_in_the_key():
     records = [record(1, "a", "skipped"), Record(ts_ago(2), None, {"table": None, "status": "failed"})]
 
     overall = extraction.count_groups(records, ())
     by_table = extraction.count_groups(records, ("table",))
 
     assert [(g.key, g.records) for g in overall] == [((), 2)]
-    assert {g.key for g in by_table} == {("a",), (extraction.NO_VALUE,)}
+    assert {g.key for g in by_table} == {("a",), (None,)}
+
+
+def test_a_missing_value_and_a_value_that_reads_like_a_label_are_counted_apart():
+    records = [
+        record(1, "(none)", "skipped"), record(2, "(none)", "skipped"),
+        Record(ts_ago(3), None, {"table": None, "status": "failed"}),
+    ]  # fmt: skip
+
+    groups = extraction.count_groups(records, ("table",))
+
+    assert [(g.key, g.records) for g in groups] == [(("(none)",), 2), ((None,), 1)]
+
+
+def test_groups_with_a_missing_value_sort_after_the_named_ones_of_the_same_size():
+    records = [Record(ts_ago(1), None, {"table": None, "status": "x"}), record(2, "z", "x"), record(3, "a", "x")]
+
+    assert [g.key for g in extraction.count_groups(records, ("table",))] == [("a",), ("z",), (None,)]

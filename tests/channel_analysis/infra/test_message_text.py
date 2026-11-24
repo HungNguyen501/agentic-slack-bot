@@ -99,6 +99,35 @@ def test_a_report_made_of_blocks_inside_an_attachment_is_read():
     assert message_text.flatten_text(message) == "Mail Ingestion Report\nagility_po_costs: skipped (no records)"
 
 
+def test_a_table_block_gives_its_rows_with_raw_and_rich_text_cells():
+    message = {
+        "text": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [{"type": "raw_text", "text": "table"}, {"type": "raw_text", "text": "status"}],
+                    [
+                        {"type": "raw_text", "text": "agility_po_costs"},
+                        {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [{"type": "text", "text": "skipped"}]}]},
+                    ],
+                ],
+            }
+        ],
+    }
+
+    assert message_text.flatten_text(message) == "table | status\nagility_po_costs | skipped"
+
+
+def test_a_table_next_to_a_short_fallback_text_keeps_its_data():
+    message = {
+        "text": "Daily report",
+        "blocks": [{"type": "table", "rows": [[{"type": "raw_text", "text": "po_costs"}, {"type": "raw_text", "text": "0 rows"}]]}],
+    }
+
+    assert message_text.flatten_text(message) == "Daily report\npo_costs | 0 rows"
+
+
 def test_an_attachment_with_only_a_fallback_uses_it():
     assert message_text.flatten_text({"attachments": [{"fallback": "PR #1 opened"}]}) == "PR #1 opened"
 

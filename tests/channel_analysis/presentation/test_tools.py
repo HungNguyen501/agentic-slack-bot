@@ -214,7 +214,8 @@ ANALYZE_ARGS = {"channel": "C1", "instruction": "one record per table row", "fie
 def analysis(**overrides):
     fields = {
         "channel_id": "C1", "window_start": START, "window_end": END, "terms": (), "fields": ("table", "status"), "group_by": ("table", "status"),
-        "messages_read": 34, "messages_cut": 0, "scanned": 120, "chunks": 2, "failed_chunks": (), "files_not_read": (), "records": 19, "rejected": 3,
+        "messages_read": 34, "messages_cut": 0, "replies_omitted": 0, "scanned": 120, "chunks": 2, "failed_chunks": (), "files_not_read": (),
+        "records": 19, "rejected": 3,
         "groups": (GroupCount(("agility_po_costs", "skipped"), 11, 11, 8, ("https://x/p1", "https://x/p2")),), "groups_omitted": 0, "records_omitted": 0,
         "sample": (Record("1799990000.000000", "https://x/p1", {"table": "agility_po_costs", "status": "skipped"}),), "next_before": None,
     } | overrides  # fmt: skip
@@ -293,6 +294,34 @@ def test_messages_that_were_longer_than_one_message_may_add_are_said_to_be_cut(s
     reply = run(service, "analyze_channel", ANALYZE_ARGS)
 
     assert "Messages longer than one message may add (their end was not read): 2" in reply
+
+
+def test_replies_that_were_not_read_are_said_to_be_missing_from_the_counts(service):
+    service.analyze.return_value = analysis(replies_omitted=42)
+
+    reply = run(service, "analyze_channel", ANALYZE_ARGS)
+
+    assert "Replies not read (rate limited, no access, or over the cap on one thread): 42; the counts leave them out." in reply
+
+
+def test_a_clean_analysis_mentions_neither_cut_messages_nor_missing_replies(service):
+    service.analyze.return_value = analysis()
+
+    reply = run(service, "analyze_channel", ANALYZE_ARGS)
+
+    assert "Replies not read" not in reply and "Messages longer" not in reply
+
+
+def test_a_missing_value_is_shown_as_missing_in_the_counts_and_the_sample_and_a_literal_none_is_shown_as_it_is(service):
+    groups = (GroupCount((None, "failed"), 2, 2, 1, ()), GroupCount(("(missing)", "failed"), 1, 1, 1, ()))
+    sample = (Record("1799990000.000000", None, {"table": None, "status": "failed"}),)
+    service.analyze.return_value = analysis(groups=groups, sample=sample)
+
+    reply = run(service, "analyze_channel", ANALYZE_ARGS)
+
+    assert "- table=(missing) · status=failed: 2 · 2 · 1" in reply
+    assert "- table=(missing) · status=failed: 1 · 1 · 1" in reply
+    assert ": table=(missing), status=failed" in reply
 
 
 def test_a_clean_analysis_does_not_mention_cut_messages(service):

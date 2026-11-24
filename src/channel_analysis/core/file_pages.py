@@ -18,7 +18,7 @@ def cut_page(text: str, offset: int, page_chars: int, header: str | None = None)
     end = offset + budget
     if end >= len(text):
         return prefix + text[offset:], None
-    newline = text.rfind("\n", offset, end + 1)
+    newline = text.rfind("\n", offset, end)
     if newline > offset:
         end = newline + 1
     return prefix + text[offset:end], end

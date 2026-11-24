@@ -51,7 +51,7 @@ def test_a_damaged_pdf_is_unreadable():
 def test_an_excel_file_is_read_sheet_by_sheet_as_csv_rows():
     data = xlsx_with({"Counts": [["table", "rows"], ["a", 10], ["b", None]], "Notes": [["ok"]]})
 
-    assert extract_text("counts.xlsx", "xlsx", data, MAX) == "## Sheet: Counts\ntable,rows\na,10\nb,\n## Sheet: Notes\nok\n"
+    assert extract_text("counts.xlsx", "xlsx", data, MAX) == "## Sheet: Counts\ntable,rows\na,10\nb\n## Sheet: Notes\nok\n"
 
 
 def test_an_excel_file_is_cut_at_the_limit():
@@ -104,3 +104,17 @@ def test_a_workbook_with_too_many_members_is_refused(monkeypatch):
 def test_an_unsupported_type_says_what_is_supported(name, filetype):
     with pytest.raises(FileUnreadableError, match="I read CSV"):
         extract_text(name, filetype, b"...", MAX)
+
+
+def test_a_sheet_that_declares_a_huge_area_is_read_for_the_rows_it_has_and_without_blank_cells():
+    data = xlsx_with({"S": [["table", "rows", None, None], ["a", 1, None, None], [None, None, None, None], ["b", None, None, None]]})
+    data = damage_member(data, "xl/worksheets/sheet1.xml", _with_dimension(data, "A1:XFD1048576"))
+
+    assert extract_text("huge.xlsx", "xlsx", data, MAX) == "## Sheet: S\ntable,rows\na,1\nb\n"
+
+
+def _with_dimension(workbook: bytes, ref: str) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(workbook)) as archive:
+        sheet = archive.read("xl/worksheets/sheet1.xml").decode()
+    start = sheet.index("<dimension ref=\"") + len("<dimension ref=\"")
+    return (sheet[:start] + ref + sheet[sheet.index("\"", start):]).encode()

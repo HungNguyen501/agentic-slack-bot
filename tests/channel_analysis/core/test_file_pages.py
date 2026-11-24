@@ -109,3 +109,23 @@ def test_the_header_a_page_repeats_depends_on_the_kind_of_file(filetype, expecte
     text = "a,b\n1,2\n" if filetype.lower() in ("csv", "tsv") else "## Sheet: S\na,b\n1,2\n3,4\n"
 
     assert repeated_header(text, len(text) - 4, filetype) == expected
+
+
+def test_a_page_whose_line_ends_exactly_at_the_budget_does_not_take_the_newline_over_it():
+    page, next_offset = cut_page("abcd\nx", 0, 4)
+
+    assert len(page) <= 4
+    assert (page, next_offset) == ("abcd", 4)
+
+
+@pytest.mark.parametrize("budget", [4, 5, 6, 9, 10, 17, 40])
+def test_no_page_is_longer_than_its_budget_with_or_without_a_repeated_header(budget):
+    text = "id,n\n" + "".join(f"{n},ab\n" for n in range(30))
+    for header in (None, "id,n"):
+        offset, longest, pages = 0, 0, []
+        while offset is not None:
+            page, offset = cut_page(text, offset, budget, header)
+            longest = max(longest, len(page))
+            pages.append(page)
+            assert len(pages) < 500
+        assert longest <= budget

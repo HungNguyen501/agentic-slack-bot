@@ -291,3 +291,38 @@ def test_fetch_reports_how_many_messages_slack_returned_noise_included(slack):
     batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 2, False, TOKEN)
 
     assert (len(batch.messages), batch.fetched) == (1, 2)
+
+
+def test_a_reply_posted_after_the_end_of_the_window_is_left_out_and_the_count_follows(slack):
+    slack.conversations_history.return_value = ([THREAD | {"reply_count": 3}], False)
+    slack.conversations_replies.return_value = [
+        {"ts": "5.0", "text": "root"},
+        {"ts": "5.5", "user": "U1", "text": "in the window"},
+        {"ts": "5.9", "user": "U2", "text": "also in"},
+        {"ts": "900.0", "user": "U3", "text": "days later"},
+    ]
+
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN, replies_until=6.0)
+
+    message = batch.messages[0]
+    assert [r.text for r in message.replies] == ["in the window", "also in"]
+    assert (message.reply_count, message.omitted_replies) == (2, 0)
+
+
+def test_without_a_window_end_every_reply_is_kept(slack):
+    slack.conversations_history.return_value = ([THREAD], False)
+    slack.conversations_replies.return_value = REPLIES + [{"ts": "900.0", "user": "U3", "text": "late"}]
+
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN)
+
+    assert len(batch.messages[0].replies) == 3
+
+
+def test_replies_that_could_not_be_fetched_stay_counted_as_omitted_whatever_the_window(slack):
+    slack.conversations_history.return_value = ([THREAD | {"reply_count": 4}], False)
+    slack.conversations_replies.return_value = [{"ts": "5.0", "text": "root"}, {"ts": "5.1", "user": "U1", "text": "r1"}]
+
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN, replies_until=6.0)
+
+    message = batch.messages[0]
+    assert (len(message.replies), message.omitted_replies, message.reply_count) == (1, 3, 4)

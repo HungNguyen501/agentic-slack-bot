@@ -10,7 +10,6 @@ from channel_analysis.core.models import ChannelMessage, ExtractionItem, Extract
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 # `m` is the item number in the answer's records; a field of that name would collide with it.
 _RESERVED_FIELD_NAMES = frozenset({"m"})
-NO_VALUE = "(none)"
 
 
 def format_when(ts: str | float) -> str:
@@ -51,14 +50,20 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
         raise ChannelAnalysisError(f"`group_by` names `{unknown[0]}`, which is not one of the fields ({', '.join(names)}).")
 
 
+def format_reactions(reactions: tuple[tuple[str, int], ...]) -> str:
+    return "reactions: " + " ".join(f":{name}:×{count}" for name, count in reactions)
+
+
 def _message_text(message: ChannelMessage) -> str:
     lines = [message.text or "(no text)"]
     lines.extend(f"[file {f.name}, {f.filetype}]" for f in message.files)
     if message.reactions:
-        lines.append("reactions: " + " ".join(f":{name}:×{count}" for name, count in message.reactions))
+        lines.append(format_reactions(message.reactions))
     for reply in message.replies:
         lines.append(f"↳ [{format_when(reply.ts)}] {reply.author}: {reply.text}")
         lines.extend(f"[file {f.name}, {f.filetype}]" for f in reply.files)
+        if reply.reactions:
+            lines.append("  " + format_reactions(reply.reactions))
     if message.omitted_replies:
         lines.append(f"({message.omitted_replies} more replies not shown)")
     return "\n".join(lines)
@@ -210,14 +215,15 @@ def drop_duplicates(records: list[Record]) -> list[Record]:
 
 def count_groups(records: list[Record], group_by: tuple[str, ...]) -> tuple[GroupCount, ...]:
     """Count the records per combination of the `group_by` fields (one overall group when there are none): records, distinct
-    messages, distinct UTC dates, and the links of the newest messages. Largest first, then by name."""
-    grouped: dict[tuple[str, ...], list[Record]] = {}
+    messages, distinct UTC dates, and the links of the newest messages. Largest first, then by name. A missing value stays None in
+    the key, so it is never mixed up with a value that happens to read like a label."""
+    grouped: dict[tuple[str | None, ...], list[Record]] = {}
     for record in records:
-        grouped.setdefault(tuple(record.values[name] or NO_VALUE for name in group_by), []).append(record)
+        grouped.setdefault(tuple(record.values[name] for name in group_by), []).append(record)
     counts = []
     for key, members in grouped.items():
         newest_first = sorted(members, key=lambda r: float(r.ts), reverse=True)
         links = tuple(dict.fromkeys(r.link for r in newest_first if r.link))[: limits.MAX_LINKS_PER_GROUP]
         dates = {datetime.fromtimestamp(float(r.ts), UTC).date() for r in members}
         counts.append(GroupCount(key, len(members), len({r.ts for r in members}), len(dates), links))
-    return tuple(sorted(counts, key=lambda c: (-c.records, c.key)))
+    return tuple(sorted(counts, key=lambda c: (-c.records, tuple((value is None, value or "") for value in c.key))))

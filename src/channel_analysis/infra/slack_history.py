@@ -106,12 +106,16 @@ class SlackChannelHistory:
             is_dm=bool(raw.get("is_im") or raw.get("is_mpim")),
         )
 
-    def fetch(self, channel_id: str, oldest: float, latest: str | None, limit: int, with_replies: bool, token: str) -> HistoryBatch:
+    def fetch(
+        self, channel_id: str, oldest: float, latest: str | None, limit: int, with_replies: bool, token: str, replies_until: float | None = None
+    ) -> HistoryBatch:
         with slack_access_errors():
             raw_messages, truncated = slack.conversations_history(channel_id, oldest, token=token, max_messages=limit, latest=latest)
             workspace_url = self._workspace_url(token)
             threads = _ThreadReader() if with_replies else None
-            messages = [self._to_message(raw, channel_id, workspace_url, token, threads) for raw in raw_messages if not message_text.is_noise(raw)]
+            messages = [
+                self._to_message(raw, channel_id, workspace_url, token, threads, replies_until) for raw in raw_messages if not message_text.is_noise(raw)
+            ]
         return HistoryBatch(messages, raw_messages[-1]["ts"] if raw_messages else None, exhausted=not truncated, fetched=len(raw_messages))
 
     def is_member(self, channel_id: str, user_id: str, token: str, max_pages: int) -> bool | None:
@@ -133,7 +137,9 @@ class SlackChannelHistory:
             self._workspace_urls[token] = slack.get_workspace_url(token).rstrip("/")
         return self._workspace_urls[token]
 
-    def _to_message(self, raw: dict, channel_id: str, workspace_url: str, token: str, threads: _ThreadReader | None) -> ChannelMessage:
+    def _to_message(
+        self, raw: dict, channel_id: str, workspace_url: str, token: str, threads: _ThreadReader | None, replies_until: float | None
+    ) -> ChannelMessage:
         replies: tuple[ChannelMessage, ...] = ()
         omitted = 0
         reply_count = int(raw.get("reply_count") or 0)
@@ -142,8 +148,11 @@ class SlackChannelHistory:
             if thread is None:
                 omitted = reply_count
             else:
-                replies = tuple(self._reply(r) for r in thread if r["ts"] != raw["ts"] and not message_text.is_noise(r))
+                # A reply posted after the window's end isn't part of the window, however late it came.
+                in_window = [r for r in thread if r["ts"] != raw["ts"] and (replies_until is None or float(r["ts"]) <= replies_until)]
+                replies = tuple(self._reply(r) for r in in_window if not message_text.is_noise(r))
                 omitted = max(reply_count - sum(1 for r in thread if r["ts"] != raw["ts"]), 0)
+                reply_count = len(in_window) + omitted
         return ChannelMessage(
             ts=raw["ts"],
             author=message_text.author_of(raw),

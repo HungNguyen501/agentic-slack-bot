@@ -10,6 +10,9 @@ from channel_analysis.core.service import ChannelAnalysisService
 
 log = logging.getLogger("channel_analysis.tools")
 
+# What a counts line shows for a missing value (the record's key keeps None, so it can't be mistaken for a value that reads the same).
+MISSING = "(missing)"
+
 
 def _int_arg(args: dict, name: str) -> int:
     value = args[name]
@@ -143,8 +146,12 @@ def _spec_arg(args: dict) -> ExtractionSpec:
     return ExtractionSpec(instruction, tuple(fields))
 
 
+def _shown(value: str | None) -> str:
+    return MISSING if value is None else value
+
+
 def _group_line(group: GroupCount, group_by: tuple[str, ...]) -> str:
-    label = " · ".join(f"{name}={value}" for name, value in zip(group_by, group.key, strict=True)) if group_by else "all records"
+    label = " · ".join(f"{name}={_shown(value)}" for name, value in zip(group_by, group.key, strict=True)) if group_by else "all records"
     links = f" · {' '.join(group.links)}" if group.links else ""
     return f"- {label}: {group.records} · {group.messages} · {group.dates}{links}"
 
@@ -167,6 +174,8 @@ def _analysis_coverage(result: Analysis) -> list[str]:
         lines.append("UNRELIABLE: more than half the chunks failed, so these counts leave out too much. Say so, and run a narrower window.")
     if result.messages_cut:
         lines.append(f"Messages longer than one message may add (their end was not read): {result.messages_cut}")
+    if result.replies_omitted:
+        lines.append(f"Replies not read (rate limited, no access, or over the cap on one thread): {result.replies_omitted}; the counts leave them out.")
     lines.append("Files not read: " + ("; ".join(f"{name} ({reason})" for name, reason in result.files_not_read) or "none"))
     return lines
 
@@ -180,7 +189,8 @@ def _analysis_counts(result: Analysis) -> list[str]:
         lines.append("(no records)")
     if result.sample:
         lines += ["", "Sample records, newest first:"]
-        lines.extend(f"- [{_when(r.ts)}] {r.link or ''}: " + ", ".join(f"{name}={value}" for name, value in r.values.items()) for r in result.sample)
+        for r in result.sample:
+            lines.append(f"- [{_when(r.ts)}] {r.link or ''}: " + ", ".join(f"{name}={_shown(value)}" for name, value in r.values.items()))
     return lines
 
 

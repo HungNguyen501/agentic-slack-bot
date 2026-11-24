@@ -12,9 +12,12 @@ class ChannelHistory(Protocol):
     def get_channel_info(self, channel_id: str, token: str) -> ChannelInfo:
         """What the channel is and whether the bot is in it."""
 
-    def fetch(self, channel_id: str, oldest: float, latest: str | None, limit: int, with_replies: bool, token: str) -> HistoryBatch:
+    def fetch(
+        self, channel_id: str, oldest: float, latest: str | None, limit: int, with_replies: bool, token: str, replies_until: float | None = None
+    ) -> HistoryBatch:
         """Up to `limit` top-level messages newer than `oldest` and older than `latest` (a Slack ts, exclusive; None means now),
-        newest first, noise (joins, topic changes) dropped. With `with_replies` each message that has a thread carries its replies."""
+        newest first, noise (joins, topic changes) dropped. With `with_replies` each message that has a thread carries its replies,
+        those posted after `replies_until` (the end of the window, a Unix time) left out."""
 
     def is_member(self, channel_id: str, user_id: str, token: str, max_pages: int) -> bool | None:
         """Whether `user_id` is in the channel; None if not found within `max_pages` pages of members."""

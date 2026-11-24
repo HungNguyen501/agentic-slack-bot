@@ -7,7 +7,7 @@ import pytest
 from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAccessError, ChannelAnalysisError, ExtractionError, ExtractionShapeError, FileUnreadableError
 from channel_analysis.core.models import ExtractionField, ExtractionSpec, FileRef
-from tests.support.channel_analysis import BOT, CHANNEL, WINDOW_START, make_info, make_message, resume_at, ts_ago
+from tests.support.channel_analysis import BOT, CHANNEL, NOW, WINDOW_START, make_info, make_message, resume_at, ts_ago
 
 ADMIN = "UADMIN"
 SPEC = ExtractionSpec(
@@ -572,3 +572,60 @@ def test_a_workbooks_later_pages_of_the_file_tool_start_with_their_sheet_and_col
 
     assert first.text.startswith("## Sheet: Counts\ntable,rows\n")
     assert second.text.startswith("## Sheet: Counts\ntable,rows\n")
+
+
+# --- the upper bound of the window, replies that were not read, and what a file attempt costs
+
+
+def test_a_message_newer_than_the_moment_the_window_was_fixed_is_not_in_it(service, history, extractor):
+    history.messages = [make_message(-1, "posted after the call started"), make_message(1, "inside")]
+    extractor.respond = one_record_per_item()
+
+    result = analyze(service)
+    page = service.read(BOT, CHANNEL, ADMIN)
+
+    assert result.messages_read == 1 and [m.text for m in page.messages] == ["inside"]
+    assert history.fetches[0]["latest"] == f"{NOW:.6f}"
+
+
+def test_the_replies_of_a_thread_are_asked_for_only_up_to_the_end_of_the_window(service, history, extractor):
+    analyze(service, end_days_ago=7, lookback_days=7)
+
+    assert history.fetches[0]["replies_until"] == NOW - 7 * 86400
+    assert history.fetches[0]["latest"] == f"{NOW - 7 * 86400:.6f}"
+
+
+def test_replies_that_were_not_read_are_part_of_the_coverage_of_an_analysis(service, history, extractor):
+    history.messages = [make_message(1, "root", reply_count=40, omitted_replies=40), make_message(2, "other", reply_count=5, omitted_replies=2)]
+
+    result = analyze(service)
+
+    assert result.replies_omitted == 42
+
+
+def test_replies_left_out_of_a_message_that_did_not_fit_are_counted_by_the_call_that_takes_it(service, history, extractor, monkeypatch):
+    small_chunks(monkeypatch, budget=300, chunks=1)
+    history.messages = [make_message(1, "x" * 250), make_message(2, "y" * 250, omitted_replies=7)]
+
+    first = analyze(service)
+    second = analyze(service, before=first.next_before)
+
+    assert (first.replies_omitted, second.replies_omitted) == (0, 7)
+
+
+def test_every_attempt_at_a_file_counts_against_the_files_a_call_may_try_even_when_it_fails(service, history, extractor, files, monkeypatch):
+    monkeypatch.setattr(limits, "MAX_FILES_PER_CALL", 2)
+    tried = []
+
+    def damaged(file_id, token):
+        tried.append(file_id)
+        raise FileUnreadableError("The PDF is damaged.")
+
+    files.text = damaged
+    history.messages = [make_message(1, "a", files=tuple(FileRef(f"F{n}", f"f{n}.pdf", "pdf", 5) for n in range(1, 6)))]
+
+    result = analyze(service, include_files=True)
+
+    assert tried == ["F1", "F2"]
+    assert [name for name, _ in result.files_not_read] == ["f1.pdf", "f2.pdf", "f3.pdf", "f4.pdf", "f5.pdf"]
+    assert all("at most 2 files" in why for _, why in result.files_not_read[2:])

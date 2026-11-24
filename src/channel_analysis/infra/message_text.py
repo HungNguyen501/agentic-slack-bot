@@ -80,7 +80,16 @@ def _block_text(block: dict) -> str:
         return "\n".join(_rich_element(el) for el in block.get("elements") or [])
     if kind == "image":
         return block.get("alt_text") or ""
+    if kind == "table":
+        return "\n".join(" | ".join(_table_cell(cell) for cell in row) for row in block.get("rows") or [])
     return ""
+
+
+def _table_cell(cell: dict) -> str:
+    """A table cell is raw text or rich text; both give the words it shows."""
+    if cell.get("type") == "rich_text":
+        return " ".join(_rich_element(el) for el in cell.get("elements") or []).strip()
+    return str(cell.get("text") or "")
 
 
 def _rich_element(element: dict) -> str:

@@ -33,8 +33,8 @@ class FakeHistory:
             raise self.info_error
         return self.infos[channel_id]
 
-    def fetch(self, channel_id, oldest, latest, limit, with_replies, token) -> HistoryBatch:
-        self.fetches.append({"oldest": oldest, "latest": latest, "limit": limit, "with_replies": with_replies})
+    def fetch(self, channel_id, oldest, latest, limit, with_replies, token, replies_until=None) -> HistoryBatch:
+        self.fetches.append({"oldest": oldest, "latest": latest, "limit": limit, "with_replies": with_replies, "replies_until": replies_until})
         if self.fetch_error:
             raise self.fetch_error
         if self.script:

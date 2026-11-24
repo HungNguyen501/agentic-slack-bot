@@ -93,8 +93,15 @@ def _sheets_text(workbook, max_chars: int) -> str:
     for sheet in workbook.worksheets:
         out.write(f"## Sheet: {sheet.title}\n")
         writer = csv.writer(out, lineterminator="\n")
+        # A generated sheet can declare a million rows by 16,000 columns in its header and hold ten: read the rows that are there.
+        sheet.reset_dimensions()
         for row in sheet.iter_rows(values_only=True):
-            writer.writerow("" if value is None else value for value in row)
+            cells = ["" if value is None else value for value in row]
+            while cells and cells[-1] == "":
+                cells.pop()
+            if not cells:
+                continue
+            writer.writerow(cells)
             if out.tell() > max_chars:
                 return out.getvalue()
     return out.getvalue()
