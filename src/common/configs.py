@@ -19,6 +19,8 @@ class Configs:
 
     OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY", None)
     ROUTER_MODEL: str = os.getenv("ROUTER_MODEL", "gpt-6.1-sol")
+    # The model that turns chunks of Slack messages into records for analyze_channel; the cheap router model unless set.
+    EXTRACTION_MODEL: str = os.getenv("EXTRACTION_MODEL", ROUTER_MODEL)
 
     DATABRICKS_HOST: str | None = os.getenv("DATABRICKS_HOST", None)
     DATABRICKS_WAREHOUSE_ID: str | None = os.getenv("DATABRICKS_WAREHOUSE_ID", None)
@@ -430,6 +432,53 @@ class AgentConfigs:
                     "offset": {"type": "integer", "description": "Character offset to start at, from the previous result. Default 0."},
                 },
                 "required": ["channel", "file_id"],
+            },
+            category="channel_analysis",
+        ),
+        AgentTool(
+            name="analyze_channel",
+            description=(
+                "Count and compare across the messages (and optionally the files) of a Slack channel, for exact numbers over many "
+                "messages: a cheaper model turns them into records you describe, and code counts the records. Admin-only; run "
+                "check_channel_access first. Use it for counts, rankings, 'which ones', what stopped appearing, and anything too big "
+                "for read_channel_messages; use read_channel_messages for timelines, quotes and wording. You never see the raw "
+                "messages, only counts, a sample and links as evidence. Counts are for one call: if the result says more messages "
+                "remain, call again with `before` and the same other arguments and add the counts up. Mention failed chunks and "
+                "files not read in your answer. Reaches at most 30 days back."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel ID (C…), a channel link, or the channel name."},
+                    "instruction": {
+                        "type": "string",
+                        "description": "How to fill one record, e.g. 'one record per table row in each report: its name and whether it was skipped, failed or loaded'.",
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "The record shape, 1 to 8 fields.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "snake_case name, e.g. 'table'."},
+                                "description": {"type": "string", "description": "What to put in it."},
+                                "allowed_values": {"type": "array", "items": {"type": "string"}, "description": "If given, only these values are accepted."},
+                            },
+                            "required": ["name", "description"],
+                        },
+                    },
+                    "group_by": {"type": "array", "items": {"type": "string"}, "description": "Up to 3 field names to count by; omit for one overall total."},
+                    "lookback_days": {"type": "integer", "description": "Window length in days. Default 30. lookback_days + end_days_ago <= 30."},
+                    "end_days_ago": {
+                        "type": "integer",
+                        "description": "Where the window ends, in days before now. Default 0. To compare periods: last week = lookback_days 7, end_days_ago 7.",
+                    },
+                    "contains": {"type": "array", "items": {"type": "string"}, "description": "Up to 5 terms; only messages containing any of them are analyzed."},
+                    "include_replies": {"type": "boolean", "description": "Also analyze thread replies. Default true."},
+                    "include_files": {"type": "boolean", "description": "Also extract from attached files (CSV, text, PDF, Excel). Default false."},
+                    "before": {"type": "string", "description": "Resume cursor: the `before` value from the previous result, copied exactly. Omit on the first call."},
+                },
+                "required": ["channel", "instruction", "fields"],
             },
             category="channel_analysis",
         ),

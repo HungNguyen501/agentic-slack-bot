@@ -90,14 +90,16 @@ One character per thread: thread_character:{channel}:{thread_ts} in Redis (14 da
 admin asks → check_channel_access (bot can read it? requester may see it?) → read_channel_messages pages (newest first, `before` cursor)
   → read_channel_file for a CSV / text / PDF / Excel attached to a message, only when the question needs it
   → the agent counts and writes the answer (window, messages read, whether the whole window was covered)
-scheduled: an admin schedules a self-contained question (add_schedule); the scheduler job runs the agent with no requester,
-  and only the channel_analysis tools are allowed in such a run
+for counts over many messages: analyze_channel → a cheaper model (EXTRACTION_MODEL) turns chunks of messages / files into records the agent
+  described, code validates, de-duplicates and counts them (per group: records, messages, dates, links) and the agent writes from the counts
+scheduled: an admin schedules a self-contained question (add_schedule records them as schedules.run_as); the scheduler job runs the agent
+  with no requester, only the channel_analysis tools are allowed in such a run, and they run as that admin, checked on every run
 ```
 
 **Agent loop** (`src/agent/agent.py`):
 1. Router model (gpt-6.1-sol) picks skills from `src/agent/skills/files/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date, then the persona of the thread's character (picked from the characters bound to the routed skills, else to `skill:core`)
-3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret / list_synced_datasets / sync_dataset / schedule_dataset_sync / list_characters / add_character / update_character / remove_character / check_channel_access / read_channel_messages / read_channel_file (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
+3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret / list_synced_datasets / sync_dataset / schedule_dataset_sync / list_characters / add_character / update_character / remove_character / check_channel_access / read_channel_messages / read_channel_file / analyze_channel (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
 4. Up to 10 iterations; history trimmed to last 20 pairs in Redis. After a channel or file was read in a run, only the read-only tools (`dispatch.READ_ONLY_TOOLS`) are offered or run in the rest of it
 
 ## Quick Commands
@@ -148,7 +150,7 @@ See `.env.example`. Required:
 - `SECRET_LINK_BASE_URL` — public base URL of the receiver, used to build one-time secret-view links
 - `NGROK_AUTHTOKEN` — local dev only
 
-Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCHEDULER_INTERVAL` (default 180 s)
+Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `EXTRACTION_MODEL` (the model `analyze_channel` extracts records with; default `ROUTER_MODEL`), `SCHEDULER_INTERVAL` (default 180 s)
 
 ## Data Models
 
@@ -158,7 +160,7 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
-- `timezone` (IANA name the `cron` is read in; default `UTC`, a PR reminder is created in `Asia/Ho_Chi_Minh` unless the request names another), `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job; `dataset_sync` runs a dataset sync, `config.dataset` names it and `channel` is where failures are reported — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`)
+- `timezone` (IANA name the `cron` is read in; default `UTC`, a PR reminder is created in `Asia/Ho_Chi_Minh` unless the request names another), `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job; `dataset_sync` runs a dataset sync, `config.dataset` names it and `channel` is where failures are reported — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`), `run_as` (the Slack user whose access a `question` schedule's channel analysis runs with: the admin who created or last edited it; null for schedules that predate V16, which may not read channels)
 
 **Supabase `access_request_categories` table** — gates the `request_data_access` and `generate_service_principal_secret` tools per bot/channel/request_type:
 - `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject, or — for `service_principal_secret` — allowed to call the tool at all)
@@ -230,9 +232,9 @@ src/
     presentation/tools.py    # list_characters / add_character / update_character / remove_character handlers
     files/                   # seed files (character per file), inserted into the table by worker.seed_characters when a worker starts
   channel_analysis/
-    core/                    # models (ChannelMessage, FileRef, ChannelSlice, ChannelAccess, FilePage), errors (ACCESS_MESSAGES: the wording of every access problem), limits, reference (channel ID / link / name parsing, pure), file_pages (page cutting, pure), ports (ChannelHistory, ChannelFiles), ChannelAnalysisService (check_access, read with window / filter / paging, read_file)
-    infra/                   # slack_history.py (ChannelHistory on connectors/slack.py; Slack errors -> ChannelAccessError), message_text.py (blocks / attachments / rich text -> text), slack_files.py + file_text.py (download and extract CSV / text / PDF / Excel)
-    presentation/tools.py    # check_channel_access / read_channel_messages / read_channel_file handlers (format the pages the agent reads)
+    core/                    # models (ChannelMessage, FileRef, ChannelSlice, ChannelAccess, FilePage, and the analysis types ExtractionSpec / Record / GroupCount / Analysis), extraction (the pure side of analyze_channel: spec checks, items and chunk packing, the prompt, record checks, de-duplication, counting), errors (ACCESS_MESSAGES: the wording of every access problem), limits, reference (channel ID / link / name parsing, pure), file_pages (page cutting, pure), ports (ChannelHistory, ChannelFiles, ExtractionModel), ChannelAnalysisService (check_access, read with window / filter / paging, read_file, analyze)
+    infra/                   # slack_history.py (ChannelHistory on connectors/slack.py; Slack errors -> ChannelAccessError), message_text.py (blocks / attachments / rich text -> text), openai_extraction.py (the extraction model call), slack_files.py + file_parser.py + file_text.py (download, then extract CSV / text / PDF / Excel; PDF and Excel are parsed in a limited child process)
+    presentation/tools.py    # check_channel_access / read_channel_messages / read_channel_file / analyze_channel handlers (format the pages and the analysis the agent reads)
   agent/                     # Everything the agent does, by task
     agent.py                 # Agent loop (OpenAI Responses API) + summarize_answer; returns an AgentReply (text + the character it spoke as)
     dispatch.py              # Tool schema exposure + per-call routing

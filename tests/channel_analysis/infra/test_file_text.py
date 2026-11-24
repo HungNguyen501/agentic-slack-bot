@@ -1,45 +1,16 @@
 import io
+import zipfile
+from unittest.mock import patch
 
-import openpyxl
 import pytest
 from pypdf import PdfWriter
 
+from channel_analysis.core import limits
 from channel_analysis.core.errors import FileUnreadableError
 from channel_analysis.infra.file_text import extract_text
+from tests.support.channel_analysis_files import pdf_with_text, xlsx_with
 
 MAX = 10_000
-
-
-def pdf_with_text(text: str) -> bytes:
-    objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>",
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-        None,
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ]
-    stream = f"BT /F1 14 Tf 10 50 Td ({text}) Tj ET"
-    objects[3] = f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream"
-    out, offsets = "%PDF-1.4\n", []
-    for number, body in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out += f"{number} 0 obj\n{body}\nendobj\n"
-    xref_at = len(out)
-    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n" + "".join(f"{o:010d} 00000 n \n" for o in offsets)
-    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n"
-    return out.encode()
-
-
-def xlsx_with(sheets: dict[str, list[list]]) -> bytes:
-    workbook = openpyxl.Workbook()
-    workbook.remove(workbook.active)
-    for title, rows in sheets.items():
-        sheet = workbook.create_sheet(title)
-        for row in rows:
-            sheet.append(row)
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    return buffer.getvalue()
 
 
 @pytest.mark.parametrize("name, filetype", [("rows.csv", "csv"), ("log.txt", "text"), ("data", "json"), ("NOTES.MD", "markdown")])
@@ -93,8 +64,40 @@ def test_an_excel_file_is_cut_at_the_limit():
 
 
 def test_a_damaged_excel_file_is_unreadable():
-    with pytest.raises(FileUnreadableError, match="couldn't open that Excel"):
+    with pytest.raises(FileUnreadableError, match="couldn't read that Excel"):
         extract_text("bad.xlsx", "xlsx", b"not a zip", MAX)
+
+
+def damage_member(data: bytes, member: str, replacement: bytes) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            target.writestr(info.filename, replacement if info.filename == member else source.read(info.filename))
+    return out.getvalue()
+
+
+def test_a_workbook_that_opens_but_has_a_damaged_sheet_is_unreadable_not_a_crash():
+    data = damage_member(xlsx_with({"S": [["a"], ["b"]]}), "xl/worksheets/sheet1.xml", b"<worksheet><sheetData><row><c></worksheet>")
+
+    with pytest.raises(FileUnreadableError, match="couldn't read that Excel"):
+        extract_text("damaged.xlsx", "xlsx", data, MAX)
+
+
+def test_a_workbook_that_unpacks_to_far_more_than_it_weighs_is_refused_before_it_is_opened(monkeypatch):
+    monkeypatch.setattr(limits, "XLSX_MAX_UNCOMPRESSED_BYTES", 1000)
+    data = damage_member(xlsx_with({"S": [["a"]]}), "xl/worksheets/sheet1.xml", b"<worksheet>" + b" " * 5000 + b"</worksheet>")
+
+    with patch("channel_analysis.infra.file_text.openpyxl.load_workbook", autospec=True) as load, pytest.raises(FileUnreadableError, match="unpacks to far more"):
+        extract_text("bomb.xlsx", "xlsx", data, MAX)
+
+    load.assert_not_called()
+
+
+def test_a_workbook_with_too_many_members_is_refused(monkeypatch):
+    monkeypatch.setattr(limits, "XLSX_MAX_MEMBERS", 2)
+
+    with pytest.raises(FileUnreadableError, match="unpacks to far more"):
+        extract_text("many.xlsx", "xlsx", xlsx_with({"S": [["a"]]}), MAX)
 
 
 @pytest.mark.parametrize("name, filetype", [("photo.png", "png"), ("deck.pptx", "pptx"), ("doc.docx", "docx")])

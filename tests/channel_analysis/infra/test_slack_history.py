@@ -26,7 +26,7 @@ def api_error(code, retry_after=None, **extra):
 
 
 THREAD = {"ts": "5.0", "thread_ts": "5.0", "reply_count": 2, "text": "root"}
-REPLIES = [{"ts": "5.0", "text": "root"}, {"ts": "5.1", "user": "U1", "text": "r1"}]
+REPLIES = [{"ts": "5.0", "text": "root"}, {"ts": "5.1", "user": "U1", "text": "r1"}, {"ts": "5.2", "user": "U2", "text": "r2"}]
 
 
 @pytest.fixture
@@ -189,7 +189,7 @@ def test_a_rate_limited_thread_is_retried_once_after_the_wait_slack_asks_for(sla
     batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN)
 
     sleep.assert_called_once_with(7.0)
-    assert [r.text for r in batch.messages[0].replies] == ["r1"]
+    assert [r.text for r in batch.messages[0].replies] == ["r1", "r2"]
     assert batch.messages[0].omitted_replies == 0
 
 
@@ -252,11 +252,42 @@ def test_each_fetch_gets_its_own_wait_budget(slack, sleep):
     assert [c.args[0] for c in sleep.call_args_list] == [25.0, 25.0]
 
 
-def test_another_refusal_while_reading_a_thread_still_fails_the_read(slack, sleep):
-    slack.conversations_history.return_value = ([THREAD], False)
-    slack.conversations_replies.side_effect = api_error("channel_not_found")
+@pytest.mark.parametrize(
+    "error", [api_error("channel_not_found"), api_error("thread_not_found"), api_error("internal_error")], ids=["refused", "unknown-thread", "unexpected"]
+)
+def test_a_thread_that_cannot_be_read_is_shown_without_replies_and_the_page_still_returns(slack, sleep, error):
+    slack.conversations_history.return_value = ([THREAD, {"ts": "4.0", "text": "plain"}], False)
+    slack.conversations_replies.side_effect = error
 
-    with pytest.raises(ChannelAccessError):
-        SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN)
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN)
 
+    thread, plain = batch.messages
+    assert (thread.replies, thread.omitted_replies, plain.text) == ((), 2, "plain")
     sleep.assert_not_called()
+
+
+def test_one_thread_that_cannot_be_read_does_not_stop_the_others_from_being_read(slack, sleep):
+    slack.conversations_history.return_value = ([THREAD, THREAD | {"ts": "4.0", "thread_ts": "4.0"}], False)
+    slack.conversations_replies.side_effect = [api_error("thread_not_found"), REPLIES]
+
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN)
+
+    assert [bool(m.replies) for m in batch.messages] == [False, True]
+
+
+def test_a_thread_is_read_up_to_a_bound_and_the_rest_is_counted_as_not_shown(slack):
+    slack.conversations_history.return_value = ([THREAD | {"reply_count": 500}], False)
+    slack.conversations_replies.return_value = [{"ts": "5.0", "text": "root"}] + [{"ts": f"6.{n}", "text": f"r{n}"} for n in range(100)]
+
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 50, True, TOKEN)
+
+    assert slack.conversations_replies.call_args.kwargs["max_messages"] == 101
+    assert (len(batch.messages[0].replies), batch.messages[0].omitted_replies) == (100, 400)
+
+
+def test_fetch_reports_how_many_messages_slack_returned_noise_included(slack):
+    slack.conversations_history.return_value = ([{"ts": "3.0", "subtype": "channel_join"}, {"ts": "2.0", "text": "real"}], True)
+
+    batch = SlackChannelHistory().fetch(CHANNEL, 0.0, None, 2, False, TOKEN)
+
+    assert (len(batch.messages), batch.fetched) == (1, 2)

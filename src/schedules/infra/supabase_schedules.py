@@ -56,7 +56,7 @@ class SupabaseScheduleRepository:
             row = cur.fetchone()
             return _row_to_schedule(row) if row else None
 
-    def add_schedule(self, cron: str, channel: str, question: str, bot_id: str | None = None) -> Schedule:
+    def add_schedule(self, cron: str, channel: str, question: str, bot_id: str | None = None, run_as: str | None = None) -> Schedule:
         """Insert a new schedule row and return the created record.
 
         Args:
@@ -64,14 +64,15 @@ class SupabaseScheduleRepository:
             channel: Slack channel ID to post the scheduled question into.
             question: The question text the bot will ask on each trigger.
             bot_id: Bot that owns this schedule; None means it runs with the default bot.
+            run_as: Slack user whose access the scheduled question runs with.
 
         Returns:
             The newly created Schedule record.
         """
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"INSERT INTO schedules (cron, channel, question, bot_id) VALUES (%s, %s, %s, %s) RETURNING {_columns()}",
-                (cron, channel, question, bot_id),
+                f"INSERT INTO schedules (cron, channel, question, bot_id, run_as) VALUES (%s, %s, %s, %s, %s) RETURNING {_columns()}",
+                (cron, channel, question, bot_id, run_as),
             )
             return _row_to_schedule(cur.fetchone())
 
@@ -83,6 +84,7 @@ class SupabaseScheduleRepository:
         question: str | None = None,
         *,
         bot_id: str,
+        run_as: str | None = None,
     ) -> Schedule | None:
         """Update one or more fields of an existing schedule row owned by `bot_id`.
 
@@ -93,6 +95,7 @@ class SupabaseScheduleRepository:
             cron: New cron expression; omit to leave unchanged.
             channel: New Slack channel ID; omit to leave unchanged.
             question: New question text; omit to leave unchanged.
+            run_as: The editing Slack user; when anything changes it becomes the schedule's `run_as`.
 
         Returns:
             The updated Schedule record on success, or None if no fields were provided or the id
@@ -114,6 +117,10 @@ class SupabaseScheduleRepository:
 
         if not assignments:
             return None
+
+        if run_as is not None:
+            assignments.append("run_as = %s")
+            params.append(run_as)
 
         params.extend([id, bot_id])
         sql = (

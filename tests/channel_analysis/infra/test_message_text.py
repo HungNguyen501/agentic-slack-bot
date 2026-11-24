@@ -82,6 +82,23 @@ def test_rich_text_without_a_text_field_is_read_with_lists_links_and_mentions():
     assert message_text.flatten_text(message) == "<@U1> check the doc (https://x.test/a):eyes:\n- one"
 
 
+def test_a_report_made_of_blocks_inside_an_attachment_is_read():
+    message = {
+        "text": "",
+        "attachments": [
+            {
+                "fallback": "Report",
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": "Mail Ingestion Report"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "agility_po_costs: skipped (no records)"}},
+                ],
+            }
+        ],
+    }
+
+    assert message_text.flatten_text(message) == "Mail Ingestion Report\nagility_po_costs: skipped (no records)"
+
+
 def test_an_attachment_with_only_a_fallback_uses_it():
     assert message_text.flatten_text({"attachments": [{"fallback": "PR #1 opened"}]}) == "PR #1 opened"
 

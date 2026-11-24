@@ -25,6 +25,16 @@ def test_a_question_schedule_enqueues_the_scheduled_question_job():
     assert kwargs["retry"].max == 3
 
 
+def test_a_question_schedule_hands_the_job_the_admin_it_runs_with():
+    queue = MagicMock()
+
+    app._enqueue(queue, entry(run_as="UADMIN"))
+    app._enqueue(queue, entry())
+
+    with_owner, legacy = (c.kwargs["run_as"] for c in queue.enqueue.call_args_list)
+    assert (with_owner, legacy) == ("UADMIN", None)
+
+
 def test_a_pr_reminder_enqueues_the_reminder_job_with_its_schedule_id():
     queue = MagicMock()
 

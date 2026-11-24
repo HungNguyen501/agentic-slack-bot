@@ -3,7 +3,7 @@ from slack_sdk.errors import SlackApiError
 from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAnalysisError, FileUnreadableError
 from channel_analysis.core.models import FileMeta
-from channel_analysis.infra import file_text
+from channel_analysis.infra import file_parser
 from channel_analysis.infra.slack_history import slack_access_errors
 from connectors import slack
 
@@ -41,7 +41,7 @@ class SlackChannelFiles:
             data = slack.download_file(url, token=token, max_bytes=limits.FILE_MAX_BYTES)
         except slack.FileDownloadError as exc:
             raise FileUnreadableError(str(exc)) from exc
-        text = file_text.extract_text(str(raw.get("name") or ""), str(raw.get("filetype") or ""), data, limits.FILE_MAX_CHARS)
+        text = file_parser.extract_text_isolated(str(raw.get("name") or ""), str(raw.get("filetype") or ""), data, limits.FILE_MAX_CHARS)
         self._last = (file_id, text)
         return text
 

@@ -36,3 +36,11 @@ class ChannelAccessError(ChannelAnalysisError):
 
 class FileUnreadableError(ChannelAnalysisError):
     """A file that can't be turned into text (unsupported type, no text layer, damaged, too large)."""
+
+
+class ExtractionError(ChannelAnalysisError):
+    """The extraction model's call for one chunk failed (an error, a timeout); the chunk is reported as failed."""
+
+
+class ExtractionShapeError(ExtractionError):
+    """The model answered, but not with the expected JSON; the chunk is asked once more."""

@@ -10,12 +10,16 @@ class ScheduleRepository(Protocol):
     def get_schedule(self, id: str) -> Schedule | None:
         """One schedule by id, whatever its kind or status, or None."""
 
-    def add_schedule(self, cron: str, channel: str, question: str, bot_id: str | None = None) -> Schedule: ...
+    def add_schedule(self, cron: str, channel: str, question: str, bot_id: str | None = None, run_as: str | None = None) -> Schedule:
+        """Insert a question schedule that runs with the access of Slack user `run_as`."""
 
     def update_schedule(
-        self, id: str, cron: str | None = None, channel: str | None = None, question: str | None = None, *, bot_id: str
+        self, id: str, cron: str | None = None, channel: str | None = None, question: str | None = None, *, bot_id: str, run_as: str | None = None
     ) -> Schedule | None:
-        """Edit a `question` schedule owned by `bot_id` (or ownerless); None if nothing to change or no such row."""
+        """Edit a `question` schedule owned by `bot_id` (or ownerless); None if nothing to change or no such row.
+
+        An edit makes `run_as` the schedule's user: it runs with the access of whoever last decided what it does.
+        """
 
     def remove_schedule(self, id: str, *, bot_id: str) -> bool:
         """Delete a schedule owned by `bot_id` (or ownerless); False if no row matched."""

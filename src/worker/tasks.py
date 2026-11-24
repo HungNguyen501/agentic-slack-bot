@@ -9,6 +9,7 @@ from slack_sdk.errors import SlackApiError, SlackClientError
 
 from agent.access_control import review, submission
 from agent.agent import AgentReply, run_agent, summarize_answer
+from agent.dispatch import UnattendedRun
 from agent.history import record_thread_messages
 from agent.pr_reminders.service import run_reminder
 from characters.core.models import Character
@@ -130,6 +131,7 @@ def reply_to_mention(
             for schedule management authorization.
         text: Raw message text including the @mention prefix.
         bot_id: Bot identifier used to load per-bot config (token, skills, admin users).
+        run_as: The admin whose access the run uses to read channels (the schedule's `run_as`); None for a schedule that predates it.
 
     Returns:
         The Slack message timestamp (ts) of the last posted reply chunk.
@@ -228,7 +230,7 @@ def reply_to_mention(
     return ts
 
 
-def process_scheduled_question(channel: str, question: str, bot_id: str, **kwargs) -> str:
+def process_scheduled_question(channel: str, question: str, bot_id: str, run_as: str | None = None, **kwargs) -> str:
     """Run the agent for a scheduled question, then post the question with a results summary
     as the thread root and the full answer as a reply inside that thread.
 
@@ -252,7 +254,7 @@ def process_scheduled_question(channel: str, question: str, bot_id: str, **kwarg
 
     try:
         answer, character = run_agent(
-            question, header_ts, channel, bot=bot, services=wiring.tool_services(), unattended_categories=frozenset({"channel_analysis"})
+            question, header_ts, channel, bot=bot, services=wiring.tool_services(), unattended=UnattendedRun(frozenset({"channel_analysis"}), run_as)
         )
         summary = summarize_answer(question, answer, character)
     except Exception as exc:

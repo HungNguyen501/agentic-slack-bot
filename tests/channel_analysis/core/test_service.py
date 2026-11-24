@@ -79,9 +79,9 @@ def test_contains_keeps_a_message_with_any_term_in_text_author_file_or_reply(ser
     assert page.scanned == 5
 
 
-def test_a_result_carries_the_window_start_and_a_resumed_call_keeps_the_same_window(history, files, monkeypatch):
+def test_a_result_carries_the_window_start_and_a_resumed_call_keeps_the_same_window(history, files, extractor, monkeypatch):
     clock = [NOW]
-    service = ChannelAnalysisService(history, files, now=lambda: clock[0])
+    service = ChannelAnalysisService(history, files, extractor, now=lambda: clock[0])
     monkeypatch.setattr(limits, "PAGE_CHAR_BUDGET", 600)
     history.messages = [make_message(n, "x" * 200) for n in range(1, 5)]
 
@@ -163,8 +163,20 @@ def test_the_scan_cap_returns_a_resume_cursor_even_when_nothing_matched(service,
     assert last.next_before is None
 
 
+def test_a_channel_of_nothing_but_noise_stops_at_the_scan_cap_instead_of_fetching_on(service, history, monkeypatch):
+    monkeypatch.setattr(limits, "MAX_SCAN_PER_CALL_WITH_REPLIES", 50)
+    monkeypatch.setattr(limits, "FETCH_BATCH_WITH_REPLIES", 10)
+    history.script = [HistoryBatch([], ts_ago(n + 1), exhausted=False, fetched=10) for n in range(20)]
+
+    page = read(service)
+
+    assert len(history.fetches) == 5
+    assert page.messages == ()
+    assert page.next_before == resume_at(5)
+
+
 def test_a_batch_of_only_noise_moves_the_cursor_on(service, history):
-    history.script = [HistoryBatch([], ts_ago(3), exhausted=False), HistoryBatch([make_message(5, "real")], ts_ago(5), exhausted=True)]
+    history.script = [HistoryBatch([], ts_ago(3), exhausted=False, fetched=1), HistoryBatch([make_message(5, "real")], ts_ago(5), exhausted=True, fetched=1)]
 
     page = read(service)
 
@@ -173,7 +185,7 @@ def test_a_batch_of_only_noise_moves_the_cursor_on(service, history):
 
 
 def test_a_batch_with_nothing_at_all_ends_the_window(service, history):
-    history.script = [HistoryBatch([], None, exhausted=False)]
+    history.script = [HistoryBatch([], None, exhausted=False, fetched=0)]
 
     page = read(service)
 
@@ -280,14 +292,6 @@ def test_a_public_channel_needs_no_membership_check(service, history):
     assert history.member_checks == []
 
 
-def test_a_run_with_no_requester_skips_the_requester_check(service, history):
-    history.infos[CHANNEL] = make_info(is_private=True)
-
-    read(service, requester=None)
-
-    assert history.member_checks == []
-
-
 def test_read_refuses_a_private_channel_whose_membership_cannot_be_confirmed(service, history):
     history.infos[CHANNEL] = make_info(is_private=True)
     history.members = {ADMIN: None}
@@ -369,6 +373,18 @@ def test_a_requester_who_may_not_see_the_channel_learns_nothing_about_its_messag
     assert not access.ok
 
 
+def test_a_scope_problem_found_while_checking_the_requester_also_stops_the_probe(service, history):
+    history.infos[CHANNEL] = make_info(is_private=True)
+    history.members_error = ChannelAccessError("missing_scope", detail="groups:read")
+    history.messages = [make_message(1)]
+
+    access = check(service)
+
+    assert [p.code for p in access.problems] == ["missing_scope"]
+    assert history.fetches == []
+    assert access.empty_window is False
+
+
 def test_check_access_reports_a_membership_it_could_not_confirm(service, history):
     history.infos[CHANNEL] = make_info(is_private=True)
     history.members = {ADMIN: None}
@@ -376,23 +392,14 @@ def test_check_access_reports_a_membership_it_could_not_confirm(service, history
     assert [p.code for p in check(service).problems] == ["membership_unverified"]
 
 
-def test_check_access_skips_the_requester_for_a_run_without_one(service, history):
-    history.infos[CHANNEL] = make_info(is_private=True)
-
-    access = check(service, requester=None)
-
-    assert access.ok
-    assert history.member_checks == []
-
-
-def test_a_missing_info_scope_is_reported_and_the_history_probe_still_runs(service, history):
+def test_a_missing_info_scope_is_reported_and_nothing_is_read(service, history):
     history.info_error = ChannelAccessError("missing_scope", detail="channels:read")
-    history.fetch_error = ChannelAccessError("missing_scope", detail="channels:history")
 
     access = check(service)
 
     assert [p.code for p in access.problems] == ["missing_scope"]
-    assert len(history.fetches) == 1
+    assert not access.ok
+    assert history.fetches == []
 
 
 def test_a_history_scope_problem_found_by_the_probe_blocks(service, history):

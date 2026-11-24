@@ -479,3 +479,15 @@ def test_download_file_refuses_a_url_that_is_not_slacks_and_never_sends_the_toke
 def test_download_file_explains_why_it_gave_up(stream, message):
     with pytest.raises(slack.FileDownloadError, match=message):
         download(stream)
+
+
+def test_conversations_replies_stops_at_max_messages_with_a_page_no_bigger_than_that():
+    client = MagicMock()
+    client.conversations_replies.return_value = page([{"ts": str(n)} for n in range(5)], "more")
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        messages = slack.conversations_replies("C1", "1.0", token="t", max_messages=3)
+
+    assert [m["ts"] for m in messages] == ["0", "1", "2"]
+    assert client.conversations_replies.call_count == 1
+    assert client.conversations_replies.call_args.kwargs["limit"] == 3

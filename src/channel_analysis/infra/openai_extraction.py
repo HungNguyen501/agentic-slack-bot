@@ -1,0 +1,35 @@
+import json
+
+from openai import OpenAIError
+
+from channel_analysis.core import limits
+from channel_analysis.core.errors import ExtractionError, ExtractionShapeError
+from channel_analysis.core.models import ModelAnswer
+from connectors import openai_client
+
+
+class OpenAIExtractionModel:
+    """The extraction model: a plain chat call in JSON mode. It is given no tools."""
+
+    def __init__(self, model: str) -> None:
+        self._model = model
+
+    def complete_json(self, system: str, user: str, timeout_seconds: float) -> ModelAnswer:
+        try:
+            result = openai_client.chat_completion_with_usage(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                model=self._model,
+                reasoning_effort="low",
+                max_completion_tokens=limits.EXTRACT_MAX_OUTPUT_TOKENS,
+                json_object=True,
+                timeout=timeout_seconds,
+            )
+        except OpenAIError as exc:
+            raise ExtractionError(f"The extraction model failed ({exc.__class__.__name__}).") from exc
+        try:
+            data = json.loads(result.text)
+        except ValueError as exc:
+            raise ExtractionShapeError("The answer was not JSON (it may have been cut off).") from exc
+        if not isinstance(data, dict):
+            raise ExtractionShapeError("The answer was not a JSON object.")
+        return ModelAnswer(data, result.prompt_tokens, result.completion_tokens)

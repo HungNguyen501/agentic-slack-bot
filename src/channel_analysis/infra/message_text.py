@@ -112,5 +112,6 @@ def _inline(element: dict) -> str:
 def _attachment_text(attachment: dict) -> str:
     lines = [attachment.get("pretext"), attachment.get("title"), attachment.get("text")]
     lines.extend(f"{f.get('title')}: {f.get('value')}" if f.get("title") else str(f.get("value")) for f in attachment.get("fields") or [])
+    lines.extend(_block_text(block) for block in attachment.get("blocks") or [])
     text = "\n".join(line for line in lines if line)
     return text or attachment.get("fallback") or ""

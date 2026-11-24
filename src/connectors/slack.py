@@ -140,19 +140,21 @@ def _collect_pages(fetch: Callable[[str | None], Any], max_messages: int | None 
             return messages, True
 
 
-def conversations_replies(channel: str, ts: str, *, token: str) -> list[dict]:
-    """Fetch every message in a thread, root included (needs the channels:history / groups:history scope).
+def conversations_replies(channel: str, ts: str, *, token: str, max_messages: int | None = None) -> list[dict]:
+    """Fetch the messages of a thread, root included (needs the channels:history / groups:history scope).
 
     Args:
         channel: Slack channel ID containing the thread.
         ts: Timestamp of the thread's root message.
         token: Bot OAuth token (xoxb-...) to authenticate the request.
+        max_messages: Stop paginating once this many messages were collected; None reads the whole thread.
 
     Returns:
-        The thread's messages, oldest first.
+        The thread's messages, oldest first, at most `max_messages` of them when that is given.
     """
     client = WebClient(token=token)
-    return _collect_pages(lambda cursor: client.conversations_replies(channel=channel, ts=ts, limit=200, cursor=cursor))[0]
+    limit = 200 if max_messages is None else min(200, max_messages)
+    return _collect_pages(lambda cursor: client.conversations_replies(channel=channel, ts=ts, limit=limit, cursor=cursor), max_messages)[0]
 
 
 def conversations_history(channel: str, oldest: float, *, token: str, max_messages: int, latest: str | None = None) -> tuple[list[dict], bool]:

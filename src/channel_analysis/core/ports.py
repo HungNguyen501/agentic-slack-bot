@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from channel_analysis.core.models import ChannelInfo, FileMeta, HistoryBatch
+from channel_analysis.core.models import ChannelInfo, FileMeta, HistoryBatch, ModelAnswer
 
 
 class ChannelHistory(Protocol):
@@ -37,4 +37,14 @@ class ChannelFiles(Protocol):
 
         Raises:
             FileUnreadableError: unsupported type, no text layer, damaged or too large.
+        """
+
+
+class ExtractionModel(Protocol):
+    def complete_json(self, system: str, user: str, timeout_seconds: float) -> ModelAnswer:
+        """Ask the model for one JSON object. It has no tools and sees only `system` and `user`.
+
+        Raises:
+            ExtractionShapeError: the answer is not a JSON object (or was cut off); the caller may ask once more.
+            ExtractionError: the call failed or took longer than `timeout_seconds`.
         """

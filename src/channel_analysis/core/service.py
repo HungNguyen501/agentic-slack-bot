@@ -1,22 +1,37 @@
+import logging
 import re
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 
 from bots.core.models import BotConfig
-from channel_analysis.core import limits
-from channel_analysis.core.errors import ACCESS_MESSAGES, ChannelAccessError, ChannelAnalysisError
+from channel_analysis.core import extraction, limits
+from channel_analysis.core.errors import ACCESS_MESSAGES, ChannelAccessError, ChannelAnalysisError, ExtractionError, ExtractionShapeError
 from channel_analysis.core.file_pages import cut_page
-from channel_analysis.core.models import AccessProblem, ChannelAccess, ChannelInfo, ChannelMessage, ChannelSlice, FilePage
-from channel_analysis.core.ports import ChannelFiles, ChannelHistory
+from channel_analysis.core.models import (
+    AccessProblem,
+    Analysis,
+    ChannelAccess,
+    ChannelInfo,
+    ChannelMessage,
+    ChannelSlice,
+    ExtractionItem,
+    ExtractionSpec,
+    FailedChunk,
+    FilePage,
+    Record,
+)
+from channel_analysis.core.ports import ChannelFiles, ChannelHistory, ExtractionModel
 from channel_analysis.core.reference import parse_channel_reference
+
+log = logging.getLogger("channel_analysis.service")
 
 # What a result's `before` looks like: where to resume, and where the window started, so every page of one window has the same bounds.
 _RESUME = re.compile(r"^(\d{9,11}\.\d{1,6})(?:@(\d{9,11}\.\d{1,6}))?$")
 _DAY = 86400
 # Paging one window takes minutes; a resume token whose window started longer ago than the reach plus this wasn't made by a read.
 _RESUME_TOLERANCE_SECONDS = 3600
-_NO_PROBE_CODES = frozenset({"channel_not_found", "is_dm", "not_in_channel", "private_not_member", "membership_unverified"})
 
 
 def _problem(code: str, blocking: bool = True) -> AccessProblem:
@@ -56,8 +71,31 @@ class _ScanState:
     """What a scan reports besides the messages it yields."""
 
     scanned: int = 0
+    fetched: int = 0
     # Where a window the scan stopped early (scan cap) resumes; None when it read the whole window.
     next_before: str | None = None
+
+
+@dataclass
+class _FilesRead:
+    """What an analysis call has done with files so far: how many it read, which it left out and why, and whether Slack refused them all."""
+
+    read: int = 0
+    not_read: list[tuple[str, str]] = field(default_factory=list)
+    blocked: str | None = None
+
+
+@dataclass(frozen=True)
+class _ChunkOutcome:
+    """What extracting one chunk gave: its records, or why it failed; the cost either way."""
+
+    items: list[ExtractionItem]
+    records: list[Record]
+    rejected: int
+    failure: str | None
+    prompt_tokens: int
+    completion_tokens: int
+    seconds: float
 
 
 def _resume_token(cursor: str, window_start: float) -> str:
@@ -65,25 +103,27 @@ def _resume_token(cursor: str, window_start: float) -> str:
 
 
 class ChannelAnalysisService:
-    """Reads a Slack channel for the agent: an access check, the messages of a window in pages, and the files attached to them."""
+    """Reads a Slack channel for the agent: an access check, the messages of a window in pages, the files attached to them, and an
+    analysis that has a model extract records from them and counts the records."""
 
-    def __init__(self, history: ChannelHistory, files: ChannelFiles, now: Callable[[], float] = time.time) -> None:
+    def __init__(self, history: ChannelHistory, files: ChannelFiles, extractor: ExtractionModel, now: Callable[[], float] = time.time) -> None:
         self._history = history
         self._files = files
+        self._extractor = extractor
         self._now = now
 
-    def check_access(self, bot: BotConfig, channel: str, requester_id: str | None) -> ChannelAccess:
+    def check_access(self, bot: BotConfig, channel: str, requester_id: str) -> ChannelAccess:
         """Say whether the bot and the requester may read `channel`, listing every problem found rather than the first.
 
-        `requester_id` is None for a run with no requester (a scheduled question); the requester check is skipped then.
+        `requester_id` is the admin the read is for: the person asking, or the owner of a scheduled question.
 
         Raises:
             ChannelAnalysisError: `channel` is empty or a direct message.
         """
         channel_id, info, problems = self._inspect(bot, channel, requester_id)
         empty_window = False
-        # Nothing is read for a requester who may not see the channel, so a refused check can't tell them whether it has messages.
-        if channel_id and not any(p.code in _NO_PROBE_CODES for p in problems):
+        # Probing reads a message, so it only runs when nothing blocks: a refused check can't tell the requester whether the channel has messages.
+        if channel_id and not any(p.blocking for p in problems):
             empty_window = self._probe(bot, channel_id, problems)
         return ChannelAccess(channel_id, info.name if info else None, tuple(problems), empty_window)
 
@@ -91,7 +131,7 @@ class ChannelAnalysisService:
         self,
         bot: BotConfig,
         channel: str,
-        requester_id: str | None,
+        requester_id: str,
         *,
         lookback_days: int = limits.DEFAULT_LOOKBACK_DAYS,
         end_days_ago: int = 0,
@@ -126,7 +166,179 @@ class ChannelAnalysisService:
         next_before = _resume_token(resume_at, window_start) if resume_at else None
         return ChannelSlice(channel_id, window_start, window_end, terms, tuple(kept), state.scanned, next_before)
 
-    def read_file(self, bot: BotConfig, channel: str, requester_id: str | None, file_id: str, offset: int = 0) -> FilePage:
+    def analyze(
+        self,
+        bot: BotConfig,
+        channel: str,
+        requester_id: str,
+        spec: ExtractionSpec,
+        *,
+        group_by: tuple[str, ...] = (),
+        include_files: bool = False,
+        lookback_days: int = limits.DEFAULT_LOOKBACK_DAYS,
+        end_days_ago: int = 0,
+        contains: tuple[str, ...] = (),
+        include_replies: bool = True,
+        before: str | None = None,
+    ) -> Analysis:
+        """Have a model extract records from the messages of a window (and, with `include_files`, from the files attached to
+        them), then count the records by the `group_by` fields. At most `MAX_CHUNKS_PER_CALL` chunks are extracted: an unfinished
+        window comes back with `next_before`, and the counts are for this call only. Window, filter and `before` are as in `read`.
+
+        Raises:
+            ChannelAnalysisError: a bad argument, or the bot or the requester may not read the channel.
+        """
+        started = time.monotonic()
+        extraction.validate_spec(spec, group_by)
+        terms = self._validate_window(lookback_days, end_days_ago, contains, before)
+        channel_id = self._require_access(bot, channel, requester_id)
+        window_start, window_end, cursor = self._window(lookback_days, end_days_ago, before)
+
+        state = _ScanState()
+        packer = extraction.ChunkPacker(limits.CHUNK_CHAR_BUDGET, limits.MAX_CHUNKS_PER_CALL)
+        files = _FilesRead()
+        messages_read = 0
+        resume_at: str | None = None
+        scan_cap = limits.MAX_SCAN_PER_CALL_ANALYSIS_WITH_REPLIES if include_replies else limits.MAX_SCAN_PER_CALL_ANALYSIS
+        for message, before_message in self._scan(bot, channel_id, window_start, cursor, terms, include_replies, state, scan_cap):
+            # Files are read on a copy: a message that doesn't fit is read again by the next call, and must not count twice.
+            trial = _FilesRead(files.read, list(files.not_read), files.blocked)
+            if not packer.add(self._items(bot, message, include_files, trial)):
+                resume_at = before_message
+                break
+            files = trial
+            messages_read += 1
+        else:
+            resume_at = state.next_before
+
+        outcomes = self._extract_all(spec, packer.chunks)
+        analysis = self._summarize(outcomes, spec, group_by, files)
+        log.info(
+            "analyze channel=%s messages=%d scanned=%d chunks=%d failed=%d records=%d rejected=%d prompt_tokens=%d completion_tokens=%d "
+            "chunk_seconds=%s total_seconds=%.1f",
+            channel_id,
+            messages_read,
+            state.scanned,
+            len(outcomes),
+            len(analysis.failed_chunks),
+            analysis.records,
+            analysis.rejected,
+            sum(o.prompt_tokens for o in outcomes),
+            sum(o.completion_tokens for o in outcomes),
+            [round(o.seconds, 1) for o in outcomes],
+            time.monotonic() - started,
+        )
+        return replace(
+            analysis,
+            channel_id=channel_id,
+            window_start=window_start,
+            window_end=window_end,
+            terms=terms,
+            messages_read=messages_read,
+            scanned=state.scanned,
+            next_before=_resume_token(resume_at, window_start) if resume_at else None,
+        )
+
+    def _items(self, bot: BotConfig, message: ChannelMessage, include_files: bool, files: _FilesRead) -> list[ExtractionItem]:
+        """The items of one message: itself, and with `include_files` the readable files attached to it. `files` is updated."""
+        items = [extraction.message_item(message)]
+        if not include_files:
+            return items
+        for ref in message.files:
+            reason = self._file_refusal(ref.size, len(items), files)
+            text = None
+            if reason is None:
+                try:
+                    text = self._files.text(ref.id, bot.bot_token)
+                except ChannelAccessError as exc:
+                    files.blocked = reason = str(exc)
+                except ChannelAnalysisError as exc:
+                    reason = str(exc)
+            if text is None:
+                files.not_read.append((ref.name, reason or "it has no text"))
+                continue
+            files.read += 1
+            pieces, whole = extraction.file_items(message, ref, text, limits.MAX_ITEMS_PER_MESSAGE - len(items))
+            items.extend(pieces)
+            if not whole:
+                files.not_read.append((ref.name, "only the start of it was read: a message can add only so much"))
+        return items
+
+    @staticmethod
+    def _file_refusal(size: int, items_so_far: int, files: _FilesRead) -> str | None:
+        if files.blocked:
+            return files.blocked
+        if items_so_far >= limits.MAX_ITEMS_PER_MESSAGE:
+            return "this message already has the most a message can add"
+        if files.read >= limits.MAX_FILES_PER_CALL:
+            return f"a call reads at most {limits.MAX_FILES_PER_CALL} files"
+        if size > limits.FILE_MAX_BYTES:
+            return f"it is larger than {limits.FILE_MAX_BYTES // (1024 * 1024)} MB"
+        return None
+
+    def _extract_all(self, spec: ExtractionSpec, chunks: list[list[ExtractionItem]]) -> list[_ChunkOutcome]:
+        if not chunks:
+            return []
+        with ThreadPoolExecutor(max_workers=min(limits.EXTRACT_PARALLELISM, len(chunks))) as pool:
+            futures = [pool.submit(self._extract_chunk, spec, chunk) for chunk in chunks]
+            return [future.result() for future in futures]
+
+    def _extract_chunk(self, spec: ExtractionSpec, chunk: list[ExtractionItem]) -> _ChunkOutcome:
+        """Ask the model for the records of one chunk. An answer of the wrong shape is asked for once more; a failed call, or a
+        second wrong answer, makes the chunk a failed one (reported, not raised) so the other chunks still count."""
+        system, user = extraction.build_system_prompt(spec), extraction.render_chunk(chunk)
+        started = time.monotonic()
+        prompt_tokens = completion_tokens = 0
+        failure = "no answer"
+        for _ in range(2):
+            try:
+                answer = self._extractor.complete_json(system, user, limits.CHUNK_TIMEOUT_SECONDS)
+                prompt_tokens += answer.prompt_tokens
+                completion_tokens += answer.completion_tokens
+                records, rejected = extraction.read_records(answer.data, chunk, spec)
+                return _ChunkOutcome(chunk, records, rejected, None, prompt_tokens, completion_tokens, time.monotonic() - started)
+            except ExtractionShapeError as exc:
+                failure = str(exc)
+            except ExtractionError as exc:
+                failure = str(exc)
+                break
+        return _ChunkOutcome(chunk, [], 0, failure, prompt_tokens, completion_tokens, time.monotonic() - started)
+
+    @staticmethod
+    def _summarize(outcomes: list[_ChunkOutcome], spec: ExtractionSpec, group_by: tuple[str, ...], files: _FilesRead) -> Analysis:
+        failed = tuple(
+            # The items run newest first, so a chunk's last item is its oldest message.
+            FailedChunk(o.items[-1].ts, o.items[0].ts, len({item.ts for item in o.items}), o.failure)
+            for o in outcomes
+            if o.failure
+        )
+        records = extraction.drop_duplicates([record for o in outcomes for record in o.records])
+        groups = extraction.count_groups(records, group_by)
+        cap = limits.MAX_GROUPS_LISTED
+        listed, unlisted = groups[:cap], groups[cap:]
+        sample = sorted(records, key=lambda r: float(r.ts), reverse=True)[: limits.SAMPLE_RECORDS]
+        return Analysis(
+            channel_id="",
+            window_start=0.0,
+            window_end=0.0,
+            terms=(),
+            fields=tuple(f.name for f in spec.fields),
+            group_by=group_by,
+            messages_read=0,
+            scanned=0,
+            chunks=len(outcomes),
+            failed_chunks=failed,
+            files_not_read=tuple(files.not_read),
+            records=len(records),
+            rejected=sum(o.rejected for o in outcomes),
+            groups=listed,
+            groups_omitted=len(groups) - len(listed),
+            records_omitted=sum(g.records for g in unlisted),
+            sample=tuple(sample),
+            next_before=None,
+        )
+
+    def read_file(self, bot: BotConfig, channel: str, requester_id: str, file_id: str, offset: int = 0) -> FilePage:
         """Read one page of the text of a file shared in `channel`.
 
         Raises:
@@ -170,17 +382,27 @@ class ChannelAnalysisService:
         return window_start, window_end, cursor
 
     def _scan(
-        self, bot: BotConfig, channel_id: str, window_start: float, cursor: str | None, terms: tuple[str, ...], include_replies: bool, state: _ScanState
+        self,
+        bot: BotConfig,
+        channel_id: str,
+        window_start: float,
+        cursor: str | None,
+        terms: tuple[str, ...],
+        include_replies: bool,
+        state: _ScanState,
+        scan_cap: int | None = None,
     ) -> Iterator[tuple[ChannelMessage, str | None]]:
         """Walk a window newest first and yield each matching message (clipped) with the cursor from just before it.
 
         A consumer that stops at a message without using it resumes from that cursor. `state` counts the messages scanned (the
-        unused one not included) and gets `next_before` when the scan stops at its cap with the window not finished.
+        unused one not included) and gets `next_before` when the scan stops at its cap with the window not finished. The cap
+        counts the messages Slack returned, noise included, so a channel of joins can't keep a call fetching.
         """
         batch_size = limits.FETCH_BATCH_WITH_REPLIES if include_replies else limits.FETCH_BATCH
-        scan_cap = limits.MAX_SCAN_PER_CALL_WITH_REPLIES if include_replies else limits.MAX_SCAN_PER_CALL
+        scan_cap = scan_cap or (limits.MAX_SCAN_PER_CALL_WITH_REPLIES if include_replies else limits.MAX_SCAN_PER_CALL)
         while True:
             batch = self._history.fetch(channel_id, window_start, cursor, batch_size, include_replies, bot.bot_token)
+            state.fetched += batch.fetched
             for raw in batch.messages:
                 haystack = _haystack(raw) if terms else ""
                 if not terms or any(term in haystack for term in terms):
@@ -190,7 +412,7 @@ class ChannelAnalysisService:
             if batch.last_ts is None or batch.exhausted:
                 return
             cursor = batch.last_ts
-            if state.scanned >= scan_cap:
+            if state.fetched >= scan_cap:
                 state.next_before = cursor
                 return
 
@@ -206,7 +428,7 @@ class ChannelAnalysisService:
             raise ChannelAnalysisError("`before` must be the value from a previous result, e.g. 1763900000.123456@1761308000.000000.")
         return terms
 
-    def _require_access(self, bot: BotConfig, channel: str, requester_id: str | None) -> str:
+    def _require_access(self, bot: BotConfig, channel: str, requester_id: str) -> str:
         """Run the checks that need no message content; refuse with the first blocking problem.
 
         Every read repeats them whether or not `check_access` ran first, so that a private channel can't be read by skipping it.
@@ -217,7 +439,7 @@ class ChannelAnalysisService:
             raise ChannelAnalysisError(blocking.message if blocking else ACCESS_MESSAGES["channel_not_found"])
         return channel_id
 
-    def _inspect(self, bot: BotConfig, channel: str, requester_id: str | None) -> tuple[str | None, ChannelInfo | None, list[AccessProblem]]:
+    def _inspect(self, bot: BotConfig, channel: str, requester_id: str) -> tuple[str | None, ChannelInfo | None, list[AccessProblem]]:
         token = bot.bot_token
         reference = parse_channel_reference(channel)
         problems: list[AccessProblem] = []
@@ -236,7 +458,7 @@ class ChannelAnalysisService:
             problems.append(_problem("is_archived"))
         if not info.is_member:
             problems.append(_problem("not_in_channel"))
-        elif info.is_private and requester_id is not None:
+        elif info.is_private:
             problems.extend(self._requester_problems(channel_id, requester_id, token))
         return channel_id, info, problems
 

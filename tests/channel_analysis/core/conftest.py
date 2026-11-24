@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from channel_analysis.core.errors import ChannelAccessError
-from channel_analysis.core.models import ChannelInfo, ChannelMessage, FileMeta, HistoryBatch
+from channel_analysis.core.models import ChannelInfo, ChannelMessage, FileMeta, HistoryBatch, ModelAnswer
 from channel_analysis.core.service import ChannelAnalysisService
 from tests.support.channel_analysis import CHANNEL, NOW, make_info
 
@@ -41,7 +41,7 @@ class FakeHistory:
             return self.script.pop(0)
         eligible = [m for m in self.messages if float(m.ts) > oldest and (latest is None or float(m.ts) < float(latest))]
         batch = eligible[:limit]
-        return HistoryBatch(batch, batch[-1].ts if batch else None, exhausted=len(eligible) <= limit)
+        return HistoryBatch(batch, batch[-1].ts if batch else None, exhausted=len(eligible) <= limit, fetched=len(batch))
 
     def is_member(self, channel_id: str, user_id: str, token: str, max_pages: int) -> bool | None:
         self.member_checks.append(user_id)
@@ -67,6 +67,28 @@ class FakeFiles:
         return self.texts[file_id]
 
 
+class FakeExtractor:
+    """In-memory ExtractionModel. `respond(system, user)` returns the JSON object to answer with (or an exception to raise);
+    chunks run on several threads, so a test that has several chunks answers by what the chunk contains, not by call order."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.respond = lambda system, user: {"records": []}
+        self.tokens = (10, 5)
+
+    def complete_json(self, system: str, user: str, timeout_seconds: float) -> ModelAnswer:
+        self.calls.append((system, user))
+        result = self.respond(system, user)
+        if isinstance(result, Exception):
+            raise result
+        return ModelAnswer(result, *self.tokens)
+
+
+@pytest.fixture
+def extractor() -> FakeExtractor:
+    return FakeExtractor()
+
+
 @pytest.fixture
 def history() -> FakeHistory:
     return FakeHistory()
@@ -78,5 +100,5 @@ def files() -> FakeFiles:
 
 
 @pytest.fixture
-def service(history, files) -> ChannelAnalysisService:
-    return ChannelAnalysisService(history, files, now=lambda: NOW)
+def service(history, files, extractor) -> ChannelAnalysisService:
+    return ChannelAnalysisService(history, files, extractor, now=lambda: NOW)

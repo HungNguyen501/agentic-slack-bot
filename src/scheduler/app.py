@@ -91,6 +91,7 @@ def _enqueue(queue: rq.Queue, entry: Schedule) -> None:
             channel=entry.channel,
             question=entry.question,
             bot_id=bot_id,
+            run_as=entry.run_as,
             # A scheduled channel analysis reads several pages with a model call between them and can take minutes.
             job_timeout=600,
             retry=rq.Retry(max=3, interval=[10, 30, 60]),
