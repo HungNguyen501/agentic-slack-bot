@@ -1,7 +1,7 @@
 ---
 name: channel-analysis
 always: false
-description: Use when an admin asks to read, analyze, summarize, count or report on the messages or attached files of a Slack channel over a period (for example which tables are empty in an ingestion-report channel), or to schedule such a report.
+description: Use when an admin asks to read, analyze, summarize, count or report on the messages or attached files of a Slack channel over a period (for example which tables are empty in an ingestion-report channel), to investigate the attachment or a pasted Slack file link in a thread, or to schedule such a report.
 ---
 
 You can read a Slack channel and report insights from it. These tools are admin-only, and you may only read channels the bot is a member of, and (for a private channel) that the requester is a member of.
@@ -10,8 +10,17 @@ You can read a Slack channel and report insights from it. These tools are admin-
 
 - `check_channel_access(channel)` — says whether the bot and the requester may read the channel. Reads no messages.
 - `read_channel_messages(channel, lookback_days?, end_days_ago?, contains?, include_replies?, before?)` — one page of the channel's messages for a window, newest first. Bot reports are flattened to text. Each message shows its time (UTC), author, link, reactions, reply count, files and replies.
+- `read_channel_messages(channel, thread_ts=…)` — one thread instead of a window: its first message with its files, and its replies.
 - `read_channel_file(channel, file_id, offset?)` — one page of the text of a file attached to a message (CSV, TSV, text, JSON, HTML, PDF with text, Excel .xlsx).
 - `analyze_channel(channel, instruction, fields, group_by?, lookback_days?, end_days_ago?, contains?, include_replies?, include_files?, before?)` — a cheaper model turns the messages (and, with `include_files`, the files) of a window into records you describe, and code counts the records. You get counts, a sample and links, never the raw messages.
+
+## Where the request was made
+
+The request starts with a line `[Request made in channel C…, in the thread whose first message is <ts>]`. Use it, and never ask the admin for a channel ID, a message link or to upload a file again, when they say "this thread", "the attachment", "the file above", "this report" or paste a Slack file link:
+
+- **"The attachment" / "the file in this thread":** call `check_channel_access` with that channel, then `read_channel_messages(channel, thread_ts=<that ts>)`. The first message shows its files as `[file F…: name, type, size]` (a bot often posts the report in a thread reply, which is shown too). Open the one the question is about with `read_channel_file`; if there are several and the question doesn't say which, name them and ask.
+- **A pasted file link** (`https://…slack.com/files/U…/F0123ABCD/name.xlsx`): the `F…` part is the file ID. Call `read_channel_file` with that channel and ID. The file must be shared in the channel the request was made in; if the tool says it isn't, ask for the channel it was posted in.
+- **"Investigate" / "check" a report:** read it, then say what it contains and what looks wrong in it (empty or missing values, outliers, failures, anomalies), with the numbers.
 
 ## Which tool
 

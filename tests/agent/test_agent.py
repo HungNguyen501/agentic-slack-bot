@@ -457,3 +457,12 @@ def test_when_even_the_final_answer_comes_back_empty_the_processing_limit_messag
         reply = run(services)
 
     assert reply.text == AgentLoopConfigs.PROCESSING_LIMIT_MESSAGE
+
+
+def test_the_model_is_told_which_channel_and_thread_the_request_was_made_in_but_history_keeps_only_the_question(llm, services, saved_history):
+    run(services, "investigate the attachment")
+
+    sent = llm.create_response.call_args.kwargs["input"][-1]["content"]
+    assert "[Request made in channel C1, in the thread whose first message is 1.0]\ninvestigate the attachment" in sent
+    saved = saved_history.call_args.args[1]
+    assert saved[0]["content"] == "investigate the attachment"

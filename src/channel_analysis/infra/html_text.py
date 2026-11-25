@@ -1,8 +1,10 @@
 """HTML to text, for reports a bot posts as an `.html` file (an ingestion report, an email). Standard library only.
 
-Scripts and styles are dropped, block elements end a line, and a table row becomes one line with its cells joined by
+Scripts and styles are dropped, except a JSON data script (a report that draws its table in the browser keeps its rows there), which
+is kept with one record per line. Block elements end a line, and a table row becomes one line with its cells joined by
 `ChannelAnalysisConfigs.HTML_CELL_SEPARATOR`, so a row count stays next to the name of its table.
 """
+import json
 from html.parser import HTMLParser
 
 from channel_analysis.core.configs import ChannelAnalysisConfigs
@@ -14,6 +16,29 @@ def html_to_text(data: bytes, max_chars: int) -> str:
     builder.feed(_decode(data))
     builder.close()
     return builder.text()
+
+
+def _compact(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _data_lines(text: str) -> list[str]:
+    """The lines of a JSON data script: a list, or each list under a top-level key, has one record per line, so a page cut never splits
+    a record. Text that isn't JSON (or is nested too deeply to read) is kept as it is."""
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            lines: list[str] = []
+            for key, item in value.items():
+                if isinstance(item, list) and item:
+                    lines.append(f"{key}:")
+                    lines.extend(_compact(record) for record in item)
+                else:
+                    lines.append(f"{key}: {_compact(item)}")
+            return lines
+        return [_compact(record) for record in value] if isinstance(value, list) else [_compact(value)]
+    except (ValueError, RecursionError):
+        return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def _decode(data: bytes) -> str:
@@ -38,6 +63,7 @@ class _TextBuilder(HTMLParser):
         self._in_cell = False
         self._skip_depth = 0
         self._pre_depth = 0
+        self._data_script: list[str] | None = None
 
     def text(self) -> str:
         self._end_cell()
@@ -48,6 +74,8 @@ class _TextBuilder(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in ChannelAnalysisConfigs.HTML_SKIPPED_TAGS:
             self._skip_depth += 1
+            if tag == "script" and (dict(attrs).get("type") or "").split(";")[0].strip().lower() in ChannelAnalysisConfigs.HTML_DATA_SCRIPT_TYPES:
+                self._data_script = []
         elif tag in ChannelAnalysisConfigs.HTML_CELL_TAGS:
             self._end_cell()
             self._in_cell = True
@@ -63,6 +91,8 @@ class _TextBuilder(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in ChannelAnalysisConfigs.HTML_SKIPPED_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
+            if self._data_script is not None:
+                self._add_data_script()
         elif tag in ChannelAnalysisConfigs.HTML_CELL_TAGS:
             self._end_cell()
         elif tag in ChannelAnalysisConfigs.HTML_ROW_TAGS:
@@ -75,6 +105,9 @@ class _TextBuilder(HTMLParser):
                 self._pre_depth = max(0, self._pre_depth - 1)
 
     def handle_data(self, data: str) -> None:
+        if self._data_script is not None:
+            self._data_script.append(data)
+            return
         if self._skip_depth or self._length > self._max_chars:
             return
         if self._pre_depth and not self._in_cell:
@@ -85,6 +118,15 @@ class _TextBuilder(HTMLParser):
             self._pieces.append(last)
         else:
             self._pieces.append(data)
+
+    def _add_data_script(self) -> None:
+        text = "".join(self._data_script or [])
+        self._data_script = None
+        self._end_cell()
+        self._end_row()
+        self._end_line()
+        for line in _data_lines(text):
+            self._add_line(line)
 
     def _block_break(self) -> None:
         # Inside a cell a block element (a `<p>`, a `<br>`) is only a space: the row stays one line.

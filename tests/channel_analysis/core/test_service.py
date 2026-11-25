@@ -524,3 +524,51 @@ def test_read_file_applies_the_channel_checks_too(service, history, csv_file):
 def test_read_file_refuses_a_negative_offset(service, csv_file):
     with pytest.raises(ChannelAnalysisError, match="negative"):
         service.read_file(BOT, CHANNEL, ADMIN, "F1", offset=-1)
+
+
+# --- read_thread
+
+
+def test_a_thread_is_read_by_its_timestamp_with_its_files_and_replies(service, history):
+    reply = make_message(1, "see the report", files=(FileRef("F1", "usage.xlsx", "xlsx", 2048),))
+    history.threads["1799990000.000000"] = make_message(2, "Usage report", ts="1799990000.000000", replies=(reply,), reply_count=1)
+
+    thread = service.read_thread(BOT, CHANNEL, ADMIN, "1799990000.000000")
+
+    assert thread.channel_id == CHANNEL
+    assert thread.root.text == "Usage report"
+    assert [f.id for f in thread.root.replies[0].files] == ["F1"]
+
+
+@pytest.mark.parametrize("thread_ts", ["", "yesterday", "1799990000", "1799990000.0000001", "1799990000.000000 ", "1799990000.000000\n"])
+def test_a_thread_timestamp_that_is_not_one_is_refused_before_slack_is_asked(service, history, thread_ts):
+    with pytest.raises(ChannelAnalysisError, match="timestamp"):
+        service.read_thread(BOT, CHANNEL, ADMIN, thread_ts)
+
+    assert history.thread_reads == []
+
+
+def test_a_thread_that_cannot_be_read_is_said_so(service, history):
+    with pytest.raises(ChannelAnalysisError, match="can't read that thread"):
+        service.read_thread(BOT, CHANNEL, ADMIN, "1799990000.000000")
+
+
+def test_reading_a_thread_applies_the_channel_checks_too(service, history):
+    history.infos[CHANNEL] = make_info(is_private=True)
+    history.members = {"UOTHER": True}
+    history.threads["1799990000.000000"] = make_message(2, "secret", ts="1799990000.000000")
+
+    with pytest.raises(ChannelAnalysisError, match="you are not a member"):
+        service.read_thread(BOT, CHANNEL, ADMIN, "1799990000.000000")
+
+    assert history.thread_reads == []
+
+
+def test_a_long_thread_is_cut_to_what_a_page_may_carry_and_the_rest_is_counted(service, history):
+    replies = tuple(make_message(1, "x" * 3000, ts=f"1799990001.{n:06d}") for n in range(10))
+    history.threads["1799990000.000000"] = make_message(2, "root", ts="1799990000.000000", replies=replies, reply_count=10)
+
+    root = service.read_thread(BOT, CHANNEL, ADMIN, "1799990000.000000").root
+
+    assert 0 < len(root.replies) < 10
+    assert root.omitted_replies == 10 - len(root.replies)

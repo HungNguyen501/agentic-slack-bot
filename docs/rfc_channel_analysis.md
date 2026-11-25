@@ -177,9 +177,12 @@ read_channel_messages(
   end_days_ago?: int,     # default 0: where the window ends; lookback_days + end_days_ago <= 30
   contains?: [str],       # up to 5; a message matches if any appears in its text, author or replies (case-insensitive)
   include_replies?: bool, # default true
-  before?: str            # resume cursor, copied from the previous result
+  before?: str,           # resume cursor, copied from the previous result
+  thread_ts?: str         # read one thread instead of a window: its first message (with files) and replies, however old; the window arguments are then ignored
 )
 ```
+
+`run_agent` starts every request with `[Request made in channel C…, in the thread whose first message is <ts>]`, so "this thread", "the attachment above" or a pasted file link can be read without asking the admin for an ID. `thread_ts` runs the same access checks as a window read; one thread is bounded by `REPLIES_FETCH_MAX` replies, so it has no 30-day reach.
 
 ### The file tool
 
@@ -195,7 +198,7 @@ Messages show a file as `[file F0123: report.csv, csv, 84 KB]`. The agent opens 
 
 The handler gets the file's URL from `files.info` using `file_id`, never from the model. Before downloading it checks that the file is shared in `channel` (the file's `channels` / `groups` lists), after the same channel checks as the read tool. A file ID from another channel is refused, so the tool cannot be used to read arbitrary files the bot can see.
 
-Text by type: CSV and TSV, plain text, JSON and logs as text; HTML through the standard-library parser (scripts and styles dropped, block elements end a line, a table row is one line with its cells joined by ` | `, the declared charset is used); PDF through `pypdf`; Excel through `openpyxl` (one sheet after another, each as CSV-like rows, with the sheet name). A PDF with no text layer, an image, or an unsupported type returns "I can't read this file type or it has no text", with the type.
+Text by type: CSV and TSV, plain text, JSON and logs as text; HTML through the standard-library parser (scripts and styles dropped, block elements end a line, a table row is one line with its cells joined by ` | `, a JSON data script (`<script type="application/json">`, where a report that draws its table in the browser keeps its rows) is kept with one record per line, the declared charset is used); PDF through `pypdf`; Excel through `openpyxl` (one sheet after another, each as CSV-like rows, with the sheet name). A PDF with no text layer, an image, or an unsupported type returns "I can't read this file type or it has no text", with the type.
 
 A PDF, a workbook or an HTML page is parsed in a child process (`infra/file_parser.py` runs `python -m channel_analysis.infra.file_text`), not in the worker. The download limit doesn't bound parsing: a small, highly compressed workbook can unpack to far more than it weighs. The child has `PARSE_MEMORY_BYTES` of memory, `PARSE_CPU_SECONDS` of CPU and `PARSE_TIMEOUT_SECONDS` of wall time; a file that goes over a limit is reported as unreadable. A workbook is also refused before it is opened if its archive has more than `XLSX_MAX_MEMBERS` members or unpacks to more than `XLSX_MAX_UNCOMPRESSED_BYTES`. A damaged sheet, which only fails while it is being read, is reported as unreadable too. The child is started with no secrets in its environment (only `PATH` and the import path), so a parser exploit finds none. This is not a filesystem or network sandbox; that needs the operating system (a container profile, seccomp).
 

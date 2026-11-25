@@ -121,6 +121,9 @@ class ChannelAnalysisConfigs:
     # A copied channel link (https://acme.slack.com/archives/C0123456789/p17...) or the app's (https://app.slack.com/client/T0123/C0123456789).
     CHANNEL_URL = re.compile(r"^https?://[A-Za-z0-9.-]+\.slack\.com/(?:archives|client/[A-Z0-9]+)/([A-Z][A-Z0-9]{8,})(?:[/?#].*)?$")
 
+    # A Slack message timestamp, as a thread is named (`1795579654.054449`).
+    MESSAGE_TS = re.compile(r"^\d{9,11}\.\d{1,6}$")
+
     # What a result's `before` looks like: where to resume, and where the window started, so every page of one window has the same bounds.
     RESUME_TOKEN = re.compile(r"^(\d{9,11}\.\d{1,6})(?:@(\d{9,11}\.\d{1,6}))?$")
 
@@ -139,6 +142,8 @@ class ChannelAnalysisConfigs:
 
     # HTML to text: what is dropped, what ends a line, and how a table row is written (a table row is a line, its cells joined by the separator).
     HTML_SKIPPED_TAGS = frozenset({"script", "style", "template", "noscript"})
+    # A script of these types holds data a page draws its tables from in the browser (a report with its rows as JSON): it is kept as text.
+    HTML_DATA_SCRIPT_TYPES = frozenset({"application/json", "application/ld+json", "text/json"})
     HTML_BLOCK_TAGS = frozenset(
         {"address", "article", "aside", "blockquote", "body", "br", "dd", "details", "div", "dl", "dt", "fieldset", "figcaption", "figure",
          "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "html", "li", "main", "nav", "ol", "p", "pre", "section",

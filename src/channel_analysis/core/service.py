@@ -21,6 +21,7 @@ from channel_analysis.core.models import (
     ExtractionSpec,
     FilePage,
     FileRef,
+    ThreadRead,
 )
 from channel_analysis.core.ports import ChannelFiles, ChannelHistory, ExtractionModel
 from channel_analysis.core.reference import parse_channel_reference
@@ -188,6 +189,20 @@ class ChannelAnalysisService:
             resume_at = state.next_before
         next_before = _resume_token(resume_at, window_start) if resume_at else None
         return ChannelSlice(channel_id, window_start, window_end, terms, tuple(kept), state.scanned, next_before)
+
+    def read_thread(self, bot: BotConfig, channel: str, requester_id: str, thread_ts: str) -> ThreadRead:
+        """Read one thread: its first message with the files it carries, and its replies.
+
+        Raises:
+            ChannelAnalysisError: a bad timestamp, a thread that can't be read, or no access to the channel.
+        """
+        if not ChannelAnalysisConfigs.MESSAGE_TS.fullmatch(thread_ts):
+            raise ChannelAnalysisError("`thread_ts` must be a Slack message timestamp such as 1795579654.054449.")
+        channel_id = self._require_access(bot, channel, requester_id)
+        root = self._history.fetch_thread(channel_id, thread_ts, bot.bot_token)
+        if root is None:
+            raise ChannelAnalysisError("I can't read that thread: it wasn't found in this channel, or Slack refused to give it to me.")
+        return ThreadRead(channel_id, _clip(root))
 
     def analyze(
         self,

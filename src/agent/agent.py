@@ -214,6 +214,13 @@ def _authorization_note(user_id: str | None, admin_users: frozenset[str], unatte
     return f"[Current requester: {user_id or 'unknown'} — {status}"
 
 
+def _request_context(channel: str | None, thread_ts: str) -> str:
+    """Where the request was made, so "this thread", "the attachment above" or a pasted file link can be read without asking for an ID."""
+    if not channel:
+        return ""
+    return f"[Request made in channel {channel}, in the thread whose first message is {thread_ts}]\n"
+
+
 def _answer_without_tools(instructions: str, messages: list[dict]) -> str:
     """Every iteration asked for another tool: take the tools away once, so what they returned is not thrown away."""
     final = openai_client.create_response(
@@ -267,7 +274,7 @@ def run_agent(
 
     # Prepend the current user's authorization status so the LLM re-evaluates
     # permissions for this request rather than echoing a prior refusal from history.
-    messages.append({"role": "user", "content": f"{_authorization_note(user_id, admin_users, unattended)}\n{question}"})
+    messages.append({"role": "user", "content": f"{_authorization_note(user_id, admin_users, unattended)}\n{_request_context(channel, thread_ts)}{question}"})
 
     guard = _ReadGuard(question, channel, history, user_id)
     for _ in range(10):

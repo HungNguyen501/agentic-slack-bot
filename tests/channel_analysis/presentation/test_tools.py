@@ -18,6 +18,7 @@ from channel_analysis.core.models import (
     FileRef,
     GroupCount,
     Record,
+    ThreadRead,
 )
 from channel_analysis.core.read_scope import ReadScope
 from channel_analysis.core.service import ChannelAnalysisService
@@ -462,3 +463,26 @@ def test_with_files_on_and_none_skipped_the_summary_says_none(service):
     service.analyze.return_value = analysis(files_included=True)
 
     assert "Files not read: none" in run(service, "analyze_channel", ANALYZE_ARGS | {"include_files": True})
+
+
+def test_a_thread_read_shows_the_first_message_its_files_and_replies_and_ignores_the_window(service):
+    reply = ChannelMessage(ts="1799990100.000000", author="dp-bot", text="", files=(FileRef("F1", "usage_tracking_report.xlsx", "xlsx", 20480),))
+    root = ChannelMessage(
+        ts="1799990000.000000", author="dp-bot", text="Usage Tracking & Anomaly Report", reply_count=1, replies=(reply,), link="https://x.slack.com/archives/C1/p1"
+    )
+    service.read_thread.return_value = ThreadRead("C1", root)
+
+    reply_text = run(service, "read_channel_messages", {"channel": "C1", "thread_ts": " 1799990000.000000 ", "lookback_days": 3})
+
+    service.read_thread.assert_called_once_with(BOT, "C1", "UADMIN", "1799990000.000000")
+    service.read.assert_not_called()
+    assert "one thread, started" in reply_text
+    assert "Usage Tracking & Anomaly Report" in reply_text
+    assert "[file F1: usage_tracking_report.xlsx, xlsx, 20 KB]" in reply_text
+    assert "End of thread" in reply_text
+
+
+def test_a_thread_that_cannot_be_read_is_reported_in_words(service):
+    service.read_thread.side_effect = ChannelAnalysisError("I can't read that thread.")
+
+    assert run(service, "read_channel_messages", {"channel": "C1", "thread_ts": "1799990000.000000"}) == "I can't read that thread."

@@ -43,6 +43,10 @@ def slack_access_errors(files: bool = False) -> Iterator[None]:
         raise
 
 
+def _link(workspace_url: str, channel_id: str, ts: str) -> str:
+    return f"{workspace_url}/archives/{channel_id}/p{ts.replace('.', '')}"
+
+
 @dataclass
 class _ThreadReader:
     """Reads the threads of one fetch. Slack's limit is per minute, so once it still refuses after a wait, the other threads
@@ -127,6 +131,21 @@ class SlackChannelHistory:
         )
         return HistoryBatch(messages, raw_messages[-1]["ts"] if raw_messages else None, exhausted=not truncated, fetched=len(raw_messages))
 
+    def fetch_thread(self, channel_id: str, thread_ts: str, token: str) -> ChannelMessage | None:
+        reader = _ThreadReader()
+        with slack_access_errors():
+            workspace_url = self._workspace_url(token)
+        thread = reader.read(channel_id, thread_ts, token)
+        if thread and (thread[0].get("thread_ts") or thread[0]["ts"]) != thread[0]["ts"]:
+            # `thread_ts` named a reply: Slack gave only that one, so read the thread it belongs to.
+            thread = reader.read(channel_id, thread[0]["thread_ts"], token)
+        if not thread:
+            return None
+        root, fetched = thread[0], thread[1:]
+        replies = tuple(self._normalize(r) for r in fetched if not message_text.is_noise(r))
+        omitted = max(int(root.get("reply_count") or 0) - len(fetched), 0)
+        return self._normalize(root, link=_link(workspace_url, channel_id, root["ts"]), reply_count=len(replies) + omitted, replies=replies, omitted_replies=omitted)
+
     def is_member(self, channel_id: str, user_id: str, token: str, max_pages: int) -> bool | None:
         with slack_access_errors():
             return slack.is_channel_member(channel_id, user_id, token=token, max_pages=max_pages)
@@ -155,8 +174,7 @@ class SlackChannelHistory:
         if threads and reply_count and raw.get("thread_ts") == raw["ts"]:
             replies, omitted = self._thread(raw, channel_id, token, threads, replies_until, reply_count)
             reply_count = len(replies) + omitted
-        link = f"{workspace_url}/archives/{channel_id}/p{raw['ts'].replace('.', '')}"
-        return self._normalize(raw, link=link, reply_count=reply_count, replies=replies, omitted_replies=omitted)
+        return self._normalize(raw, link=_link(workspace_url, channel_id, raw["ts"]), reply_count=reply_count, replies=replies, omitted_replies=omitted)
 
     def _thread(
         self, raw: dict, channel_id: str, token: str, threads: _ThreadReader, replies_until: float | None, reply_count: int

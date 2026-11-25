@@ -86,6 +86,14 @@ class ChannelSlice:
 
 
 @dataclass(frozen=True)
+class ThreadRead:
+    """What `read_thread` returned: a thread's first message, with its replies."""
+
+    channel_id: str
+    root: ChannelMessage
+
+
+@dataclass(frozen=True)
 class AccessProblem:
     code: str
     message: str

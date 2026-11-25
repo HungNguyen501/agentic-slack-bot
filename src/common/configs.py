@@ -414,9 +414,9 @@ class AgentConfigs:
             description=(
                 "Read the messages of a Slack channel for a time window, newest first, in pages, to analyze them (count, compare, "
                 "summarize, find what is missing). Admin-only; run check_channel_access first. Bot reports are flattened to text; "
-                "files are listed with their id (open one with read_channel_file). The result says how many messages the page holds "
-                "and whether the window is finished; if it is not, call again with `before` from the result and the same other "
-                "arguments until it is, or say that you covered only part of the window. Reaches at most 30 days back."
+                "files are listed with their id (open one with read_channel_file). To read just one thread, pass `thread_ts`. "
+                "The result says how many messages the page holds and whether the window is finished; if it is not, call again with "
+                "`before` from the result and the same other arguments until it is, or say that you covered only part of the window. Reaches at most 30 days back."
             ),
             parameters={
                 "type": "object",
@@ -426,6 +426,14 @@ class AgentConfigs:
                         contains="Up to 5 case-insensitive terms; a message is kept if any appears in its text, author, file names or replies.",
                         include_replies="Also read thread replies. Default true; false is faster when threads don't matter.",
                     ),
+                    "thread_ts": {
+                        "type": "string",
+                        "description": (
+                            "Read one thread instead of a window: its first message (with its files) and its replies, however old. Use it when the "
+                            "request is about 'this thread' or the attachment in it: pass the thread from the request context, or from a message "
+                            "link (…/p1795579654054449 is 1795579654.054449). The window arguments are then ignored."
+                        ),
+                    },
                 },
                 "required": ["channel"],
             },
@@ -434,7 +442,7 @@ class AgentConfigs:
         AgentTool(
             name="read_channel_file",
             description=(
-                "Read the text of a file attached to a message in a Slack channel (CSV, TSV, text, JSON, PDF with text, Excel .xlsx), "
+                "Read the text of a file attached to a message in a Slack channel (CSV, TSV, text, JSON, HTML, PDF with text, Excel .xlsx), "
                 "in pages. Admin-only. Use it only when the question needs what is inside a file; the file id (F…) is shown next to the "
                 "file in read_channel_messages. The result says where the next page starts; pass it as `offset`."
             ),

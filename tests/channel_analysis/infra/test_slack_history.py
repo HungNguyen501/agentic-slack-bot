@@ -450,3 +450,53 @@ def test_the_threads_of_messages_the_caller_never_reaches_are_not_read(slack):
     next(iter(batch.messages))
 
     assert slack.conversations_replies.call_count == 1
+
+
+# --- fetch_thread
+
+
+def test_a_thread_is_its_first_message_with_the_files_it_carries_its_replies_and_a_link(slack):
+    root = {"ts": "5.0", "thread_ts": "5.0", "reply_count": 1, "text": "Usage report", "files": [{"id": "F1", "name": "usage.xlsx", "filetype": "xlsx", "size": 10}]}
+    slack.conversations_replies.return_value = [root, {"ts": "5.1", "user": "U1", "text": "r1"}]
+
+    message = SlackChannelHistory().fetch_thread(CHANNEL, "5.0", TOKEN)
+
+    assert message.text == "Usage report"
+    assert [f.id for f in message.files] == ["F1"]
+    assert [r.text for r in message.replies] == ["r1"]
+    assert message.link == f"https://acme.slack.com/archives/{CHANNEL}/p50"
+    slack.conversations_replies.assert_called_once()
+
+
+def test_a_reply_named_as_the_thread_reads_the_thread_it_belongs_to(slack):
+    reply = {"ts": "5.1", "thread_ts": "5.0", "user": "U1", "text": "r1"}
+    root = {"ts": "5.0", "thread_ts": "5.0", "reply_count": 1, "text": "root"}
+    slack.conversations_replies.side_effect = [[reply], [root, reply]]
+
+    message = SlackChannelHistory().fetch_thread(CHANNEL, "5.1", TOKEN)
+
+    assert (message.ts, [r.text for r in message.replies]) == ("5.0", ["r1"])
+    assert [call.args[1] for call in slack.conversations_replies.call_args_list] == ["5.1", "5.0"]
+
+
+def test_a_message_without_a_thread_is_a_thread_of_one(slack):
+    slack.conversations_replies.return_value = [{"ts": "5.0", "text": "alone"}]
+
+    message = SlackChannelHistory().fetch_thread(CHANNEL, "5.0", TOKEN)
+
+    assert (message.text, message.replies, message.reply_count) == ("alone", (), 0)
+
+
+def test_replies_past_the_read_limit_and_join_notices_are_counted_properly(slack):
+    root = {"ts": "5.0", "thread_ts": "5.0", "reply_count": 5, "text": "root"}
+    slack.conversations_replies.return_value = [root, {"ts": "5.1", "user": "U1", "text": "r1"}, {"ts": "5.2", "subtype": "channel_join", "text": "joined"}]
+
+    message = SlackChannelHistory().fetch_thread(CHANNEL, "5.0", TOKEN)
+
+    assert (len(message.replies), message.omitted_replies, message.reply_count) == (1, 3, 4)
+
+
+def test_a_thread_that_cannot_be_read_is_none(slack):
+    slack.conversations_replies.side_effect = api_error("thread_not_found")
+
+    assert SlackChannelHistory().fetch_thread(CHANNEL, "5.0", TOKEN) is None

@@ -222,3 +222,31 @@ def test_preformatted_html_keeps_its_indentation_and_ordinary_html_does_not():
     html = b"<p>a    b</p><pre>if ok:\n    run()\n\n        deeper()</pre><p>  c   d </p><pre>last   line</pre>"
 
     assert extract_text("code.html", "html", html, MAX) == "a b\nif ok:\n    run()\n        deeper()\nc d\nlast   line"
+
+
+def test_a_report_that_draws_its_table_in_the_browser_gives_its_json_rows_one_per_line():
+    html = (
+        b'<html><body><div id="rows"></div><script id="data" type="application/json">'
+        b'{"meta": {"runAt": "2026-11-25 04:03 UTC"}, "rows": [{"status": "FAIL", "table": "a.b.c", "lag": 4256}, {"status": "PASS", "table": "a.b.d", "lag": 3}]}'
+        b"</script><script>const DATA = JSON.parse(document.getElementById('data').textContent);</script></body></html>"
+    )
+
+    assert extract_text("report.html", "html", html, MAX) == (
+        'meta: {"runAt":"2026-11-25 04:03 UTC"}\nrows:\n{"status":"FAIL","table":"a.b.c","lag":4256}\n{"status":"PASS","table":"a.b.d","lag":3}'
+    )
+
+
+@pytest.mark.parametrize(
+    "script, expected",
+    [
+        ('<script type="application/json">[{"a": 1}, {"a": 2}]</script>', '{"a":1}\n{"a":2}'),
+        ('<script type="application/json; charset=utf-8">{"n": 3}</script>', "n: 3"),
+        ('<script type="application/json">{"broken": [1,\n 2</script>', '{"broken": [1,\n2'),
+        ('<script type="text/javascript">var a = {"x": 1};</script>', ""),
+    ],
+    ids=["list", "parameters-on-the-type", "not-json-kept-as-it-is", "code-is-dropped"],
+)
+def test_json_data_scripts_are_kept_and_code_scripts_are_not(script, expected):
+    html = f"<p>x</p>{script}".encode()
+
+    assert extract_text("a.html", "html", html, MAX) == ("x\n" + expected if expected else "x")

@@ -25,6 +25,8 @@ class FakeHistory:
         self.find_error: ChannelAccessError | None = None
         self.fetches: list[dict] = []
         self.member_checks: list[str] = []
+        self.threads: dict[str, ChannelMessage] = {}
+        self.thread_reads: list[str] = []
 
     def find_channel_id(self, name: str, token: str) -> str | None:
         if self.find_error:
@@ -45,6 +47,10 @@ class FakeHistory:
         eligible = [m for m in self.messages if float(m.ts) > oldest and (latest is None or float(m.ts) < float(latest))]
         batch = eligible[:limit]
         return HistoryBatch(batch, batch[-1].ts if batch else None, exhausted=len(eligible) <= limit, fetched=len(batch))
+
+    def fetch_thread(self, channel_id: str, thread_ts: str, token: str) -> ChannelMessage | None:
+        self.thread_reads.append(thread_ts)
+        return self.threads.get(thread_ts)
 
     def is_member(self, channel_id: str, user_id: str, token: str, max_pages: int) -> bool | None:
         self.member_checks.append(user_id)

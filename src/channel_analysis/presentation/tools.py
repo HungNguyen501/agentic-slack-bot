@@ -5,7 +5,7 @@ from bots.core.models import BotConfig
 from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAnalysisError
 from channel_analysis.core.extraction import format_when as _when
-from channel_analysis.core.models import Analysis, ChannelAccess, ChannelMessage, ChannelSlice, ExtractionField, ExtractionSpec, FilePage, GroupCount
+from channel_analysis.core.models import Analysis, ChannelAccess, ChannelMessage, ChannelSlice, ExtractionField, ExtractionSpec, FilePage, GroupCount, ThreadRead
 from channel_analysis.core.service import ChannelAnalysisService
 
 log = logging.getLogger("channel_analysis.tools")
@@ -83,6 +83,13 @@ def _format_slice(page: ChannelSlice) -> str:
     return "\n".join(lines)
 
 
+def _format_thread(thread: ThreadRead) -> str:
+    lines = [f"Channel {thread.channel_id} · one thread, started {_when(thread.root.ts)}", ""]
+    lines.extend(_format_message(thread.root))
+    lines.extend(["", "End of thread: that was the first message and every reply I could read."])
+    return "\n".join(lines)
+
+
 def _format_file(page: FilePage) -> str:
     end = page.next_offset if page.next_offset is not None else page.total_chars
     lines = [f"File {page.name} ({page.filetype}, {max(page.size // 1024, 1)} KB) · characters {page.offset} to {end} of {page.total_chars}", "", page.text, ""]
@@ -110,6 +117,8 @@ def _read_arguments(args: dict) -> dict:
 
 
 def _read(args: dict, requester_id: str, bot: BotConfig, service: ChannelAnalysisService) -> str:
+    if args.get("thread_ts"):
+        return _format_thread(service.read_thread(bot, str(args.get("channel") or ""), requester_id, str(args["thread_ts"]).strip()))
     return _format_slice(service.read(bot, str(args.get("channel") or ""), requester_id, **_read_arguments(args)))
 
 
