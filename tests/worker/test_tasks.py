@@ -1,9 +1,11 @@
 from unittest.mock import patch
 
 import pytest
+from rq.timeouts import JobTimeoutException
 from slack_sdk.errors import SlackApiError, SlackRequestError
 
 from agent.agent import AgentReply
+from agent.dispatch import UnattendedRun
 from bots.core.models import BotConfig
 from characters.core.models import Character
 from worker import tasks
@@ -217,3 +219,65 @@ def test_a_scheduled_question_that_fails_apologizes_as_the_bot(scheduled):
 
     assert "Sorry, I ran into an error" in slack.post_message.call_args_list[1].args[1]
     assert slack.post_message.call_args_list[1].kwargs == {"token": "xoxb-test"}
+
+
+def test_a_scheduled_question_may_use_the_channel_analysis_tools_as_the_admin_it_runs_for():
+    with (
+        patch("worker.tasks.wiring", autospec=True) as wiring,
+        patch("worker.tasks.slack", autospec=True) as slack,
+        patch("worker.tasks.run_agent", autospec=True, return_value=AgentReply("answer")) as run_agent,
+        patch("worker.tasks.summarize_answer", autospec=True, return_value="summary"),
+    ):
+        wiring.bot_repository.return_value.get_by_id.return_value = BOT
+        slack.split_message.side_effect = lambda text: [text]
+        slack.post_message.return_value = "ts"
+        tasks.process_scheduled_question("C1", "analyze the reports channel", "bot-a", run_as="UADMIN")
+
+    assert run_agent.call_args.kwargs["unattended"] == UnattendedRun(frozenset({"channel_analysis"}), "UADMIN")
+    assert "user_id" not in run_agent.call_args.kwargs
+
+
+def test_a_scheduled_question_of_a_schedule_with_no_owner_runs_with_no_one_to_read_channels_as():
+    with (
+        patch("worker.tasks.wiring", autospec=True) as wiring,
+        patch("worker.tasks.slack", autospec=True) as slack,
+        patch("worker.tasks.run_agent", autospec=True, return_value=AgentReply("answer")) as run_agent,
+        patch("worker.tasks.summarize_answer", autospec=True, return_value="summary"),
+    ):
+        wiring.bot_repository.return_value.get_by_id.return_value = BOT
+        slack.split_message.side_effect = lambda text: [text]
+        slack.post_message.return_value = "ts"
+        tasks.process_scheduled_question("C1", "what failed?", "bot-a")
+
+    assert run_agent.call_args.kwargs["unattended"].run_as is None
+
+
+def test_a_mention_never_gets_unattended_categories():
+    with (
+        patch("worker.tasks.wiring", autospec=True) as wiring,
+        patch("worker.tasks.slack", autospec=True) as slack,
+        patch("worker.tasks._animate_thinking", autospec=True),
+        patch("worker.tasks.run_agent", autospec=True, return_value=AgentReply("done")) as run_agent,
+    ):
+        wiring.bot_repository.return_value.get_by_id.return_value = BOT
+        slack.get_bot_user_id.return_value = "UBOT"
+        slack.split_message.side_effect = lambda text: [text]
+        tasks.reply_to_mention("C1", "1.0", "bot-a", user="U9", text="<@UBOT> hi")
+
+    assert "unattended" not in run_agent.call_args.kwargs
+
+
+def test_a_job_timeout_in_the_agent_is_one_apology_and_not_a_failed_job_that_rq_would_retry():
+    with (
+        patch("worker.tasks.wiring", autospec=True) as wiring,
+        patch("worker.tasks.slack", autospec=True) as slack,
+        patch("worker.tasks._animate_thinking", autospec=True),
+        patch("worker.tasks.run_agent", autospec=True, side_effect=JobTimeoutException("Task exceeded maximum timeout value (600 seconds)")),
+    ):
+        wiring.bot_repository.return_value.get_by_id.return_value = BOT
+        slack.get_bot_user_id.return_value = "UBOT"
+        slack.split_message.side_effect = lambda text: [text]
+        slack.post_message.return_value = "thinking-ts"
+        tasks.reply_to_mention("C1", "1.0", "bot-a", user="U9", text="<@UBOT> analyze the reports channel")
+
+    assert "Sorry, I ran into an error" in slack.update_message.call_args.args[2]

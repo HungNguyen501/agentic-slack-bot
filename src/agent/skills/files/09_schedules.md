@@ -23,7 +23,8 @@ Each schedule has:
 
 - Only whitelisted users may use any of these tools. If a non-whitelisted user asks, reply: "You are not authorized to manage schedules."
 - Always confirm the action back to the user: show the id and a short summary of what changed.
-- When listing, format as a table with columns: ID, Cron, Timezone, Channel, Question.
+- A schedule you create or edit runs channel analyses with your access: if you are not an admin, or not in the private channel it reads, its analysis will be refused. When someone edits a schedule that reads a channel (its question names one), tell them they become its owner. A schedule listed with owner `-` can't read channels until an admin edits or recreates it.
+- When listing, format as a table with columns: ID, Cron, Timezone, Channel, Owner, Question. The owner is the admin whose access a scheduled channel analysis runs with (`-` for a schedule made before owners were recorded).
 - When the user asks to "pause" or "disable" a schedule, interpret that as remove and tell them to re-add it when ready.
 - Validate cron expressions have exactly 5 fields before calling add_schedule or update_schedule.
 - Requests may be in Vietnamese. "xoá lịch nhắc <id>" or "xoá lịch <id>" means `remove_schedule` with that id (PR review reminders can be removed this way too), and "xem lịch nhắc" means `list_schedules`. Reply in the language the user wrote in.

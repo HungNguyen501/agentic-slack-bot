@@ -1,13 +1,8 @@
 """Data model for the data access request form and its Slack modal view."""
-import re
 from dataclasses import dataclass, field
 
+from agent.access_control.configs import AccessControlConfigs
 from agent.forms.access_request_options import FormOptions, allowed_value_groups
-
-# Slack allows 75 characters of option text and of an option group's label.
-_OPTION_TEXT_MAX = 75
-
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def parse_emails(raw: str) -> list[str]:
@@ -34,7 +29,7 @@ def parse_emails(raw: str) -> list[str]:
 
 def _option(value: str) -> dict:
     """A Slack option for `value`; long text is cut for display, the submitted value stays whole."""
-    text = value if len(value) <= _OPTION_TEXT_MAX else value[: _OPTION_TEXT_MAX - 1] + "…"
+    text = value if len(value) <= AccessControlConfigs.OPTION_TEXT_MAX else value[: AccessControlConfigs.OPTION_TEXT_MAX - 1] + "…"
     return {"text": {"type": "plain_text", "text": text}, "value": value}
 
 
@@ -159,7 +154,7 @@ def validate_submission(fields: dict) -> dict[str, str]:
     if not emails:
         errors["user_emails"] = "Enter at least one valid email address, e.g. name@example.com."
     else:
-        invalid = [e for e in emails if not EMAIL_PATTERN.match(e)]
+        invalid = [e for e in emails if not AccessControlConfigs.EMAIL_PATTERN.match(e)]
         if invalid:
             errors["user_emails"] = f"Invalid email address(es): {', '.join(invalid)}"
 

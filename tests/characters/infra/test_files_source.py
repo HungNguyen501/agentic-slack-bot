@@ -1,11 +1,11 @@
 import pytest
 
+from characters.core.configs import CharactersConfigs
 from agent.pr_reminders.message import VOICE_SPEC
 from characters.core.errors import InvalidSeedError
-from characters.core.models import FEATURE_PR_REMINDER
 from characters.core.validation import character_problems
 from characters.infra.file_format import parse_character_file
-from characters.infra.files_source import SEED_DIR, FilesCharacterSource
+from characters.infra.files_source import FilesCharacterSource
 
 EXPECTED = {"dai-minh-tinh", "em-gai-mua", "exs-hate-me", "giua-dai-lo-dong-tay", "khong-sao-ma-em-day-roi"}
 
@@ -52,11 +52,11 @@ def test_the_shipped_seed_files_are_the_five_characters():
 
 # The files are listed at collection time but only parsed inside the tests, so one broken file fails its own tests
 # and leaves the rest of this module running.
-SEED_FILES = sorted(path.name for path in SEED_DIR.glob("*.md"))
+SEED_FILES = sorted(path.name for path in CharactersConfigs.SEED_DIR.glob("*.md"))
 
 
 def shipped(filename):
-    return parse_character_file(filename, (SEED_DIR / filename).read_text(encoding="utf-8"))
+    return parse_character_file(filename, (CharactersConfigs.SEED_DIR / filename).read_text(encoding="utf-8"))
 
 
 def test_the_five_seed_files_are_there():
@@ -65,7 +65,7 @@ def test_the_five_seed_files_are_there():
 
 @pytest.mark.parametrize("filename", SEED_FILES)
 def test_every_shipped_character_passes_validation(filename):
-    assert character_problems(shipped(filename), {FEATURE_PR_REMINDER: VOICE_SPEC}) == []
+    assert character_problems(shipped(filename), {CharactersConfigs.FEATURE_PR_REMINDER: VOICE_SPEC}) == []
 
 
 @pytest.mark.parametrize("filename", SEED_FILES)

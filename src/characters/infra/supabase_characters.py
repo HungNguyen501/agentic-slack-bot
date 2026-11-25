@@ -2,15 +2,10 @@
 import psycopg
 from psycopg.types.json import Jsonb
 
+from characters.core.configs import CharactersConfigs
 from characters.core.errors import CharacterStorageError
 from characters.core.models import Character
 from connectors.db.connection import connect
-
-_COLUMNS = "name, display_name, song, artist, enabled, bindings, icon_emoji, icon_url, persona, voices, updated_at"
-
-# The columns a character's fields are written to, in the order `_values` returns them. `name` and `updated_at` are not
-# among them: they identify the row, and each query places them itself.
-_FIELD_COLUMNS = ("display_name", "song", "artist", "enabled", "bindings", "icon_emoji", "icon_url", "persona", "voices")
 
 
 def _row_to_character(row: dict) -> Character:
@@ -53,7 +48,7 @@ class SupabaseCharacterRepository:
         """
         try:
             with connect() as conn, conn.cursor() as cur:
-                cur.execute(f"SELECT {_COLUMNS} FROM characters ORDER BY name")
+                cur.execute(f"SELECT {CharactersConfigs.COLUMNS} FROM characters ORDER BY name")
                 return [_row_to_character(row) for row in cur.fetchall()]
         except psycopg.Error as exc:
             raise CharacterStorageError(f"Could not read the characters: {exc}") from exc
@@ -66,7 +61,7 @@ class SupabaseCharacterRepository:
         """
         try:
             with connect() as conn, conn.cursor() as cur:
-                cur.execute(f"SELECT {_COLUMNS} FROM characters WHERE name = %s", (name,))
+                cur.execute(f"SELECT {CharactersConfigs.COLUMNS} FROM characters WHERE name = %s", (name,))
                 row = cur.fetchone()
                 return _row_to_character(row) if row else None
         except psycopg.Error as exc:
@@ -78,7 +73,7 @@ class SupabaseCharacterRepository:
         Raises:
             CharacterStorageError: the table couldn't be written.
         """
-        assignments = ", ".join(f"{column} = %s" for column in _FIELD_COLUMNS)
+        assignments = ", ".join(f"{column} = %s" for column in CharactersConfigs.FIELD_COLUMNS)
         try:
             with connect() as conn, conn.cursor() as cur:
                 cur.execute(
@@ -108,8 +103,8 @@ class SupabaseCharacterRepository:
         Raises:
             CharacterStorageError: the table couldn't be written, so nothing was added.
         """
-        columns = ", ".join(("name", *_FIELD_COLUMNS))
-        placeholders = ", ".join("%s" for _ in range(len(_FIELD_COLUMNS) + 1))
+        columns = ", ".join(("name", *CharactersConfigs.FIELD_COLUMNS))
+        placeholders = ", ".join("%s" for _ in range(len(CharactersConfigs.FIELD_COLUMNS) + 1))
         insert = f"INSERT INTO characters ({columns}) VALUES ({placeholders}) ON CONFLICT (name) DO NOTHING RETURNING name"
         added = []
         try:

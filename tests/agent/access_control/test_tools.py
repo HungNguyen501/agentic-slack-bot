@@ -1,11 +1,12 @@
 import json
 from unittest.mock import patch
 
+from agent.access_control.configs import AccessControlConfigs
 from agent.access_control import tools
 from agent.access_control.access_request_categories import AccessRequestCategory
-from agent.access_control.tools import ACCESS_REQUEST_POSTED_MESSAGE, build_form_blocks, build_form_button_value
+from agent.access_control.tools import build_form_blocks, build_form_button_value
 from dataset_sync.core.errors import DatasetNotSyncedError
-from agent.forms.access_request_options import LOCATIONS_DATASET, TAGS_DATASET, FormOptions
+from agent.forms.access_request_options import FormOptions
 from bots.core.models import BotConfig
 from common.configs import AgentConfigs
 
@@ -32,13 +33,13 @@ def test_build_form_button_value_derives_both_timestamps_from_now():
 def test_build_form_blocks_shows_ttl_notice_and_carries_button_value():
     section, actions = build_form_blocks("payload")
 
-    assert section["text"]["text"] == ACCESS_REQUEST_POSTED_MESSAGE
+    assert section["text"]["text"] == AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE
     assert actions["elements"][0]["action_id"] == "open_access_request_form"
     assert actions["elements"][0]["value"] == "payload"
 
 
 def rows_by_dataset(name):
-    return {LOCATIONS_DATASET: LOCATIONS, TAGS_DATASET: TAGS}[name]
+    return {AccessControlConfigs.LOCATIONS_DATASET: LOCATIONS, AccessControlConfigs.TAGS_DATASET: TAGS}[name]
 
 
 def test_stash_form_options_writes_the_snapshot_to_redis_for_the_button_lifetime():

@@ -16,6 +16,8 @@ class Schedule:
     status: str = "active"
     config: dict = field(default_factory=dict)
     timezone: str = "UTC"
+    # The admin whose access a scheduled question runs with (see V16); None for a schedule that predates it.
+    run_as: str | None = None
 
 
 class AddedReminder(NamedTuple):

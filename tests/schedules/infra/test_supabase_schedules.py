@@ -38,6 +38,43 @@ def test_update_schedule_is_scoped_to_the_calling_bot():
     assert params == ["0 10 * * *", "s1", "bot-a"]
 
 
+def test_update_schedule_makes_the_editor_the_user_it_runs_with():
+    with fake_connect(fetchone=ROW) as cur:
+        repo.update_schedule("s1", question="new question", bot_id="bot-a", run_as="UEDITOR")
+
+    sql, params = cur.execute.call_args.args
+    assert "question = %s, run_as = %s WHERE" in sql
+    assert params == ["new question", "UEDITOR", "s1", "bot-a"]
+
+
+def test_update_schedule_without_an_editor_leaves_the_user_alone():
+    with fake_connect(fetchone=ROW) as cur:
+        repo.update_schedule("s1", cron="0 10 * * *", bot_id="bot-a")
+
+    assert "run_as" not in cur.execute.call_args.args[0].split("RETURNING")[0]
+
+
+def test_an_edit_that_changes_nothing_does_not_take_over_the_schedule():
+    with fake_connect() as cur:
+        assert repo.update_schedule("s1", bot_id="bot-a", run_as="UEDITOR") is None
+
+    cur.execute.assert_not_called()
+
+
+def test_add_schedule_records_the_user_it_runs_with():
+    with fake_connect(fetchone=ROW) as cur:
+        repo.add_schedule("0 9 * * *", "C1", "q", "bot-a", run_as="UADMIN")
+
+    sql, params = cur.execute.call_args.args
+    assert "INSERT INTO schedules (cron, channel, question, bot_id, run_as)" in sql
+    assert params == ("0 9 * * *", "C1", "q", "bot-a", "UADMIN")
+
+
+def test_a_row_without_an_owner_has_no_user_to_run_with():
+    with fake_connect(fetchone=ROW):
+        assert repo.get_schedule("s1").run_as is None
+
+
 def test_update_schedule_returns_none_when_row_belongs_to_another_bot():
     with fake_connect(fetchone=None):
         assert repo.update_schedule("s1", cron="0 10 * * *", bot_id="bot-b") is None

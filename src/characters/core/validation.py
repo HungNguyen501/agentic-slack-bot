@@ -4,27 +4,13 @@ Rows can be edited in Supabase without going through a sync, so these run every 
 when the seed files are read. The template rules keep the invariant of PR reminders: the only live mentions in a message
 are the user IDs the code passes in, so a template can't carry a mention, a channel link, a URL or a broadcast word.
 """
-import re
 import string
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from characters.core.models import FEATURE_PREFIX, SKILL_PREFIX, Character
-
-MAX_TEMPLATE_LENGTH = 300
-MAX_TEMPLATES_PER_FIELD = 10
-MAX_DISPLAY_NAME_LENGTH = 80
-MAX_PERSONA_LENGTH = 1500
-MAX_ICON_URL_LENGTH = 500
-
-_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_EMOJI_RE = re.compile(r":[a-z0-9_+'-]{1,60}:")
-_BROADCAST_RE = re.compile(r"@(channel|here|everyone)\b", re.IGNORECASE)
-# Slack turns a URL into a live link even without angle brackets, so a template can't carry one with a scheme, `www.` or
-# `mailto:`. A bare domain such as `example.com` is not caught: telling it from ordinary text would need a list of top-level
-# domains, and the writers of this table are trusted admins.
-_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://|\bwww\.|\bmailto:", re.IGNORECASE)
+from characters.core.configs import CharactersConfigs
+from characters.core.models import Character
 
 
 @dataclass(frozen=True)
@@ -52,13 +38,13 @@ class VoiceSpec:
 def _text_problems(template: str) -> list[str]:
     """The rules about the text itself: its length, and nothing that makes Slack mention or link."""
     problems = []
-    if len(template) > MAX_TEMPLATE_LENGTH:
-        problems.append(f"is {len(template)} characters, over the limit of {MAX_TEMPLATE_LENGTH}")
+    if len(template) > CharactersConfigs.MAX_TEMPLATE_LENGTH:
+        problems.append(f"is {len(template)} characters, over the limit of {CharactersConfigs.MAX_TEMPLATE_LENGTH}")
     if "<" in template or ">" in template:
         problems.append("must not contain < or >")
-    if _BROADCAST_RE.search(template):
+    if CharactersConfigs.BROADCAST_RE.search(template):
         problems.append("must not contain @channel, @here or @everyone")
-    if _URL_RE.search(template):
+    if CharactersConfigs.URL_RE.search(template):
         problems.append("must not contain a link (http://, https://, any scheme://, www. or mailto:)")
     return problems
 
@@ -104,8 +90,8 @@ def _voice_problems(feature: str, block: Any, spec: VoiceSpec) -> list[str]:
         if field_spec is None:
             continue
         if field_spec.many:
-            if not isinstance(value, list | tuple) or not 1 <= len(value) <= MAX_TEMPLATES_PER_FIELD:
-                problems.append(f"voices.{feature}.{name}: must be a list of 1 to {MAX_TEMPLATES_PER_FIELD} templates")
+            if not isinstance(value, list | tuple) or not 1 <= len(value) <= CharactersConfigs.MAX_TEMPLATES_PER_FIELD:
+                problems.append(f"voices.{feature}.{name}: must be a list of 1 to {CharactersConfigs.MAX_TEMPLATES_PER_FIELD} templates")
                 continue
             templates = list(enumerate(value, start=1))
             problems += [f"voices.{feature}.{name}[{i}]: {p}" for i, template in templates for p in _template_problems(template, field_spec)]
@@ -117,12 +103,12 @@ def _voice_problems(feature: str, block: Any, spec: VoiceSpec) -> list[str]:
 def _identity_problems(character: Character) -> list[str]:
     problems = []
     name = character.display_name
-    if not name.strip() or len(name) > MAX_DISPLAY_NAME_LENGTH or "<" in name or ">" in name:
-        problems.append(f"display_name: must be 1 to {MAX_DISPLAY_NAME_LENGTH} characters without < or >")
-    if character.icon_emoji is not None and not _EMOJI_RE.fullmatch(character.icon_emoji):
+    if not name.strip() or len(name) > CharactersConfigs.MAX_DISPLAY_NAME_LENGTH or "<" in name or ">" in name:
+        problems.append(f"display_name: must be 1 to {CharactersConfigs.MAX_DISPLAY_NAME_LENGTH} characters without < or >")
+    if character.icon_emoji is not None and not CharactersConfigs.EMOJI_RE.fullmatch(character.icon_emoji):
         problems.append("icon_emoji: must look like :name:")
     url = character.icon_url
-    if url is not None and not (url.startswith("https://") and len(url) <= MAX_ICON_URL_LENGTH and not any(c.isspace() for c in url)):
+    if url is not None and not (url.startswith("https://") and len(url) <= CharactersConfigs.MAX_ICON_URL_LENGTH and not any(c.isspace() for c in url)):
         problems.append("icon_url: must be an https URL without spaces")
     return problems
 
@@ -132,15 +118,15 @@ def _binding_problems(character: Character, voices: Mapping[str, Any], specs: Ma
     for binding in character.bindings:
         if not isinstance(binding, str):
             problems.append(f"bindings: {binding!r} must be a text")
-        elif binding.startswith(FEATURE_PREFIX):
-            feature = binding.removeprefix(FEATURE_PREFIX)
+        elif binding.startswith(CharactersConfigs.FEATURE_PREFIX):
+            feature = binding.removeprefix(CharactersConfigs.FEATURE_PREFIX)
             if feature not in specs:
                 problems.append(f"bindings: {binding} is not a known feature ({', '.join(sorted(specs)) or 'none'})")
             elif feature not in voices:
                 problems.append(f"bindings: {binding} needs a voices.{feature} block")
-        elif not binding.startswith(SKILL_PREFIX) or binding == SKILL_PREFIX:
+        elif not binding.startswith(CharactersConfigs.SKILL_PREFIX) or binding == CharactersConfigs.SKILL_PREFIX:
             problems.append(f"bindings: {binding!r} must be feature:<name> or skill:<name>")
-    if any(isinstance(b, str) and b.startswith(SKILL_PREFIX) for b in character.bindings) and not character.persona.strip():
+    if any(isinstance(b, str) and b.startswith(CharactersConfigs.SKILL_PREFIX) for b in character.bindings) and not character.persona.strip():
         problems.append("persona: is required by a skill binding")
     return problems
 
@@ -152,11 +138,11 @@ def character_problems(character: Character, specs: Mapping[str, VoiceSpec]) -> 
     any elements in `bindings`, so neither is trusted: a wrong shape is a problem here, never an exception.
     """
     problems = []
-    if not _NAME_RE.fullmatch(character.name):
+    if not CharactersConfigs.NAME_RE.fullmatch(character.name):
         problems.append("name: must be lower-case letters, digits, - or _, up to 64 characters")
     problems += _identity_problems(character)
-    if len(character.persona) > MAX_PERSONA_LENGTH:
-        problems.append(f"persona: is {len(character.persona)} characters, over the limit of {MAX_PERSONA_LENGTH}")
+    if len(character.persona) > CharactersConfigs.MAX_PERSONA_LENGTH:
+        problems.append(f"persona: is {len(character.persona)} characters, over the limit of {CharactersConfigs.MAX_PERSONA_LENGTH}")
 
     voices = character.voices
     if not isinstance(voices, Mapping):

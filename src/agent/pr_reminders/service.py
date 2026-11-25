@@ -7,12 +7,14 @@ from typing import NamedTuple
 
 from slack_sdk.errors import SlackApiError, SlackClientError
 
+from agent.pr_reminders.configs import PrRemindersConfigs
+from characters.core.configs import CharactersConfigs
 from agent.pr_reminders import message, queries
 from agent.pr_reminders.limits import is_reminder_expired
 from agent.pr_reminders.pr_links import PrLink, limit_links, links_from_messages, links_from_urls, merge_links
-from agent.pr_reminders.status import Bucket, PrStatus, build_status
+from agent.pr_reminders.status import Bucket, PrStatus, build_status, is_approved_or_merged
 from bots.core.models import BotConfig
-from characters.core.models import FEATURE_PR_REMINDER, Character
+from characters.core.models import Character
 from characters.core.service import CharacterService
 from common.configs import AgentConfigs, ReminderConfig
 from connectors import github, slack
@@ -23,30 +25,6 @@ log = logging.getLogger("agent.pr_reminders")
 
 # Built here until this feature is migrated and receives its repository from the worker's composition root.
 _schedules = SupabaseScheduleRepository()
-
-# Slack errors meaning "this bot can't read that channel" (retrying won't fix them), and what to tell the user.
-CHANNEL_READ_HELP = {
-    "not_in_channel": "I'm not a member of that channel, so I can't read it. Invite me and try again.",
-    "channel_not_found": "I can't find that channel.",
-    "missing_scope": "My Slack app is missing the channels:history / groups:history scopes. An admin needs to add them and reinstall the app.",
-    "is_archived": "That channel is archived.",
-}
-
-# Slack allows about one message per second per channel, and a run can post into many threads of one channel.
-_POST_GAP_SECONDS = 1.0
-
-# A 429's Retry-After can be long; waiting it all out would hold the worker and run into the job timeout.
-_MAX_RETRY_AFTER_SECONDS = 30.0
-
-# A thread reminded less than this long ago is skipped. The scheduler can fire a freshly created reminder seconds after
-# its first check, while a normal tick is a whole interval after the last one; half the interval allows for jitter.
-_RECENTLY_REMINDED_SECONDS = AgentConfigs.PR_REMINDER_MIN_INTERVAL_MINUTES * 60 / 2
-
-
-# reactions.add errors that no other message will escape: the app can't react at all.
-_STOP_REACTING_CODES = frozenset({"missing_scope", "invalid_auth", "not_authed", "account_inactive", "token_revoked"})
-
-_APPROVED_OR_MERGED = frozenset({Bucket.APPROVED, Bucket.MERGED})
 
 
 def _error_code(exc: SlackApiError) -> str | None:
@@ -134,7 +112,7 @@ def collect_links(
             )
     except SlackApiError as exc:
         code = _error_code(exc)
-        if code in CHANNEL_READ_HELP:
+        if code in PrRemindersConfigs.CHANNEL_READ_HELP:
             raise ChannelReadError(code) from exc
         raise
 
@@ -162,7 +140,7 @@ def _post(bot: BotConfig, channel: str, thread_ts: str, text: str, character: Ch
                 break
             except SlackApiError as exc:
                 if _is_rate_limited(exc) and attempt == 0:
-                    time.sleep(min(float(exc.response.headers.get("Retry-After", 1)), _MAX_RETRY_AFTER_SECONDS))
+                    time.sleep(min(float(exc.response.headers.get("Retry-After", 1)), PrRemindersConfigs.MAX_RETRY_AFTER_SECONDS))
                     continue
                 log.exception("Could not post a PR reminder to %s (thread %s)", channel, thread_ts)
                 return False
@@ -180,7 +158,7 @@ def _reaction_for(buckets: list[Bucket | None]) -> str | None:
     All approved or merged is the approved reaction; all closed without merging is the closed one. A mix of the two (or
     any PR still open, unchecked or unreadable) leaves the message alone, since no single emoji would be true of it.
     """
-    if all(bucket in _APPROVED_OR_MERGED for bucket in buckets):
+    if all(is_approved_or_merged(bucket) for bucket in buckets):
         return AgentConfigs.PR_REMINDER_APPROVED_REACTION
     if all(bucket is Bucket.CLOSED for bucket in buckets):
         return AgentConfigs.PR_REMINDER_CLOSED_REACTION
@@ -223,7 +201,7 @@ def _mark_finished(bot: BotConfig, statuses: list[PrStatus]) -> int:
             if code == "already_reacted":
                 continue
             log.warning("Could not react to %s/%s (Slack error: %s)", channel, message_ts, code)
-            if code in _STOP_REACTING_CODES or _is_rate_limited(exc):
+            if code in PrRemindersConfigs.STOP_REACTING_CODES or _is_rate_limited(exc):
                 break
             continue
         except (SlackClientError, OSError):
@@ -262,7 +240,7 @@ def _threads_to_remind(
     for (channel, thread_ts), group in by_thread.items():
         waiting = [s for s in group if s.bucket is Bucket.WAITING]
         on_author = [s for s in group if s.bucket is Bucket.WAITING_ON_AUTHOR]
-        recently = now.timestamp() - last_reminded.get(thread_key(channel, thread_ts), 0.0) < _RECENTLY_REMINDED_SECONDS
+        recently = now.timestamp() - last_reminded.get(thread_key(channel, thread_ts), 0.0) < PrRemindersConfigs.RECENTLY_REMINDED_SECONDS
         if (waiting or (include_author_only_threads and on_author)) and not recently:
             threads.append(_ThreadReminder(channel, thread_ts, waiting, on_author))
     return sorted(
@@ -274,7 +252,7 @@ def _threads_to_remind(
 def _character_for(
     characters: CharacterService | None, channel: str, thread_ts: str, usable: list[Character] | None = None
 ) -> Character | None:
-    return characters.character_for_feature(FEATURE_PR_REMINDER, channel, thread_ts, usable) if characters else None
+    return characters.character_for_feature(CharactersConfigs.FEATURE_PR_REMINDER, channel, thread_ts, usable) if characters else None
 
 
 def check_and_remind(
@@ -318,7 +296,7 @@ def check_and_remind(
     usable = characters.usable_characters() if characters and threads else None
     for thread in threads[:cap]:
         if result.posted or result.failed_posts:
-            time.sleep(_POST_GAP_SECONDS)
+            time.sleep(PrRemindersConfigs.POST_GAP_SECONDS)
         character = _character_for(characters, thread.channel, thread.thread_ts, usable)
         voice = message.PrReminderVoice.from_character(character)
         text = message.render_thread_message(thread.waiting, thread.on_author, mentions=mentions, now=now, schedule_id=schedule_id, voice=voice)

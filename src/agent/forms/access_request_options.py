@@ -1,23 +1,12 @@
 """The synced reference data the data access request form's dropdowns are built from. Pure, no I/O."""
 import json
 from dataclasses import asdict, dataclass
-
-# Names of the synced_datasets (see src/dataset_sync/) the form reads.
-LOCATIONS_DATASET = "store_locations"
-TAGS_DATASET = "row_filter_tags"
+from agent.access_control.configs import AccessControlConfigs
 
 
 def options_redis_key(token: str) -> str:
     """Redis key holding a FormOptions snapshot for one posted "Open Form" button (written by the worker, read by the receiver)."""
     return f"access_form_options:{token}"
-
-
-# Slack's limits on select menus: 100 options per select and per option group, 100 option groups, 150 characters in an
-# option's value (the part submitted, which identifies the access requested, so it is never shortened) and 75 in a group label.
-_SLACK_MAX_OPTIONS = 100
-_SLACK_MAX_GROUPS = 100
-_SLACK_MAX_VALUE_LENGTH = 150
-_SLACK_MAX_LABEL_LENGTH = 75
 
 
 class FormOptionsError(ValueError):
@@ -68,11 +57,11 @@ def allowed_value_groups(options: FormOptions) -> list[tuple[str, list[str]]]:
     groups: list[tuple[str, list[str]]] = [("Wildcard", ["ALL"]), *options.locations_by_company.items(), ("Market codes", options.market_codes)]
     split: list[tuple[str, list[str]]] = []
     for label, values in groups:
-        parts = [values[i:i + _SLACK_MAX_OPTIONS] for i in range(0, len(values), _SLACK_MAX_OPTIONS)]
+        parts = [values[i:i + AccessControlConfigs.SLACK_MAX_OPTIONS] for i in range(0, len(values), AccessControlConfigs.SLACK_MAX_OPTIONS)]
         if len(parts) <= 1:
-            split.append((label[:_SLACK_MAX_LABEL_LENGTH], values))
+            split.append((label[:AccessControlConfigs.SLACK_MAX_LABEL_LENGTH], values))
             continue
-        suffix_room = _SLACK_MAX_LABEL_LENGTH - len(f" ({len(parts)}/{len(parts)})")
+        suffix_room = AccessControlConfigs.SLACK_MAX_LABEL_LENGTH - len(f" ({len(parts)}/{len(parts)})")
         split.extend((f"{label[:suffix_room]} ({number}/{len(parts)})", part) for number, part in enumerate(parts, start=1))
     return split
 
@@ -104,10 +93,10 @@ def _require_columns(dataset: str, rows: list[dict], columns: tuple[str, ...]) -
 
 
 def _check_value_lengths(label: str, values: list[str]) -> None:
-    too_long = [value for value in values if len(value) > _SLACK_MAX_VALUE_LENGTH]
+    too_long = [value for value in values if len(value) > AccessControlConfigs.SLACK_MAX_VALUE_LENGTH]
     if too_long:
         raise FormOptionsError(
-            f"The form's {label} has a value of {len(too_long[0])} characters, but Slack allows at most {_SLACK_MAX_VALUE_LENGTH}: "
+            f"The form's {label} has a value of {len(too_long[0])} characters, but Slack allows at most {AccessControlConfigs.SLACK_MAX_VALUE_LENGTH}: "
             f"'{too_long[0][:60]}...'. Shorten it in the source data."
         )
 
@@ -122,11 +111,11 @@ def build_form_options(location_rows: list[dict], tag_rows: list[dict]) -> FormO
             (options per dropdown, option groups, value length) so that Slack would reject the whole form.
     """
     if not location_rows:
-        raise FormOptionsError(f"Dataset '{LOCATIONS_DATASET}' has no rows.")
+        raise FormOptionsError(f"Dataset '{AccessControlConfigs.LOCATIONS_DATASET}' has no rows.")
     if not tag_rows:
-        raise FormOptionsError(f"Dataset '{TAGS_DATASET}' has no rows.")
-    _require_columns(LOCATIONS_DATASET, location_rows, ("company_key", "company", "location_market", "location"))
-    _require_columns(TAGS_DATASET, tag_rows, ("tag_name",))
+        raise FormOptionsError(f"Dataset '{AccessControlConfigs.TAGS_DATASET}' has no rows.")
+    _require_columns(AccessControlConfigs.LOCATIONS_DATASET, location_rows, ("company_key", "company", "location_market", "location"))
+    _require_columns(AccessControlConfigs.TAGS_DATASET, tag_rows, ("tag_name",))
 
     options = FormOptions(
         locations_by_company=_locations_by_company(location_rows),
@@ -136,19 +125,20 @@ def build_form_options(location_rows: list[dict], tag_rows: list[dict]) -> FormO
     )
 
     if not options.locations_by_company:
-        raise FormOptionsError(f"Dataset '{LOCATIONS_DATASET}' has no rows with both a company and a location.")
+        raise FormOptionsError(f"Dataset '{AccessControlConfigs.LOCATIONS_DATASET}' has no rows with both a company and a location.")
     for column, values in (("company_key", options.company_keys), ("location_market", options.market_codes)):
         if not values:
-            raise FormOptionsError(f"Dataset '{LOCATIONS_DATASET}' has no values in column {column}, which the form needs.")
+            raise FormOptionsError(f"Dataset '{AccessControlConfigs.LOCATIONS_DATASET}' has no values in column {column}, which the form needs.")
     if not options.tags:
-        raise FormOptionsError(f"Dataset '{TAGS_DATASET}' has no tag names.")
+        raise FormOptionsError(f"Dataset '{AccessControlConfigs.TAGS_DATASET}' has no tag names.")
 
     for label, values in (("scope value (company keys)", options.company_keys), ("tags", options.tags)):
-        if len(values) > _SLACK_MAX_OPTIONS:
-            raise FormOptionsError(f"The form's {label} dropdown would have {len(values)} options, but Slack allows at most {_SLACK_MAX_OPTIONS}.")
+        if len(values) > AccessControlConfigs.SLACK_MAX_OPTIONS:
+            raise FormOptionsError(f"The form's {label} dropdown would have {len(values)} options, but Slack allows at most {AccessControlConfigs.SLACK_MAX_OPTIONS}.")
     groups = allowed_value_groups(options)
-    if len(groups) > _SLACK_MAX_GROUPS:
-        raise FormOptionsError(f"The form's allowed value dropdown would have {len(groups)} option groups, but Slack allows at most {_SLACK_MAX_GROUPS}.")
+    if len(groups) > AccessControlConfigs.SLACK_MAX_GROUPS:
+        limit = AccessControlConfigs.SLACK_MAX_GROUPS
+        raise FormOptionsError(f"The form's allowed value dropdown would have {len(groups)} option groups, but Slack allows at most {limit}.")
 
     _check_value_lengths("allowed value dropdown", [value for _, values in groups for value in values])
     _check_value_lengths("scope value dropdown", options.company_keys)

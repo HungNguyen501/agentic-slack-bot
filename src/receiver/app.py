@@ -25,15 +25,20 @@ from receiver import wiring
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("receiver")
 
-# Slack gives the receiver about 3 s from a button click to call views.open, so the form-options lookup gets a hard
-# overall deadline well inside that. Its own client: socket timeouts and no retries (which would add to the delay) so
-# the thread stops with the deadline instead of lingering; the shared client below keeps its defaults.
-_FORM_OPTIONS_DEADLINE_SECONDS = 1.0
+
+class ReceiverConfigs:
+    """Deadlines of the webhook handlers."""
+
+    # Slack gives the receiver about 3 s from a button click to call views.open, so the form-options lookup gets a hard
+    # overall deadline well inside that. Its own client: socket timeouts and no retries (which would add to the delay) so
+    # the thread stops with the deadline instead of lingering; the shared client below keeps its defaults.
+    FORM_OPTIONS_DEADLINE_SECONDS = 1.0
+
 
 form_redis = Redis.from_url(
     Configs.REDIS_URL,
-    socket_timeout=_FORM_OPTIONS_DEADLINE_SECONDS,
-    socket_connect_timeout=_FORM_OPTIONS_DEADLINE_SECONDS,
+    socket_timeout=ReceiverConfigs.FORM_OPTIONS_DEADLINE_SECONDS,
+    socket_connect_timeout=ReceiverConfigs.FORM_OPTIONS_DEADLINE_SECONDS,
     retry=RedisRetry(NoBackoff(), 0),
 )
 redis_conn = Redis.from_url(Configs.REDIS_URL)
@@ -128,7 +133,8 @@ async def slack_events(request: Request) -> dict:
                 user=event.get("user"),
                 text=event.get("text", ""),
                 bot_id=bot.bot_id,
-                job_timeout=120,
+                # A channel analysis reads several pages with a model call between them and can take minutes.
+                job_timeout=600,
                 retry=Retry(max=3, interval=[10, 30, 60]),
             )
             log.info("Enqueued job %s for event %s (bot_id=%s)", job.id, event_id, bot.bot_id)
@@ -189,7 +195,7 @@ async def _form_options_within_deadline(button_value: dict) -> FormOptions | Non
         FormOptionsUnavailableError: the lookup failed or ran past the deadline.
     """
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_load_form_options, button_value), timeout=_FORM_OPTIONS_DEADLINE_SECONDS)
+        return await asyncio.wait_for(asyncio.to_thread(_load_form_options, button_value), timeout=ReceiverConfigs.FORM_OPTIONS_DEADLINE_SECONDS)
     except (TimeoutError, RedisError) as exc:
         raise FormOptionsUnavailableError(str(exc) or type(exc).__name__) from exc
 

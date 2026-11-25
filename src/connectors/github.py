@@ -9,8 +9,6 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from common.configs import Configs, GithubConfigs
 
-
-_TOKEN_REFRESH_MARGIN_SECONDS = 60
 _installation_token: tuple[str, float] | None = None
 
 
@@ -32,7 +30,7 @@ def _app_jwt() -> str:
 def _app_installation_token() -> str:
     """Return a cached GitHub App installation access token, minting a new one shortly before expiry."""
     global _installation_token
-    if _installation_token and _installation_token[1] - time.time() > _TOKEN_REFRESH_MARGIN_SECONDS:
+    if _installation_token and _installation_token[1] - time.time() > GithubConfigs.TOKEN_REFRESH_MARGIN_SECONDS:
         return _installation_token[0]
 
     app_headers = {"Authorization": f"Bearer {_app_jwt()}", "Accept": "application/vnd.github+json"}

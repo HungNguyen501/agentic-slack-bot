@@ -85,11 +85,22 @@ PR reminder (check_and_remind, run_reminder) → CharacterService.character_for_
 One character per thread: thread_character:{channel}:{thread_ts} in Redis (14 days); a character bound to skill:core is the default voice of every task (none of the seed characters is).
 ```
 
+**Channel analysis** (admins ask the agent to read a channel over a period and report insights; see `.claude/rules/architecture.md` "Channel Analysis"):
+```
+admin asks → check_channel_access (bot can read it? requester may see it?) → read_channel_messages pages (newest first, `before` cursor)
+  → read_channel_file for a CSV / text / HTML / PDF / Excel attached to a message, only when the question needs it
+  → the agent counts and writes the answer (window, messages read, whether the whole window was covered)
+for counts over many messages: analyze_channel → a cheaper model (EXTRACTION_MODEL) turns chunks of messages / files into records the agent
+  described, code validates, de-duplicates and counts them (per group: records, messages, dates, links) and the agent writes from the counts
+scheduled: an admin schedules a self-contained question (add_schedule records them as schedules.run_as); the scheduler job runs the agent
+  with no requester, only the channel_analysis tools are allowed in such a run, and they run as that admin, checked on every run
+```
+
 **Agent loop** (`src/agent/agent.py`):
 1. Router model (gpt-6.1-sol) picks skills from `src/agent/skills/files/*.md`
 2. System prompt = always-loaded skills + routed skills + today's date, then the persona of the thread's character (picked from the characters bound to the routed skills, else to `skill:core`)
-3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret / list_synced_datasets / sync_dataset / schedule_dataset_sync / list_characters / add_character / update_character / remove_character (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
-4. Up to 10 iterations; history trimmed to last 20 pairs in Redis
+3. OpenAI Responses API tool calls (reasoning on, `AgentConfigs.REASONING_EFFORT`) → execute_query / get_job_run_details / schedule CRUD / check_pr_approvals / schedule_pr_reminder / request_data_access / generate_service_principal_secret / list_synced_datasets / sync_dataset / schedule_dataset_sync / list_characters / add_character / update_character / remove_character / check_channel_access / read_channel_messages / read_channel_file / analyze_channel (tool schemas defined in `AgentConfigs.TOOLS`, `src/common/configs.py`)
+4. Up to 10 iterations; history trimmed to last 20 pairs in Redis. After a channel or file was read in a run, only the read-only tools (`dispatch.ToolPolicy.READ_ONLY_TOOLS`) are offered or run in the rest of it
 
 ## Quick Commands
 
@@ -139,7 +150,7 @@ See `.env.example`. Required:
 - `SECRET_LINK_BASE_URL` — public base URL of the receiver, used to build one-time secret-view links
 - `NGROK_AUTHTOKEN` — local dev only
 
-Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCHEDULER_INTERVAL` (default 180 s)
+Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `EXTRACTION_MODEL` (the model `analyze_channel` extracts records with; default `ROUTER_MODEL`), `SCHEDULER_INTERVAL` (default 180 s)
 
 ## Data Models
 
@@ -149,7 +160,7 @@ Optional: `WORKER_COUNT` (default 2), `ROUTER_MODEL` (default gpt-6.1-sol), `SCH
 
 **Supabase `schedules` table** — cron jobs:
 - `id uuid`, `bot_id`, `cron`, `channel`, `question`
-- `timezone` (IANA name the `cron` is read in; default `UTC`, a PR reminder is created in `Asia/Ho_Chi_Minh` unless the request names another), `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job; `dataset_sync` runs a dataset sync, `config.dataset` names it and `channel` is where failures are reported — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`)
+- `timezone` (IANA name the `cron` is read in; default `UTC`, a PR reminder is created in `Asia/Ho_Chi_Minh` unless the request names another), `kind` (`question` runs the agent; `pr_reminder` runs the PR reminder job; `dataset_sync` runs a dataset sync, `config.dataset` names it and `channel` is where failures are reported — `question` then holds a generated label), `status` (`active` / `completed` / `expired`; the scheduler only loads `active`, a finished reminder keeps its row), `config jsonb` (a reminder's scope, mentions, lookback, origin thread and saved progress — see `common/configs.py`), `run_as` (the Slack user whose access a `question` schedule's channel analysis runs with: the admin who created or last edited it; null for schedules that predate V16, which may not read channels)
 
 **Supabase `access_request_categories` table** — gates the `request_data_access` and `generate_service_principal_secret` tools per bot/channel/request_type:
 - `id uuid`, `bot_id`, `request_type`, `channel_ids text[]`, `reviewers text[]` (Slack user IDs allowed to approve/reject, or — for `service_principal_secret` — allowed to call the tool at all)
@@ -205,21 +216,25 @@ src/
     wiring.py                # Composition root: builds the migrated features' adapters + use cases, and the `ToolServices` the agent loop's tools run on
   # Migrated to the layered layout (layered-architecture.md): <feature>/{core,infra,presentation}/
   bots/
-    core/                    # BotConfig model, BotRepository port, BotNotFoundError
+    core/                    # BotConfig model, BotRepository port, BotNotFoundError, configs.py (BotsConfigs: the registry query)
     infra/supabase_bots.py   # Bot registry in Supabase; token + signing secret from Vault
   schedules/
     core/                    # Schedule / AddedReminder / AddedDatasetSync models, ScheduleRepository port
     infra/supabase_schedules.py   # Schedule CRUD, atomic PR-reminder / dataset-sync inserts (shared by the scheduler and the agent's tools)
     presentation/tools.py    # list/add/update/remove_schedule tool handlers
   dataset_sync/
-    core/                    # models, errors, ports (DatasetRepository, DatasetFetcher, FailureNotifier), DatasetSyncService (sync with empty/shrink guards, scheduled run, scheduling, listing)
+    core/                    # configs.py (DatasetSyncConfigs: row cap, minimum interval, shrink guard), models, errors, ports (DatasetRepository, DatasetFetcher, FailureNotifier), DatasetSyncService (sync with empty/shrink guards, scheduled run, scheduling, listing)
     infra/                   # supabase_datasets.py (registry + snapshots; get_rows is what other features read), databricks_fetcher.py, slack_notifier.py
     presentation/tools.py    # list_synced_datasets / sync_dataset / schedule_dataset_sync handlers
   characters/
-    core/                    # Character / CharacterChanges (`apply_to` holds the update's merge rules) / CharacterOverview / RemovedCharacter / SeedResult models, ports (CharacterRepository, CharacterSource, KnownSkills, ThreadCharacterStore), validation (pure; run on every read), persona (the fixed `## Voice` block), CharacterService (pick for a feature or skills, list, add, update, remove, seed)
+    core/                    # configs.py (CharactersConfigs: binding prefixes, validation limits and patterns, seed file format, table columns), Character / CharacterChanges (`apply_to` holds the update's merge rules) / CharacterOverview / RemovedCharacter / SeedResult models, ports (CharacterRepository, CharacterSource, KnownSkills, ThreadCharacterStore), validation (pure; run on every read), persona (the fixed `## Voice` block), CharacterService (pick for a feature or skills, list, add, update, remove, seed)
     infra/                   # supabase_characters.py, file_format.py + files_source.py (the seed files), known_skills.py, redis_thread_characters.py
     presentation/tools.py    # list_characters / add_character / update_character / remove_character handlers
     files/                   # seed files (character per file), inserted into the table by worker.seed_characters when a worker starts
+  channel_analysis/
+    core/                    # models (ChannelMessage, FileRef, ChannelSlice, ChannelAccess, FilePage, and the analysis types ExtractionSpec / Record / GroupCount / Analysis), extraction (the pure side of analyze_channel: spec checks, items and chunk packing, the prompt, record checks, de-duplication, counting), extraction_run (runs the extraction model over the chunks in parallel and counts the outcomes; knows nothing of Slack), errors, configs (`ChannelAnalysisConfigs`: every constant of the feature, among them `ACCESS_MESSAGES`, the wording of every access problem), reference (channel ID / link / name parsing, pure), file_pages (page cutting, pure), ports (ChannelHistory, ChannelFiles, ExtractionModel), ChannelAnalysisService (check_access, read with window / filter / paging, read_file, analyze)
+    infra/                   # slack_history.py (ChannelHistory on connectors/slack.py; Slack errors -> ChannelAccessError), message_text.py (blocks / attachments / rich text -> text), openai_extraction.py (the extraction model call), slack_files.py + file_parser.py + file_text.py (download, then extract CSV / text / PDF / Excel; PDF and Excel are parsed in a limited child process)
+    presentation/tools.py    # check_channel_access / read_channel_messages / read_channel_file / analyze_channel handlers (format the pages and the analysis the agent reads)
   agent/                     # Everything the agent does, by task
     agent.py                 # Agent loop (OpenAI Responses API) + summarize_answer; returns an AgentReply (text + the character it spoke as)
     dispatch.py              # Tool schema exposure + per-call routing
@@ -234,6 +249,7 @@ src/
       access_request_pr.py         # Fills the data-platform repo's PR template (pure)
       data_platform_repo.py        # Branch/commit/PR workflow on top of connectors/github.py
     access_control/
+      configs.py                   # AccessControlConfigs: every constant of the data access flow (form limits, repo paths, PR template, patterns, wording)
       access_request_categories.py # Per-bot/channel request eligibility (Supabase)
       access_requests.py           # Submitted request CRUD (Supabase)
       principals.py                # Databricks user / service-principal lookups
@@ -245,6 +261,7 @@ src/
       store.py                     # Cached (encrypted) service-principal secret CRUD (Supabase)
       tools.py                     # generate_service_principal_secret tool handler
     pr_reminders/
+      configs.py                   # PrRemindersConfigs: every constant of PR reminders (patterns, GraphQL fields, pacing, wording)
       pr_links.py                  # PR links in Slack messages + the thread each lives in (pure)
       queries.py                   # GitHub GraphQL query + response parser (pure)
       status.py                    # reviewDecision -> waiting / approved / ... bucket (pure)
@@ -256,7 +273,7 @@ src/
     app.py                   # Cron polling loop
     wiring.py                # Composition root: the schedule repository
   common/
-    configs.py               # Env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas) + ReminderConfig (the `schedules.config` of a PR reminder) + ReminderMessages (the parts of a PR reminder's wording no character changes: age units, waiting line, quip thresholds, header rotation; the default wording is `DEFAULT_VOICE` in `agent/pr_reminders/message.py`)
+    configs.py               # Shared config: env-backed config classes (Configs, GithubConfigs, AgentConfigs incl. tool schemas) + ReminderConfig (the `schedules.config` of a PR reminder) + ReminderMessages (the parts of a PR reminder's wording no character changes: age units, waiting line, quip thresholds, header rotation; the default wording is `DEFAULT_VOICE` in `agent/pr_reminders/message.py`)
     cron.py                  # Cron validation (malformed / too frequent) shared by recurring jobs
     crypto.py                # Fernet encrypt/decrypt for secrets cached at rest (service_principal_secrets)
   connectors/                # Generic clients for external tools — no task-specific logic
@@ -270,7 +287,7 @@ src/
       scim.py                    # SCIM list / create service principal / add group member
       service_principal_secrets.py # OAuth client secret generation
     github.py                # GitHub REST primitives (file, branch, PR) for 100xteam-ai/vireox-data-platform, plus a generic GraphQL call
-    slack.py                 # Slack Web API — message posting, modal views, mrkdwn chunking
+    slack.py                 # Slack Web API — message posting, history / replies / channel info / members / files reads, size-capped file download, modal views, mrkdwn chunking
     openai_client.py         # Shared OpenAI client + Chat Completions / Responses wrappers
     redis_client.py          # Shared Redis client
   databricks/metric_views/   # SQL views for semantic layer
@@ -286,7 +303,7 @@ src/
 
 Detailed guidelines in `.claude/rules/`:
 - [architecture.md](.claude/rules/architecture.md) — service boundaries and invariants
-- [layered-architecture.md](.claude/rules/layered-architecture.md) — **where new code goes**: feature-first packages with `presentation/` / `core/` / `infra/` layers, ports, composition root, dependency rule. Required for all new code; the existing tree is migrated one feature at a time
+- [layered-architecture.md](.claude/rules/layered-architecture.md) — **where new code goes**: feature-first packages with `presentation/` / `core/` / `infra/` layers, ports, composition root, dependency rule, and one configs class per module (`<Feature>Configs`; `common/configs.py` only for what is shared). Required for all new code; the existing tree is migrated one feature at a time
 - [code-style.md](.claude/rules/code-style.md) — Python style, linting, dependencies
 - [skills.md](.claude/rules/skills.md) — agent skill file authoring (`src/agent/skills/files/`)
 - [database.md](.claude/rules/database.md) — Supabase access: row dataclasses, where DB modules live, queries, migrations, tests

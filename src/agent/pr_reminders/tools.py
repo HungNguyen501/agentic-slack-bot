@@ -7,9 +7,10 @@ from typing import NamedTuple
 
 from slack_sdk.errors import SlackApiError
 
+from agent.pr_reminders.configs import PrRemindersConfigs
 from agent.pr_reminders.limits import ReminderRequestError, parse_mentions, parse_timezone, validate_reminder_cron
 from agent.pr_reminders.pr_links import PrLink
-from agent.pr_reminders.service import CHANNEL_READ_HELP, ChannelReadError, CheckResult, check_and_remind, collect_links, save_progress
+from agent.pr_reminders.service import ChannelReadError, CheckResult, check_and_remind, collect_links, save_progress
 from agent.pr_reminders.status import Bucket
 from bots.core.models import BotConfig
 from characters.core.service import CharacterService
@@ -23,11 +24,6 @@ log = logging.getLogger("agent.pr_reminders.tools")
 
 # Built here until this feature is migrated and receives its repository from the worker's composition root.
 _schedules = SupabaseScheduleRepository()
-
-_CHANNEL_ID_RE = re.compile(r"[CG][A-Z0-9]{6,}")
-
-# Each linked thread costs one chat.getPermalink call; past this the summary just counts the rest.
-_MAX_PERMALINKS = 5
 
 
 def _parse_scope(args: dict) -> str:
@@ -99,8 +95,8 @@ def _summarize(bot: BotConfig, result: CheckResult, scan_truncated: bool) -> str
     notes = _incomplete_notes(result, scan_truncated)
     parts += notes
     if result.posted:
-        links = ", ".join(_thread_links(bot, result.posted[:_MAX_PERMALINKS]))
-        more = len(result.posted) - _MAX_PERMALINKS
+        links = ", ".join(_thread_links(bot, result.posted[:PrRemindersConfigs.MAX_PERMALINKS]))
+        more = len(result.posted) - PrRemindersConfigs.MAX_PERMALINKS
         parts.append(f"Posted reminders in {len(result.posted)} thread(s){': ' + links if links else '.'}{f' and {more} more.' if more > 0 else ''}")
     if result.deferred_threads:
         parts.append(f"{result.deferred_threads} more thread(s) were not reminded this time (limit {AgentConfigs.PR_REMINDER_MAX_THREADS_POSTED} per run).")
@@ -171,7 +167,7 @@ def _parse_schedule_request(args: dict, channel: str) -> _ScheduleRequest:
     timezone = parse_timezone(args.get("timezone"))
 
     target_channel = args.get("channel") or channel
-    if target_channel != channel and not _CHANNEL_ID_RE.fullmatch(target_channel):
+    if target_channel != channel and not PrRemindersConfigs.CHANNEL_ID_RE.fullmatch(target_channel):
         raise ReminderRequestError(f"'{target_channel}' is not a Slack channel ID.")
     if scope == "thread" and target_channel != channel:
         raise ReminderRequestError("A thread-scope reminder watches the thread it was requested in, so it can't target another channel.")
@@ -269,7 +265,7 @@ def dispatch_pr_reminder_tool(name: str, args: dict, user_id: str | None, channe
     except ReminderRequestError as exc:
         return str(exc)
     except ChannelReadError as exc:
-        return CHANNEL_READ_HELP.get(exc.code, f"I can't read that channel (Slack error: {exc.code}).")
+        return PrRemindersConfigs.CHANNEL_READ_HELP.get(exc.code, f"I can't read that channel (Slack error: {exc.code}).")
     except Exception as exc:
         log.exception("PR reminder tool %s failed", name)
         return f"Error executing {name}: {exc}"

@@ -3,7 +3,11 @@ import os
 
 from connectors.db.agent_skills import AgentSkill
 
-SKILLS_DIR = os.path.join(os.path.dirname(__file__), "files")
+
+class SkillSourceConfigs:
+    """Where the agent skill files are read from."""
+
+    SKILLS_DIR = os.path.join(os.path.dirname(__file__), "files")
 
 
 def parse_skill(filename: str, content: str) -> AgentSkill:
@@ -36,7 +40,7 @@ def parse_skill(filename: str, content: str) -> AgentSkill:
 
 def parse_skill_file(filename: str) -> AgentSkill:
     """Read one skill file from the skills directory and parse it with parse_skill."""
-    with open(os.path.join(SKILLS_DIR, filename), encoding="utf-8") as fh:
+    with open(os.path.join(SkillSourceConfigs.SKILLS_DIR, filename), encoding="utf-8") as fh:
         return parse_skill(filename, fh.read())
 
 
@@ -46,4 +50,4 @@ def read_skill_files() -> list[AgentSkill]:
     Returns:
         List of parsed skills sorted by filename, each produced by parse_skill_file.
     """
-    return [parse_skill_file(f) for f in sorted(f for f in os.listdir(SKILLS_DIR) if f.endswith(".md"))]
+    return [parse_skill_file(f) for f in sorted(f for f in os.listdir(SkillSourceConfigs.SKILLS_DIR) if f.endswith(".md"))]

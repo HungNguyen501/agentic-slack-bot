@@ -22,6 +22,7 @@ Current skills:
 - `13_pr_reminders.md` — `check_pr_approvals` / `schedule_pr_reminder` tool usage (see architecture.md "PR Review Reminders")
 - `14_dataset_sync.md` — `list_synced_datasets` / `sync_dataset` / `schedule_dataset_sync` tool usage (see architecture.md "Synced Datasets")
 - `15_characters.md` — `list_characters` / `add_character` / `update_character` / `remove_character` tool usage (see architecture.md "Characters")
+- `16_channel_analysis.md` — `check_channel_access` / `read_channel_messages` / `read_channel_file` tool usage (see architecture.md "Channel Analysis")
 
 ## Required Frontmatter
 

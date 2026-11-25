@@ -1,7 +1,8 @@
 import pytest
 
+from characters.core.configs import CharactersConfigs
 from characters.core.models import Character
-from characters.core.validation import MAX_PERSONA_LENGTH, MAX_TEMPLATE_LENGTH, TemplateField, character_problems
+from characters.core.validation import TemplateField, character_problems
 from tests.support.characters import SPECS, make_character
 
 
@@ -53,13 +54,13 @@ def test_a_header_template_is_refused(template, expected):
 
 
 def test_a_template_over_the_length_limit_is_refused():
-    found = problems(voices={"pr_reminder": {"headers": ["{who} {subject} " + "x" * MAX_TEMPLATE_LENGTH]}})
+    found = problems(voices={"pr_reminder": {"headers": ["{who} {subject} " + "x" * CharactersConfigs.MAX_TEMPLATE_LENGTH]}})
 
     assert any("over the limit" in problem for problem in found)
 
 
 def test_a_template_at_the_length_limit_is_accepted():
-    template = "{who} {subject}" + "x" * (MAX_TEMPLATE_LENGTH - len("{who} {subject}"))
+    template = "{who} {subject}" + "x" * (CharactersConfigs.MAX_TEMPLATE_LENGTH - len("{who} {subject}"))
 
     assert problems(voices={"pr_reminder": {"headers": [template]}}) == []
 
@@ -137,7 +138,7 @@ def test_a_skill_binding_needs_a_persona():
 
 
 def test_a_persona_over_the_limit_is_refused():
-    found = problems(persona="x" * (MAX_PERSONA_LENGTH + 1))
+    found = problems(persona="x" * (CharactersConfigs.MAX_PERSONA_LENGTH + 1))
 
     assert any("persona" in problem and "over the limit" in problem for problem in found)
 

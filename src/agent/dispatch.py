@@ -6,6 +6,8 @@ from agent.access_control.tools import dispatch_data_access_tool
 from agent.pr_reminders.tools import dispatch_pr_reminder_tool
 from agent.service_principal_secrets.tools import dispatch_secret_generation_tool
 from bots.core.models import BotConfig
+from channel_analysis.core.service import ChannelAnalysisService
+from channel_analysis.presentation.tools import dispatch_channel_analysis_tool
 from characters.core.service import CharacterService
 from characters.presentation.tools import dispatch_character_tool
 from common.configs import AgentConfigs
@@ -18,6 +20,30 @@ from schedules.presentation.tools import dispatch_schedule_tool
 log = logging.getLogger("agent.dispatch")
 
 
+class ToolPolicy:
+    """Which tools may run once a run has read text that someone else wrote."""
+
+    # Tools that return what channels and files hold; text in them is not the admin's, so once one has run, the rest of that run
+    # may use only the read-only tools below (a crafted post must not be able to remove a schedule or add a character).
+    UNTRUSTED_CONTENT_TOOLS = frozenset({"read_channel_messages", "read_channel_file", "analyze_channel"})
+    # Read-only tools whose output only admins wrote (schedules and characters are admin-only to change), so it can't carry a stranger's
+    # instruction: they don't end the point up to which the channels the agent names are taken as the request's (see `agent._ReadGuard`).
+    ADMIN_AUTHORED_TOOLS = frozenset({"list_schedules", "list_characters"})
+    # `execute_query` is not here on purpose: connectors/databricks/sql.py only checks that a statement starts with SELECT or WITH,
+    # so it can't be relied on to stop a statement a post asked for. It comes back to this set only once it is read-only for sure.
+    READ_ONLY_TOOLS = frozenset(
+        {"get_job_run_details", "list_schedules", "list_synced_datasets", "list_characters", "check_channel_access"} | UNTRUSTED_CONTENT_TOOLS
+    )
+
+
+@dataclass(frozen=True)
+class UnattendedRun:
+    """A run with no requester (a scheduled question): the admin-only tool categories it may use, and whose access it runs with."""
+
+    categories: frozenset[str]
+    run_as: str | None
+
+
 @dataclass(frozen=True)
 class ToolServices:
     """The migrated features' use cases and stores the tool handlers run on, built by the worker's composition root."""
@@ -25,11 +51,12 @@ class ToolServices:
     schedules: ScheduleRepository
     dataset_sync: DatasetSyncService
     characters: CharacterService
+    channel_analysis: ChannelAnalysisService
 
 
-def get_agent_tools() -> list[dict]:
-    """Return the OpenAI function-calling tool schema for all agent tools."""
-    return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS]
+def get_agent_tools(read_only: bool = False) -> list[dict]:
+    """Return the OpenAI function-calling tool schema for all agent tools, or only the read-only ones after untrusted content was read."""
+    return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS if not read_only or tool.name in ToolPolicy.READ_ONLY_TOOLS]
 
 
 def tool_category(name: str) -> str | None:
@@ -46,6 +73,7 @@ def dispatch_tool(
     channel: str,
     thread_ts: str,
     services: ToolServices,
+    unattended: UnattendedRun | None = None,
 ) -> str:
     """Route a single tool call to the correct handler, enforcing the per-bot admin whitelist.
 
@@ -58,6 +86,8 @@ def dispatch_tool(
         channel: Slack channel ID the request was made in.
         thread_ts: Thread timestamp of the conversation.
         services: Use cases and stores for the tools that run on them.
+        unattended: Set for a run with no requester (`user_id` None, a scheduled question): the only admin-only categories it may
+            use, and the admin (`run_as`) whose access they run with. Every other admin-only category stays refused for it.
 
     Returns:
         String result to pass back to the LLM as the tool response.
@@ -77,7 +107,7 @@ def dispatch_tool(
             return "You are not authorized to manage schedules."
         if name == "schedule_pr_reminder":
             return dispatch_pr_reminder_tool(name, args, user_id, channel, thread_ts, bot, services.characters)
-        return dispatch_schedule_tool(name, args, bot.bot_id, services.schedules)
+        return dispatch_schedule_tool(name, args, bot.bot_id, services.schedules, user_id)
 
     if tool_category(name) == "dataset_sync":
         if user_id not in admin_users:
@@ -88,6 +118,16 @@ def dispatch_tool(
         if user_id not in admin_users:
             return "You are not authorized to manage characters."
         return dispatch_character_tool(name, args, services.characters)
+
+    if tool_category(name) == "channel_analysis":
+        requester = user_id
+        if requester is None and unattended and "channel_analysis" in unattended.categories:
+            if unattended.run_as is None:
+                return "This scheduled question has no recorded owner, so it can't read channels. Ask an admin to schedule it again."
+            requester = unattended.run_as
+        if requester not in admin_users:
+            return "You are not authorized to read channels for analysis."
+        return dispatch_channel_analysis_tool(name, args, requester, bot, services.channel_analysis)
 
     if tool_category(name) == "pr_reminder":
         return dispatch_pr_reminder_tool(name, args, user_id, channel, thread_ts, bot, services.characters)

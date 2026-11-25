@@ -19,6 +19,8 @@ class Configs:
 
     OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY", None)
     ROUTER_MODEL: str = os.getenv("ROUTER_MODEL", "gpt-6.1-sol")
+    # The model that turns chunks of Slack messages into records for analyze_channel; the cheap router model unless set.
+    EXTRACTION_MODEL: str = os.getenv("EXTRACTION_MODEL", ROUTER_MODEL)
 
     DATABRICKS_HOST: str | None = os.getenv("DATABRICKS_HOST", None)
     DATABRICKS_WAREHOUSE_ID: str | None = os.getenv("DATABRICKS_WAREHOUSE_ID", None)
@@ -54,6 +56,8 @@ class GithubConfigs:
     API: str = f"https://api.github.com/repos/{OWNER}/{REPO}"
     # Not tied to the repo above: PR review reminders query pull requests in whichever repos the credentials can read.
     GRAPHQL_API: str = "https://api.github.com/graphql"
+    # A cached GitHub App installation token is replaced when it has less than this left, so a call never starts with one about to expire.
+    TOKEN_REFRESH_MARGIN_SECONDS: int = 60
 
 
 @dataclass(frozen=True)
@@ -63,7 +67,7 @@ class AgentTool:
     name: str
     description: str
     parameters: dict
-    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder", "dataset_sync", "characters"] = "core"
+    category: Literal["core", "schedule", "data_access", "secrets", "pr_reminder", "dataset_sync", "characters", "channel_analysis"] = "core"
 
     def to_openai_schema(self) -> dict:
         # Responses API tools are flat (no nested "function" key) and default to strict=True,
@@ -75,6 +79,29 @@ class AgentTool:
             "parameters": self.parameters,
             "strict": False,
         }
+
+
+def _window_properties(**descriptions: str) -> dict:
+    """The tool parameters that pick a channel window and a page of it, shared by read_channel_messages and analyze_channel.
+
+    `descriptions` replaces the description of a parameter for the tool that needs its own wording (keyed by parameter name).
+    """
+    properties = {
+        "lookback_days": {"type": "integer", "description": "Window length in days. Default 30. lookback_days + end_days_ago <= 30."},
+        "end_days_ago": {
+            "type": "integer",
+            "description": "Where the window ends, in days before now. Default 0. To compare periods: last week = lookback_days 7, end_days_ago 7.",
+        },
+        "contains": {"type": "array", "items": {"type": "string"}, "description": "Up to 5 case-insensitive terms; only messages containing any of them count."},
+        "include_replies": {"type": "boolean", "description": "Also read thread replies. Default true."},
+        "before": {
+            "type": "string",
+            "description": "Resume cursor: the `before` value from the previous result, copied exactly (it also fixes the window). Omit on the first call.",
+        },
+    }
+    for name, description in descriptions.items():
+        properties[name] = {**properties[name], "description": description}
+    return properties
 
 
 @dataclass(frozen=True)
@@ -364,6 +391,114 @@ class AgentConfigs:
                 "required": ["dataset", "cron"],
             },
             category="dataset_sync",
+        ),
+        AgentTool(
+            name="check_channel_access",
+            description=(
+                "Check whether the bot and the requester may read a Slack channel, before reading it. Admin-only. Call it first, "
+                "before read_channel_messages / read_channel_file and before scheduling a recurring channel analysis. It reads no "
+                "messages. It returns OK, or every problem found (not a member, missing Slack permission, private channel the requester "
+                "is not in, archived, not found) with how to fix each; when a problem is blocking, stop and tell the admin."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel ID (C…), a channel link like <#C123|name>, or the channel name."},
+                },
+                "required": ["channel"],
+            },
+            category="channel_analysis",
+        ),
+        AgentTool(
+            name="read_channel_messages",
+            description=(
+                "Read the messages of a Slack channel for a time window, newest first, in pages, to analyze them (count, compare, "
+                "summarize, find what is missing). Admin-only; run check_channel_access first. Bot reports are flattened to text; "
+                "files are listed with their id (open one with read_channel_file). To read just one thread, pass `thread_ts`. "
+                "The result says how many messages the page holds and whether the window is finished; if it is not, call again with "
+                "`before` from the result and the same other arguments until it is, or say that you covered only part of the window. Reaches at most 30 days back."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel ID (C…), a channel link like <#C123|name>, or the channel name."},
+                    **_window_properties(
+                        contains="Up to 5 case-insensitive terms; a message is kept if any appears in its text, author, file names or replies.",
+                        include_replies="Also read thread replies. Default true; false is faster when threads don't matter.",
+                    ),
+                    "thread_ts": {
+                        "type": "string",
+                        "description": (
+                            "Read one thread instead of a window: its first message (with its files) and its replies, however old. Use it when the "
+                            "request is about 'this thread' or the attachment in it: pass the thread from the request context, or from a message "
+                            "link (…/p1795579654054449 is 1795579654.054449). The window arguments are then ignored."
+                        ),
+                    },
+                },
+                "required": ["channel"],
+            },
+            category="channel_analysis",
+        ),
+        AgentTool(
+            name="read_channel_file",
+            description=(
+                "Read the text of a file attached to a message in a Slack channel (CSV, TSV, text, JSON, HTML, PDF with text, Excel .xlsx), "
+                "in pages. Admin-only. Use it only when the question needs what is inside a file; the file id (F…) is shown next to the "
+                "file in read_channel_messages. The result says where the next page starts; pass it as `offset`."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "The channel the file was posted in (same forms as read_channel_messages)."},
+                    "file_id": {"type": "string", "description": "File ID, e.g. F0123ABCD, as shown in the message."},
+                    "offset": {"type": "integer", "description": "Character offset to start at, from the previous result. Default 0."},
+                },
+                "required": ["channel", "file_id"],
+            },
+            category="channel_analysis",
+        ),
+        AgentTool(
+            name="analyze_channel",
+            description=(
+                "Count and compare across the messages (and optionally the files) of a Slack channel, for exact numbers over many "
+                "messages: a cheaper model turns them into records you describe, and code counts the records. Admin-only; run "
+                "check_channel_access first. Use it for counts, rankings, 'which ones', what stopped appearing, and anything too big "
+                "for read_channel_messages; use read_channel_messages for timelines, quotes and wording. You never see the raw "
+                "messages, only counts, a sample and links as evidence. Counts are for one call: if the result says more messages "
+                "remain, call again with `before` and the same other arguments and add the counts up, unless the result says the group "
+                "counts can't be added exactly (then narrow the filter or window). Mention failed chunks and files not read in your answer. Reaches at most 30 days back."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel ID (C…), a channel link, or the channel name."},
+                    "instruction": {
+                        "type": "string",
+                        "description": "How to fill one record, e.g. 'one record per table row in each report: its name and whether it was skipped, failed or loaded'.",
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "The record shape, 1 to 8 fields.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "snake_case name, e.g. 'table'."},
+                                "description": {"type": "string", "description": "What to put in it."},
+                                "allowed_values": {"type": "array", "items": {"type": "string"}, "description": "If given, only these values are accepted."},
+                            },
+                            "required": ["name", "description"],
+                        },
+                    },
+                    "group_by": {"type": "array", "items": {"type": "string"}, "description": "Up to 3 field names to count by; omit for one overall total."},
+                    **_window_properties(
+                        contains="Up to 5 terms; only messages containing any of them are analyzed.",
+                        include_replies="Also analyze thread replies. Default true.",
+                    ),
+                    "include_files": {"type": "boolean", "description": "Also extract from attached files (CSV, text, PDF, Excel). Default false."},
+                },
+                "required": ["channel", "instruction", "fields"],
+            },
+            category="channel_analysis",
         ),
         AgentTool(
             name="generate_service_principal_secret",

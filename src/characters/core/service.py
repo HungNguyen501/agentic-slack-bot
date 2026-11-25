@@ -4,6 +4,7 @@ import random
 from collections import Counter
 from collections.abc import Iterable, Mapping
 
+from characters.core.configs import CharactersConfigs
 from characters.core.errors import (
     CharacterConflictError,
     CharacterExistsError,
@@ -12,7 +13,7 @@ from characters.core.errors import (
     InvalidCharacterError,
     InvalidSeedError,
 )
-from characters.core.models import GLOBAL_SKILL, SKILL_PREFIX, Character, CharacterChanges, CharacterOverview, RemovedCharacter, SeedResult
+from characters.core.models import Character, CharacterChanges, CharacterOverview, RemovedCharacter, SeedResult
 from characters.core.ports import CharacterRepository, CharacterSource, KnownSkills, ThreadCharacterStore
 from characters.core.validation import VoiceSpec, character_problems
 
@@ -95,7 +96,7 @@ class CharacterService:
 
         candidates = [c for c in usable if c.is_bound_to_feature(feature)]
         if not candidates:
-            candidates = [c for c in usable if c.is_bound_to_skill(GLOBAL_SKILL) and feature in c.voices]
+            candidates = [c for c in usable if c.is_bound_to_skill(CharactersConfigs.GLOBAL_SKILL) and feature in c.voices]
         if not candidates:
             return None
         return self._pick(candidates, channel, thread_ts, remember=stored not in by_name)
@@ -103,11 +104,14 @@ class CharacterService:
     def character_for_skills(self, routed: Iterable[str], always: Iterable[str], channel: str, thread_ts: str) -> Character | None:
         """The character whose persona shapes an agent reply in a thread, or None for the plain prompt.
 
-        A thread keeps the character it already has, if that character has a persona. Otherwise one is picked at random
-        from the characters bound to a skill the router picked, or, when none is, from those bound to an always-loaded
-        skill (`skill:core` is the default voice for every task), and remembered for the thread.
+        Only a character bound to a skill speaks a reply: one bound to a feature alone (a PR reminder voice) never does, even
+        in a thread where it spoke a reminder. A thread keeps the character it already has if that character may speak
+        replies and has a persona. Otherwise one is picked at random from the characters bound to a skill the router
+        picked, or, when none is, from those bound to an always-loaded skill (`skill:core` is the default voice for every
+        task), and remembered for the thread unless the thread already has a usable character that doesn't speak replies.
         """
-        usable = [c for c in self.usable_characters() if c.persona.strip()]
+        everyone = self.usable_characters()
+        usable = [c for c in everyone if c.persona.strip() and c.has_skill_binding()]
         stored = self._stored_name(channel, thread_ts)
         by_name = {c.name: c for c in usable}
         if stored in by_name:
@@ -116,11 +120,11 @@ class CharacterService:
         routed_skills = set(routed)
         candidates = [c for c in usable if any(c.is_bound_to_skill(skill) for skill in routed_skills)]
         if not candidates:
-            default_skills = {*always, GLOBAL_SKILL}
+            default_skills = {*always, CharactersConfigs.GLOBAL_SKILL}
             candidates = [c for c in usable if any(c.is_bound_to_skill(skill) for skill in default_skills)]
         if not candidates:
             return None
-        return self._pick(candidates, channel, thread_ts, remember=True)
+        return self._pick(candidates, channel, thread_ts, remember=stored not in {c.name for c in everyone})
 
     def _pick(self, candidates: list[Character], channel: str, thread_ts: str, *, remember: bool) -> Character:
         choice = self._rng.choice(candidates)
@@ -130,9 +134,9 @@ class CharacterService:
 
     def _unknown_skills(self, character: Character, known: frozenset[str]) -> tuple[str, ...]:
         return tuple(
-            binding.removeprefix(SKILL_PREFIX)
+            binding.removeprefix(CharactersConfigs.SKILL_PREFIX)
             for binding in character.bindings
-            if isinstance(binding, str) and binding.startswith(SKILL_PREFIX) and binding.removeprefix(SKILL_PREFIX) not in known
+            if isinstance(binding, str) and binding.startswith(CharactersConfigs.SKILL_PREFIX) and binding.removeprefix(CharactersConfigs.SKILL_PREFIX) not in known
         )
 
     def list_characters(self) -> list[CharacterOverview]:

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, create_autospec, patch
 import pytest
 from slack_sdk.errors import SlackApiError, SlackRequestError
 
+from agent.pr_reminders.configs import PrRemindersConfigs
 from agent.pr_reminders import service
 from agent.pr_reminders.pr_links import PrLink, PrRef
 from agent.pr_reminders.queries import GithubQueryError
@@ -134,7 +135,7 @@ def test_collect_links_says_when_the_history_scan_stopped_before_the_whole_windo
     assert [link.ref for link in scan.links] == [PR1]
 
 
-@pytest.mark.parametrize("code", sorted(service.CHANNEL_READ_HELP))
+@pytest.mark.parametrize("code", sorted(PrRemindersConfigs.CHANNEL_READ_HELP))
 def test_collect_links_turns_an_unreadable_channel_into_channel_read_error(bot, slack, code):
     slack.conversations_history.side_effect = slack_error(code)
 

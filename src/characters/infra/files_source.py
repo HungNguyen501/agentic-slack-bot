@@ -1,15 +1,14 @@
 """The seed files shipped in the image."""
 from pathlib import Path
 
+from characters.core.configs import CharactersConfigs
 from characters.core.errors import InvalidSeedError
 from characters.core.models import Character
 from characters.infra.file_format import parse_character_file
 
-SEED_DIR = Path(__file__).resolve().parents[1] / "files"
-
 
 class FilesCharacterSource:
-    def __init__(self, directory: Path = SEED_DIR) -> None:
+    def __init__(self, directory: Path = CharactersConfigs.SEED_DIR) -> None:
         self._directory = directory
 
     def read(self) -> list[Character]:

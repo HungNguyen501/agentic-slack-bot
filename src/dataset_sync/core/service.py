@@ -1,11 +1,10 @@
 """Sync a dataset from Databricks into Supabase, on demand or from a scheduled `dataset_sync` row."""
 import logging
-import re
 import uuid
 
 from bots.core.models import BotConfig
 from common.cron import CronError, validate_cron
-from dataset_sync.core import limits
+from dataset_sync.core.configs import DatasetSyncConfigs
 from dataset_sync.core.errors import DatasetBusyError, DatasetFetchError, DatasetNotSyncedError, DatasetSyncBusyError, DatasetSyncError
 from dataset_sync.core.models import DatasetOverview, DatasetSource, SyncResult
 from dataset_sync.core.ports import DatasetFetcher, DatasetRepository, FailureNotifier
@@ -13,8 +12,6 @@ from schedules.core.models import AddedDatasetSync
 from schedules.core.ports import ScheduleRepository
 
 log = logging.getLogger("dataset_sync.service")
-
-_CHANNEL_ID_RE = re.compile(r"[CGD][A-Z0-9]{6,}")
 
 
 class DatasetSyncService:
@@ -74,11 +71,11 @@ class DatasetSyncService:
         """
         source = self.require_source(dataset)
         try:
-            validate_cron(cron, limits.MIN_INTERVAL_MINUTES, "A dataset sync")
+            validate_cron(cron, DatasetSyncConfigs.MIN_INTERVAL_MINUTES, "A dataset sync")
         except CronError as exc:
             raise DatasetSyncError(str(exc)) from exc
         report_channel = channel or current_channel
-        if report_channel != current_channel and not _CHANNEL_ID_RE.fullmatch(report_channel):
+        if report_channel != current_channel and not DatasetSyncConfigs.CHANNEL_ID_RE.fullmatch(report_channel):
             raise DatasetSyncError(f"'{report_channel}' is not a Slack channel ID.")
         return self._schedules.add_dataset_sync(
             str(uuid.uuid4()), cron, report_channel, f"Dataset sync · {source.dataset}", bot.bot_id, {"dataset": source.dataset, "created_by": user_id}
@@ -120,15 +117,15 @@ class DatasetSyncService:
         source = self.require_source(dataset)
 
         try:
-            result = self._fetcher.fetch(source.source_sql, limits.MAX_ROWS)
+            result = self._fetcher.fetch(source.source_sql, DatasetSyncConfigs.MAX_ROWS)
         except DatasetFetchError as exc:
             raise self._fail(dataset, str(exc)) from exc
 
         if not result.rows:
             raise self._fail(dataset, "The query returned no rows, so the previous copy was kept.")
 
-        shrunk_below = source.row_count * limits.SHRINK_GUARD_RATIO
-        if not force and source.row_count >= limits.SHRINK_GUARD_MIN_ROWS and len(result.rows) < shrunk_below:
+        shrunk_below = source.row_count * DatasetSyncConfigs.SHRINK_GUARD_RATIO
+        if not force and source.row_count >= DatasetSyncConfigs.SHRINK_GUARD_MIN_ROWS and len(result.rows) < shrunk_below:
             raise self._fail(
                 dataset,
                 f"The query returned {len(result.rows)} rows but the stored copy has {source.row_count}; the previous copy was kept. "

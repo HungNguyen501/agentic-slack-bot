@@ -9,7 +9,7 @@ credentials are needed.
 """
 import httpx
 
-from .client import HOST, auth_headers, raise_for_status_with_body
+from .client import DatabricksConfigs, auth_headers, raise_for_status_with_body
 
 
 def create_secret(service_principal_id: str) -> dict:
@@ -24,7 +24,7 @@ def create_secret(service_principal_id: str) -> dict:
         a secret's plaintext value again after this call.
     """
     resp = httpx.post(
-        f"{HOST}/api/2.0/accounts/servicePrincipals/{service_principal_id}/credentials/secrets",
+        f"{DatabricksConfigs.HOST}/api/2.0/accounts/servicePrincipals/{service_principal_id}/credentials/secrets",
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={},
         timeout=30.0,

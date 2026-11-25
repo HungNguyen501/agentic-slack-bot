@@ -5,10 +5,9 @@ from contextlib import contextmanager
 from psycopg.types.json import Jsonb
 
 from connectors.db.connection import connect
+from dataset_sync.core.configs import DatasetSyncConfigs
 from dataset_sync.core.errors import DatasetBusyError, DatasetNotSyncedError
 from dataset_sync.core.models import DatasetSource
-
-_SOURCE_COLUMNS = "dataset, description, source_sql, enabled, row_count, last_synced_at, last_status, last_error"
 
 
 def _row_to_source(row: dict) -> DatasetSource:
@@ -46,13 +45,13 @@ class SupabaseDatasetRepository:
     def list_sources(self) -> list[DatasetSource]:
         """All registered datasets, by name; the snapshots themselves are not loaded."""
         with connect() as conn, conn.cursor() as cur:
-            cur.execute(f"SELECT {_SOURCE_COLUMNS} FROM synced_datasets ORDER BY dataset")
+            cur.execute(f"SELECT {DatasetSyncConfigs.SOURCE_COLUMNS} FROM synced_datasets ORDER BY dataset")
             return [_row_to_source(row) for row in cur.fetchall()]
 
     def get_source(self, dataset: str) -> DatasetSource | None:
         """One registered dataset, or None if no such name is registered."""
         with connect() as conn, conn.cursor() as cur:
-            cur.execute(f"SELECT {_SOURCE_COLUMNS} FROM synced_datasets WHERE dataset = %s", (dataset,))
+            cur.execute(f"SELECT {DatasetSyncConfigs.SOURCE_COLUMNS} FROM synced_datasets WHERE dataset = %s", (dataset,))
             row = cur.fetchone()
             return _row_to_source(row) if row else None
 

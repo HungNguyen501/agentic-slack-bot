@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
+from receiver.app import ReceiverConfigs
 from agent.forms.access_request_options import FormOptions
 from receiver import app
 
@@ -44,8 +45,8 @@ def test_an_unreadable_snapshot_counts_as_no_options_instead_of_failing_the_clic
 def test_the_form_lookup_uses_its_own_client_with_short_timeouts_and_no_retries():
     pool = app.form_redis.connection_pool.connection_kwargs
 
-    assert pool["socket_timeout"] == app._FORM_OPTIONS_DEADLINE_SECONDS
-    assert pool["socket_connect_timeout"] == app._FORM_OPTIONS_DEADLINE_SECONDS
+    assert pool["socket_timeout"] == ReceiverConfigs.FORM_OPTIONS_DEADLINE_SECONDS
+    assert pool["socket_connect_timeout"] == ReceiverConfigs.FORM_OPTIONS_DEADLINE_SECONDS
     assert app.form_redis is not app.redis_conn
     assert app.form_redis.get_retry().get_retries() == 0
 
@@ -62,7 +63,8 @@ def test_a_lookup_that_runs_past_the_deadline_fails_promptly_instead_of_waiting_
             await app._form_options_within_deadline({"options_token": "tok"})
         return time.monotonic() - started  # measured inside the loop: asyncio.run itself later waits for the sleeping thread
 
-    with patch("receiver.app._FORM_OPTIONS_DEADLINE_SECONDS", 0.05), patch("receiver.app._load_form_options", autospec=True, side_effect=lambda value: time.sleep(0.5)):
+    slow_lookup = patch("receiver.app._load_form_options", autospec=True, side_effect=lambda value: time.sleep(0.5))
+    with patch.object(ReceiverConfigs, "FORM_OPTIONS_DEADLINE_SECONDS", 0.05), slow_lookup:
         assert asyncio.run(timed_lookup()) < 0.4
 
 

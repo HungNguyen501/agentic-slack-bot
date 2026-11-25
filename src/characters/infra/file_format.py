@@ -1,19 +1,17 @@
 """Seed files: Markdown with YAML frontmatter, parsed into a `Character`."""
 import yaml
 
+from characters.core.configs import CharactersConfigs
 from characters.core.errors import InvalidSeedError
 from characters.core.models import Character
-
-_FIELDS = {"name", "display_name", "song", "artist", "enabled", "icon_emoji", "icon_url", "bindings"}
-_FENCE = "---"
 
 
 def _split_frontmatter(filename: str, text: str) -> tuple[str, str]:
     """The frontmatter and the body of a file. A fence is a line that is only `---`, so a YAML value that merely ends in
     or contains `---` (`song: hello---`) is not mistaken for one."""
     lines = text.replace("\r\n", "\n").split("\n")
-    closing = next((i for i in range(1, len(lines)) if lines[i].rstrip() == _FENCE), None)
-    if lines[0].rstrip() != _FENCE or closing is None:
+    closing = next((i for i in range(1, len(lines)) if lines[i].rstrip() == CharactersConfigs.SEED_FILE_FENCE), None)
+    if lines[0].rstrip() != CharactersConfigs.SEED_FILE_FENCE or closing is None:
         raise InvalidSeedError([f"{filename}: the file must start with a --- frontmatter block"])
     body_start = closing + 1
     return "\n".join(lines[1:closing]), "\n".join(lines[body_start:])
@@ -44,7 +42,8 @@ def _field_problems(filename: str, data: dict) -> list[str]:
         for key in ("display_name", "song", "artist", "icon_emoji", "icon_url")
         if data.get(key) is not None and not isinstance(data[key], str)
     ]
-    problems += [f"{key} must be a voice block (a set of fields)" for key, value in data.items() if key not in _FIELDS and not isinstance(value, dict)]
+    fields = CharactersConfigs.SEED_FILE_FIELDS
+    problems += [f"{key} must be a voice block (a set of fields)" for key, value in data.items() if key not in fields and not isinstance(value, dict)]
     return [f"{filename}: {problem}" for problem in problems]
 
 
@@ -66,7 +65,7 @@ def parse_character_file(filename: str, text: str) -> Character:
         display_name=data.get("display_name") or data["name"],
         bindings=tuple(data.get("bindings", [])),
         persona=body.strip(),
-        voices={key: value for key, value in data.items() if key not in _FIELDS},
+        voices={key: value for key, value in data.items() if key not in CharactersConfigs.SEED_FILE_FIELDS},
         song=data.get("song") or "",
         artist=data.get("artist") or "",
         enabled=data.get("enabled", True),

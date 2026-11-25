@@ -4,8 +4,9 @@ import logging
 import secrets
 import time
 
+from agent.access_control.configs import AccessControlConfigs
 from agent.access_control.access_request_categories import channel_authorized, get_access_request_category
-from agent.forms.access_request_options import LOCATIONS_DATASET, TAGS_DATASET, FormOptionsError, build_form_options, options_redis_key
+from agent.forms.access_request_options import FormOptionsError, build_form_options, options_redis_key
 from bots.core.models import BotConfig
 from common.configs import AgentConfigs
 from connectors import slack
@@ -18,11 +19,6 @@ log = logging.getLogger("agent.access_control.tools")
 
 # Built here until this feature is migrated and receives its dataset reader from the worker's composition root.
 store: DatasetReader = SupabaseDatasetRepository()
-
-ACCESS_REQUEST_POSTED_MESSAGE = (
-    "Click below to fill out a data access request. "
-    f"This link expires in {int(AgentConfigs.ACCESS_REQUEST_BUTTON_TTL_SECONDS / 60)} minutes."
-)
 
 
 def build_form_button_value(
@@ -54,7 +50,7 @@ def build_form_blocks(button_value: str) -> list[dict]:
         # message_text alone is only the notification fallback once `blocks` is set —
         # Slack renders the blocks array in-channel, so the TTL notice needs its own
         # section block here or it never actually shows up next to the button.
-        {"type": "section", "text": {"type": "mrkdwn", "text": ACCESS_REQUEST_POSTED_MESSAGE}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE}},
         {
             "type": "actions",
             "elements": [
@@ -79,7 +75,7 @@ def stash_form_options() -> str:
         DatasetNotSyncedError: a dataset the form needs has no successful sync yet.
         FormOptionsError: the synced data can't make a working form.
     """
-    options = build_form_options(store.get_rows(LOCATIONS_DATASET), store.get_rows(TAGS_DATASET))
+    options = build_form_options(store.get_rows(AccessControlConfigs.LOCATIONS_DATASET), store.get_rows(AccessControlConfigs.TAGS_DATASET))
     token = secrets.token_urlsafe(16)
     redis_client.set(options_redis_key(token), options.to_json(), ex=AgentConfigs.ACCESS_REQUEST_BUTTON_TTL_SECONDS)
     return token
@@ -126,9 +122,9 @@ def dispatch_data_access_tool(args: dict, user_id: str | None, channel: str, thr
 
     button_value = build_form_button_value(request_type, channel, thread_ts, user_id, category.reviewers, options_token, int(time.time()))
     try:
-        slack.post_message(channel, ACCESS_REQUEST_POSTED_MESSAGE, thread_ts, blocks=build_form_blocks(button_value), token=bot.bot_token)
+        slack.post_message(channel, AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE, thread_ts, blocks=build_form_blocks(button_value), token=bot.bot_token)
     except Exception as exc:
         log.exception("Failed to post data access request button")
         return f"Error opening the data access request form: {exc}"
 
-    return ACCESS_REQUEST_POSTED_MESSAGE
+    return AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE

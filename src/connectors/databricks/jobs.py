@@ -3,7 +3,7 @@ import traceback
 
 import httpx
 
-from .client import HOST, TOKEN
+from .client import DatabricksConfigs
 
 
 def get_job_run(run_id: str | int) -> str:
@@ -16,8 +16,8 @@ def get_job_run(run_id: str | int) -> str:
         Slack-formatted string with the run state, error message, and per-task errors,
         or a plain-text error string if the request fails.
     """
-    url = f"{HOST}/api/2.1/jobs/runs/get"
-    headers = {"Authorization": f"Bearer {TOKEN}"}
+    url = f"{DatabricksConfigs.HOST}/api/2.1/jobs/runs/get"
+    headers = {"Authorization": f"Bearer {DatabricksConfigs.TOKEN}"}
     params = {"run_id": str(run_id), "include_resolved_values": "false"}
 
     try:
