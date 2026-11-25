@@ -2,7 +2,7 @@ from collections.abc import Iterator
 
 from channel_analysis.core.limits import HEADER_MAX_PAGE_SHARE
 
-_SHEET_MARKER = "## Sheet: "
+SHEET_MARKER = "## Sheet: "
 
 
 def is_tabular(filetype: str) -> bool:
@@ -76,9 +76,9 @@ def sheet_header(text: str, offset: int) -> str | None:
     first record (the one before it ended right after the name line) gets the name line alone; None when the page starts at or
     before the end of the name line."""
     # The bound lets a marker that starts exactly at `offset` count: a page that begins a new sheet already has its name.
-    start = text.rfind(_SHEET_MARKER, 0, offset + len(_SHEET_MARKER))
+    start = text.rfind(SHEET_MARKER, 0, offset + len(SHEET_MARKER))
     while start > 0 and not _starts_a_record(text, start):
-        start = text.rfind(_SHEET_MARKER, 0, start)
+        start = text.rfind(SHEET_MARKER, 0, start)
     if start < 0:
         return None
     name_end = text.find("\n", start)

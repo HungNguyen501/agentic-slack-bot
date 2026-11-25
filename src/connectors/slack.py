@@ -122,15 +122,37 @@ def delete_message(channel: str, ts: str, *, token: str) -> None:
     WebClient(token=token).chat_delete(channel=channel, ts=ts)
 
 
-def _collect_pages(fetch: Callable[[str | None], Any], max_messages: int | None = None) -> tuple[list[dict], bool]:
+# How often one page may be asked for again when the caller's `retry` keeps saying yes.
+_MAX_PAGE_RETRIES = 3
+
+
+def _collect_pages(
+    fetch: Callable[[str | None], Any], max_messages: int | None = None, retry: Callable[[SlackApiError], bool] | None = None
+) -> tuple[list[dict], bool]:
     """Follow Slack cursor pagination, calling `fetch(cursor)` until the last page or `max_messages` is reached.
 
-    Returns the messages and whether some were left unread because of `max_messages`.
+    When a page fails and `retry` is given, `retry(error)` says whether to ask for that same page again (it does any waiting; a page
+    is asked for again at most `_MAX_PAGE_RETRIES` times). If it says no, the pages read so far are returned as not finished; with
+    none read, the error is raised.
+
+    Returns the messages and whether some were left unread (because of `max_messages`, or a page that could not be read).
     """
     messages: list[dict] = []
     cursor = None
+    failures = 0
     while True:
-        response = fetch(cursor)
+        try:
+            response = fetch(cursor)
+        except SlackApiError as exc:
+            if retry is None:
+                raise
+            failures += 1
+            if failures <= _MAX_PAGE_RETRIES and retry(exc):
+                continue
+            if not messages:
+                raise
+            return messages, True
+        failures = 0
         messages.extend(response["messages"])
         cursor = (response.get("response_metadata") or {}).get("next_cursor")
         if max_messages is not None and len(messages) > max_messages:
@@ -141,7 +163,9 @@ def _collect_pages(fetch: Callable[[str | None], Any], max_messages: int | None 
             return messages, True
 
 
-def conversations_replies(channel: str, ts: str, *, token: str, max_messages: int | None = None) -> list[dict]:
+def conversations_replies(
+    channel: str, ts: str, *, token: str, max_messages: int | None = None, retry: Callable[[SlackApiError], bool] | None = None
+) -> list[dict]:
     """Fetch the messages of a thread, root included (needs the channels:history / groups:history scope).
 
     Args:
@@ -149,13 +173,15 @@ def conversations_replies(channel: str, ts: str, *, token: str, max_messages: in
         ts: Timestamp of the thread's root message.
         token: Bot OAuth token (xoxb-...) to authenticate the request.
         max_messages: Stop paginating once this many messages were collected; None reads the whole thread.
+        retry: Asked when a page fails whether to try that page again (see `_collect_pages`); when it says no after some pages
+            were read, those are returned and the rest of the thread is simply not in the result.
 
     Returns:
         The thread's messages, oldest first, at most `max_messages` of them when that is given.
     """
     client = WebClient(token=token)
     limit = 200 if max_messages is None else min(200, max_messages)
-    return _collect_pages(lambda cursor: client.conversations_replies(channel=channel, ts=ts, limit=limit, cursor=cursor), max_messages)[0]
+    return _collect_pages(lambda cursor: client.conversations_replies(channel=channel, ts=ts, limit=limit, cursor=cursor), max_messages, retry)[0]
 
 
 def conversations_history(channel: str, oldest: float, *, token: str, max_messages: int, latest: str | None = None) -> tuple[list[dict], bool]:

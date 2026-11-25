@@ -52,6 +52,9 @@ def _validate_field(field: ExtractionField) -> None:
         raise ChannelAnalysisError(
             f"`allowed_values` of `{field.name}` takes at most {limits.MAX_ALLOWED_VALUES} values of at most {limits.MAX_ALLOWED_VALUE_CHARS} characters."
         )
+    # The model's answer is stripped before it is matched, so a label with spaces around it (or only spaces) could never match.
+    if any(not value or value != value.strip() for value in field.allowed_values):
+        raise ChannelAnalysisError(f"`allowed_values` of `{field.name}` can't hold an empty value or one with spaces at its start or end.")
 
 
 def _validate_group_by(group_by: tuple[str, ...], names: list[str]) -> None:

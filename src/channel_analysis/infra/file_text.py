@@ -16,6 +16,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from channel_analysis.core import limits
 from channel_analysis.core.errors import FileUnreadableError
+from channel_analysis.core.file_pages import SHEET_MARKER
 from channel_analysis.infra.file_kinds import PLAIN_KINDS, kind_of
 
 SUPPORTED = "CSV, TSV, text, JSON, logs, PDF with a text layer, and Excel (.xlsx)"
@@ -88,8 +89,10 @@ def _sheets_text(workbook, max_chars: int) -> str:
     for sheet in workbook.worksheets:
         # A quote in the name would flip the quote count that tells a record's end from a newline inside a cell.
         title = sheet.title.replace('"', "'")
-        out.write(f"## Sheet: {title}\n")
+        out.write(f"{SHEET_MARKER}{title}\n")
         writer = csv.writer(out, lineterminator="\n")
+        # A first cell that reads like a sheet marker is quoted, so a page cut can't mistake its row for the start of a sheet.
+        quoting_writer = csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_ALL)
         # A generated sheet can declare a million rows by 16,000 columns in its header and hold ten: read the rows that are there.
         sheet.reset_dimensions()
         for row in sheet.iter_rows(values_only=True):
@@ -98,7 +101,7 @@ def _sheets_text(workbook, max_chars: int) -> str:
                 cells.pop()
             if not cells:
                 continue
-            writer.writerow(cells)
+            (quoting_writer if isinstance(cells[0], str) and cells[0].startswith(SHEET_MARKER) else writer).writerow(cells)
             if out.tell() > max_chars:
                 return out.getvalue()
     return out.getvalue()

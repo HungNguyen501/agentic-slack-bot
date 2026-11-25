@@ -297,3 +297,9 @@ def test_a_real_sheet_after_a_cell_that_mentions_a_marker_is_still_found():
     text = '## Sheet: One\nid,note\n1,"## Sheet: Fake\nstill the cell"\n## Sheet: Two\ncol,x\na,1\nb,2\n'
 
     assert sheet_header(text, text.index("b,2")) == "## Sheet: Two\ncol,x"
+
+
+def test_a_row_whose_first_cell_reads_like_a_sheet_marker_is_not_a_sheet_when_it_is_quoted():
+    text = '## Sheet: Real\nid,note\n"## Sheet: Revenue",1\n2,b\n'
+
+    assert sheet_header(text, text.index("2,b")) == "## Sheet: Real\nid,note"

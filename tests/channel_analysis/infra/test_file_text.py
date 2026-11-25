@@ -138,3 +138,11 @@ def test_a_supported_file_with_an_odd_suffix_is_read_by_its_slack_filetype():
     assert "Hello report" in extract_text("report.pdf.backup", "pdf", pdf_with_text("Hello report"), MAX)
     assert extract_text("rows.backup", "csv", b"id\n1\n", MAX) == "id\n1\n"
     assert extract_text("counts.old", "xlsx", xlsx_with({"S": [["a"]]}), MAX) == "## Sheet: S\na\n"
+
+
+def test_a_first_cell_that_reads_like_a_sheet_marker_is_quoted_so_it_is_not_taken_for_a_sheet():
+    data = xlsx_with({"Real": [["id", "note"], ["## Sheet: Revenue", 1], [2, "b"]]})
+
+    text = extract_text("report.xlsx", "xlsx", data, MAX)
+
+    assert text == '## Sheet: Real\nid,note\n"## Sheet: Revenue","1"\n2,b\n'

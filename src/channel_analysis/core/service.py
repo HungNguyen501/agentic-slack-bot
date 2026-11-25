@@ -90,6 +90,17 @@ class _FilesRead:
 
 
 @dataclass(frozen=True)
+class _Deferred:
+    """The file texts of the message an analysis call left for the next one, so that call doesn't download and parse them again (the
+    files adapter keeps only the last file)."""
+
+    bot_id: str
+    channel_id: str
+    ts: str
+    texts: dict[str, str]
+
+
+@dataclass(frozen=True)
 class _Collected:
     """What the scan of an analysis call gathered: the chunks to extract, and how far it got."""
 
@@ -115,10 +126,9 @@ class ChannelAnalysisService:
         self._files = files
         self._extractor = extractor
         self._now = now
-        # The file texts of the one message an analysis call deferred, so the call that picks it up doesn't download and parse them
-        # again (the files adapter keeps only the last file): (channel ID, message ts, texts by file ID). One forked process serves
-        # one agent run, so this is never shared between requesters.
-        self._deferred: tuple[str, str, dict[str, str]] | None = None
+        # Held until the next analysis call, which takes it or drops it. The wiring's service lives as long as its process: one forked
+        # process per job under `rq worker`, so one run; keyed by bot, channel and message so a shared process could not mix them up.
+        self._deferred: _Deferred | None = None
 
     def check_access(self, bot: BotConfig, channel: str, requester_id: str) -> ChannelAccess:
         """Say whether the bot and the requester may read `channel`, listing every problem found rather than the first.
@@ -259,21 +269,11 @@ class ChannelAnalysisService:
         scan_cap = limits.MAX_SCAN_PER_CALL_ANALYSIS_WITH_REPLIES if include_replies else limits.MAX_SCAN_PER_CALL_ANALYSIS
         deferred, self._deferred = self._deferred, None
         for message, before_message in self._scan(bot, channel_id, window, cursor, terms, include_replies, state, scan_cap):
-            items, whole = extraction.message_items(message)
-            # The message alone is checked first: files are downloaded and parsed (up to seconds each) only for a message that can be taken.
-            if not packer.fits(items):
+            taken = self._take(bot, channel_id, packer, message, include_files, files, deferred)
+            if taken is None:
                 resume_at = before_message
                 break
-            # Files are read on a copy: a message that doesn't fit is read again by the next call, and must not count twice.
-            carried = deferred[2] if deferred and deferred[:2] == (channel_id, message.ts) else {}
-            trial = _FilesRead(files.tried, list(files.not_read), files.blocked, carried=carried)
-            if include_files:
-                items = self._with_files(bot, message, items, trial)
-            if not packer.add(items):
-                resume_at = before_message
-                self._deferred = (channel_id, message.ts, trial.read)
-                break
-            files = trial
+            files, whole = taken
             messages_read += 1
             replies_omitted += message.omitted_replies
             if not whole:
@@ -281,6 +281,27 @@ class ChannelAnalysisService:
         else:
             resume_at = state.next_before
         return _Collected(packer.chunks, files, messages_read, messages_cut, replies_omitted, resume_at, state.scanned)
+
+    def _take(
+        self, bot: BotConfig, channel_id: str, packer: extraction.ChunkPacker, message: ChannelMessage, include_files: bool, files: _FilesRead,
+        deferred: _Deferred | None,
+    ) -> tuple[_FilesRead, bool] | None:
+        """Pack one message (and, with `include_files`, its files) into the call's chunks. Returns what the call has done with files
+        so far and whether the message fit in the pieces one message may have, or None when it doesn't fit in the call."""
+        items, whole = extraction.message_items(message)
+        # The message alone is checked first: files are downloaded and parsed (up to seconds each) only for a message that can be taken.
+        if include_files and not packer.fits(items):
+            return None
+        carried = deferred.texts if deferred and (deferred.bot_id, deferred.channel_id, deferred.ts) == (bot.bot_id, channel_id, message.ts) else {}
+        # Files are read on a copy: a message that doesn't fit is read again by the next call, and must not count twice.
+        trial = _FilesRead(files.tried, list(files.not_read), files.blocked, carried=carried)
+        if include_files:
+            items = self._with_files(bot, message, items, trial)
+        if packer.add(items):
+            return trial, whole
+        if trial.read:
+            self._deferred = _Deferred(bot.bot_id, channel_id, message.ts, trial.read)
+        return None
 
     def _with_files(self, bot: BotConfig, message: ChannelMessage, items: list[ExtractionItem], files: _FilesRead) -> list[ExtractionItem]:
         """`items` of a message plus the pieces of the readable files attached to it or to its replies. `files` is updated."""
@@ -483,7 +504,7 @@ class ChannelAnalysisService:
         empty = False
         try:
             batch = self._history.fetch(channel_id, window_end - limits.DEFAULT_LOOKBACK_DAYS * _DAY, None, 1, False, bot.bot_token)
-            empty = not batch.messages and batch.last_ts is None
+            empty = batch.last_ts is None
         except ChannelAccessError as exc:
             if not any(p.code == exc.code for p in problems):
                 problems.append(_problem_from(exc))

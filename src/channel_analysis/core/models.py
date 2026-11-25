@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from channel_analysis.core.limits import (
@@ -59,9 +60,11 @@ class ChannelMessage:
 @dataclass(frozen=True)
 class HistoryBatch:
     """One fetch of channel history, newest first. `last_ts` is the last message Slack returned, noise included, so a
-    batch made only of noise still moves the cursor; `fetched` is how many that was; `exhausted` means the window holds nothing older."""
+    batch made only of noise still moves the cursor; `fetched` is how many that was; `exhausted` means the window holds nothing older.
 
-    messages: list[ChannelMessage]
+    `messages` may be built as it is read (a thread's replies are fetched when its message is reached), so it can be read once."""
+
+    messages: Iterable[ChannelMessage]
     last_ts: str | None
     exhausted: bool
     fetched: int

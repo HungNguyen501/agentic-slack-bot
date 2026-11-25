@@ -175,6 +175,22 @@ def test_after_a_channel_read_the_same_channel_and_one_the_request_names_can_sti
     assert [c.args[0] for c in dispatch_tool.call_args_list] == ["read_channel_messages", "analyze_channel"]
 
 
+def test_after_a_channel_read_the_id_a_check_resolved_for_a_named_channel_can_be_read(llm, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("read_channel_messages", "c1", '{"channel": "alpha"}')], output_text=""),
+        MagicMock(output=[tool_call("check_channel_access", "c2", '{"channel": "beta"}')], output_text=""),
+        MagicMock(output=[tool_call("read_channel_messages", "c3", '{"channel": "C0BETA0001"}')], output_text=""),
+        MagicMock(output=[tool_call("read_channel_messages", "c4", '{"channel": "C0SECRET001"}')], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+    results = {"read_channel_messages": "page", "check_channel_access": "Access check for C0BETA0001: OK. I can read it and you may see it."}
+
+    with patch("agent.agent.dispatch_tool", autospec=True, side_effect=lambda name, *a, **k: results[name]) as dispatch_tool:
+        run(services, question="compare #alpha and #beta")
+
+    assert [c.args[1] for c in dispatch_tool.call_args_list] == [{"channel": "alpha"}, {"channel": "beta"}, {"channel": "C0BETA0001"}]
+
+
 def test_a_write_tool_called_after_a_channel_read_is_refused_without_running(llm, services):
     llm.create_response.side_effect = [
         MagicMock(output=[tool_call("read_channel_file")], output_text=""),

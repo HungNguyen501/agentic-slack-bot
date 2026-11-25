@@ -186,8 +186,10 @@ def run_agent(
                 result = CHANNEL_OUT_OF_SCOPE_MESSAGE
             else:
                 result = dispatch_tool(tool_call.name, args, user_id, admin_users, bot, channel, thread_ts, services, unattended)
-                if not read_untrusted_content and tool_call.name in CHANNEL_TOOLS:
-                    read_scope.trust(args.get("channel"), result if tool_call.name == "check_channel_access" else "")
+                if tool_call.name in CHANNEL_TOOLS and not read_untrusted_content:
+                    read_scope.trust(args.get("channel"))
+                if tool_call.name == "check_channel_access":
+                    read_scope.trust_resolved(result)
             if tool_call.name in UNTRUSTED_CONTENT_TOOLS:
                 read_untrusted_content = True
             messages.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})

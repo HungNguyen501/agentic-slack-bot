@@ -6,6 +6,7 @@ from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAnalysisError
 from channel_analysis.core.extraction import format_when as _when
 from channel_analysis.core.models import Analysis, ChannelAccess, ChannelMessage, ChannelSlice, ExtractionField, ExtractionSpec, FilePage, GroupCount
+from channel_analysis.core.read_scope import ACCESS_CHECK_PREFIX
 from channel_analysis.core.service import ChannelAnalysisService
 
 log = logging.getLogger("channel_analysis.tools")
@@ -36,12 +37,13 @@ def _terms_arg(args: dict) -> tuple[str, ...]:
 def _format_access(access: ChannelAccess) -> str:
     # Only the ID: a channel's name is typed by whoever can rename it, and this text goes in front of the model, which can call tools.
     where = access.channel_id or "that channel"
+    subject = f"{ACCESS_CHECK_PREFIX}{where}"
     if not access.problems:
-        lines = [f"Access check for {where}: OK. I can read it and you may see it."]
+        lines = [f"{subject}: OK. I can read it and you may see it."]
     elif access.ok:
-        lines = [f"Access check for {where}: OK to read messages, with a warning."]
+        lines = [f"{subject}: OK to read messages, with a warning."]
     else:
-        lines = [f"Access check for {where}: NOT OK. Do not read this channel until the blocking problems are fixed; tell the admin each one and how to fix it."]
+        lines = [f"{subject}: NOT OK. Do not read this channel until the blocking problems are fixed; tell the admin each one and how to fix it."]
     lines.extend(f"- {'BLOCKING' if p.blocking else 'warning'}: {p.message}" for p in access.problems)
     if access.empty_window:
         lines.append(f"- note: there are no messages in the last {limits.DEFAULT_LOOKBACK_DAYS} days.")

@@ -18,6 +18,7 @@ from channel_analysis.core.models import (
     GroupCount,
     Record,
 )
+from channel_analysis.core.read_scope import ReadScope
 from channel_analysis.core.service import ChannelAnalysisService
 from channel_analysis.presentation import tools
 
@@ -45,6 +46,16 @@ def test_check_says_ok_when_there_is_no_problem(service):
 
     assert reply == "Access check for C1: OK. I can read it and you may see it."
     service.check_access.assert_called_once_with(BOT, "#mail", "UADMIN")
+
+
+@pytest.mark.parametrize("problems", [(), (AccessProblem("missing_scope", "scope", blocking=True),)], ids=["ok", "blocked"])
+def test_the_agent_can_read_which_channel_a_check_was_for_from_its_reply(service, problems):
+    service.check_access.return_value = ChannelAccess("C0BETA0001", problems)
+    scope = ReadScope("compare #alpha and #beta", None)
+
+    scope.trust_resolved(run(service, "check_channel_access", {"channel": "#beta"}))
+
+    assert scope.permits("C0BETA0001")
 
 
 def test_the_access_check_shows_only_the_channel_id_never_a_name_anyone_could_have_chosen(service):

@@ -53,6 +53,8 @@ def character_service() -> CharacterService:
 
 @functools.cache
 def channel_analysis_service() -> ChannelAnalysisService:
+    # The service keeps a little per-run state (the files of a message an analysis call deferred), which is only safe because
+    # `rq worker` forks a process per job; run in-process it would carry that state from one job to the next.
     return ChannelAnalysisService(SlackChannelHistory(), SlackChannelFiles(), OpenAIExtractionModel(Configs.EXTRACTION_MODEL))
 
 

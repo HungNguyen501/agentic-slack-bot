@@ -367,3 +367,11 @@ def test_groups_with_a_missing_value_sort_after_the_named_ones_of_the_same_size(
     records = [Record(ts_ago(1), None, {"table": None, "status": "x"}), record(2, "z", "x"), record(3, "a", "x")]
 
     assert [g.key for g in extraction.count_groups(records, ("table",))] == [("a",), ("z",), (None,)]
+
+
+@pytest.mark.parametrize("values", [(" open",), ("open ",), ("",), ("  ",), ("open", " closed ")], ids=["leading", "trailing", "empty", "blank", "one-of-two"])
+def test_an_allowed_value_with_spaces_around_it_or_none_at_all_is_refused(values):
+    spec = ExtractionSpec("i", (ExtractionField("status", "", values),))
+
+    with pytest.raises(ChannelAnalysisError, match="empty value or one with spaces"):
+        extraction.validate_spec(spec, ())

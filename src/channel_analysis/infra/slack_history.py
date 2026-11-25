@@ -20,6 +20,10 @@ log = logging.getLogger("channel_analysis.slack_history")
 _MAX_RETRY_AFTER_SECONDS = 30.0
 
 
+def _error_code(exc: SlackApiError) -> str | None:
+    return exc.response.get("error") if exc.response else None
+
+
 def _retry_after(exc: SlackApiError) -> float | None:
     try:
         return float(exc.response.headers.get("Retry-After"))
@@ -36,7 +40,7 @@ def slack_access_errors(files: bool = False) -> Iterator[None]:
     try:
         yield
     except SlackApiError as exc:
-        code = exc.response.get("error") if exc.response else None
+        code = _error_code(exc)
         if code == "missing_scope":
             raise ChannelAccessError("files_scope" if files else "missing_scope", detail=exc.response.get("needed")) from exc
         if code in ACCESS_MESSAGES and code != "files_scope":
@@ -54,29 +58,34 @@ class _ThreadReader:
 
     def read(self, channel_id: str, ts: str, token: str) -> list[dict] | None:
         """A thread's messages (at most `REPLIES_FETCH_MAX`; one page of that size, but Slack may return fewer than asked and follow
-        up with a cursor, so a thread can cost a few calls), or None when they can't be read: Slack
-        refuses even after a wait, or says no for this thread. The page then shows the reply count instead of failing, since
-        the channel itself was read."""
-        for attempt in range(2):
-            if self.limited:
-                return None
-            try:
-                with slack_access_errors():
-                    return slack.conversations_replies(channel_id, ts, token=token, max_messages=limits.REPLIES_FETCH_MAX)
-            except SlackApiError as exc:
-                log.warning("Could not read the replies of thread %s of %s (%s); it is shown without them", ts, channel_id, exc.response.get("error"))
-                return None
-            except ChannelAccessError as exc:
-                if exc.code != "ratelimited":
-                    log.warning("Could not read the replies of thread %s of %s (%s); it is shown without them", ts, channel_id, exc.code)
-                    return None
-                wait = min(exc.retry_after or 1.0, _MAX_RETRY_AFTER_SECONDS - self.waited)
-                if attempt or wait <= 0:
-                    self.limited = True
-                    log.warning("Slack is still rate limiting conversations.replies; the rest of this page is shown without replies")
-                    return None
-                time.sleep(wait)
-                self.waited += wait
+        up with a cursor, so a thread can cost a few calls), or None when they can't be read: Slack refuses even after a wait, or says
+        no for this thread. A page that is refused after others were read leaves the thread partly read (the rest counts as omitted).
+        The page then shows the reply count instead of failing, since the channel itself was read."""
+        if self.limited:
+            return None
+        retried = False
+
+        def wait_and_retry(exc: SlackApiError) -> bool:
+            nonlocal retried
+            if _error_code(exc) != "ratelimited":
+                return False
+            wait = min(_retry_after(exc) or 1.0, _MAX_RETRY_AFTER_SECONDS - self.waited)
+            if retried or wait <= 0:
+                self.limited = True
+                log.warning("Slack is still rate limiting conversations.replies; the rest of this page is shown without replies")
+                return False
+            retried = True
+            time.sleep(wait)
+            self.waited += wait
+            return True
+
+        try:
+            with slack_access_errors():
+                return slack.conversations_replies(channel_id, ts, token=token, max_messages=limits.REPLIES_FETCH_MAX, retry=wait_and_retry)
+        except (SlackApiError, ChannelAccessError) as exc:
+            code = exc.code if isinstance(exc, ChannelAccessError) else _error_code(exc)
+            if code != "ratelimited":  # a rate limit that stopped the read was logged where it was given up on
+                log.warning("Could not read the replies of thread %s of %s (%s); it is shown without them", ts, channel_id, code)
         return None
 
 
@@ -115,10 +124,12 @@ class SlackChannelHistory:
         with slack_access_errors():
             raw_messages, truncated = slack.conversations_history(channel_id, oldest, token=token, max_messages=limit, latest=latest)
             workspace_url = self._workspace_url(token)
-            threads = _ThreadReader() if with_replies else None
-            messages = [
-                self._to_message(raw, channel_id, workspace_url, token, threads, replies_until) for raw in raw_messages if not message_text.is_noise(raw)
-            ]
+        threads = _ThreadReader() if with_replies else None
+        # Built as the caller reads them: a thread is fetched when its message is reached, so a page that fills early doesn't pay
+        # for (or lose to the rate limit) the threads of the messages it never gets to.
+        messages = (
+            self._to_message(raw, channel_id, workspace_url, token, threads, replies_until) for raw in raw_messages if not message_text.is_noise(raw)
+        )
         return HistoryBatch(messages, raw_messages[-1]["ts"] if raw_messages else None, exhausted=not truncated, fetched=len(raw_messages))
 
     def is_member(self, channel_id: str, user_id: str, token: str, max_pages: int) -> bool | None:

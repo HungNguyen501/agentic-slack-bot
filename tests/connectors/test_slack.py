@@ -511,3 +511,44 @@ def test_conversations_replies_stops_at_max_messages_with_a_page_no_bigger_than_
     assert [m["ts"] for m in messages] == ["0", "1", "2"]
     assert client.conversations_replies.call_count == 1
     assert client.conversations_replies.call_args.kwargs["limit"] == 3
+
+
+def test_a_failed_page_is_asked_for_again_when_retry_says_so_and_the_pages_read_are_kept():
+    client = MagicMock()
+    refused = SlackApiError("slow down", {"error": "ratelimited"})
+    client.conversations_replies.side_effect = [page([{"ts": "1"}], "c2"), refused, page([{"ts": "2"}])]
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        messages = slack.conversations_replies("C1", "1", token="t", retry=lambda exc: True)
+
+    assert [m["ts"] for m in messages] == ["1", "2"]
+    assert [c.kwargs["cursor"] for c in client.conversations_replies.call_args_list] == [None, "c2", "c2"]
+
+
+def test_a_page_that_stays_refused_leaves_the_pages_already_read():
+    client = MagicMock()
+    client.conversations_replies.side_effect = [page([{"ts": "1"}], "c2"), SlackApiError("slow down", {"error": "ratelimited"})]
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        messages = slack.conversations_replies("C1", "1", token="t", retry=lambda exc: False)
+
+    assert [m["ts"] for m in messages] == ["1"]
+
+
+def test_the_first_page_refused_for_good_still_raises():
+    client = MagicMock()
+    client.conversations_replies.side_effect = SlackApiError("no", {"error": "channel_not_found"})
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client), pytest.raises(SlackApiError):
+        slack.conversations_replies("C1", "1", token="t", retry=lambda exc: False)
+
+
+def test_a_page_that_keeps_failing_is_asked_for_again_only_a_few_times_even_if_retry_keeps_saying_yes():
+    client = MagicMock()
+    client.conversations_replies.side_effect = [page([{"ts": "1"}], "c2")] + [SlackApiError("slow down", {"error": "ratelimited"})] * 10
+
+    with patch("connectors.slack.WebClient", autospec=True, return_value=client):
+        messages = slack.conversations_replies("C1", "1", token="t", retry=lambda exc: True)
+
+    assert [m["ts"] for m in messages] == ["1"]
+    assert client.conversations_replies.call_count == 1 + 1 + slack._MAX_PAGE_RETRIES
