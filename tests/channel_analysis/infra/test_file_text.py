@@ -8,6 +8,7 @@ from pypdf import PdfWriter
 from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import FileUnreadableError
 from channel_analysis.core.file_pages import sheet_header
+from channel_analysis.infra import html_text
 from channel_analysis.infra.file_text import extract_text
 from tests.support.channel_analysis_files import pdf_with_text, xlsx_with
 
@@ -250,3 +251,63 @@ def test_json_data_scripts_are_kept_and_code_scripts_are_not(script, expected):
     html = f"<p>x</p>{script}".encode()
 
     assert extract_text("a.html", "html", html, MAX) == ("x\n" + expected if expected else "x")
+
+
+def test_a_table_inside_a_cell_keeps_the_outer_row_whole():
+    html = (
+        b"<table><tr><td>Report A</td><td><table><tr><td>ok</td><td>5</td></tr><tr><td>bad</td><td>2</td></tr></table></td><td>done</td></tr>"
+        b"<tr><td>Report B</td><td>-</td><td>late</td></tr></table>"
+    )
+
+    assert extract_text("nested.html", "html", html, MAX) == "ok | 5\nbad | 2\nReport A |  | done\nReport B | - | late"
+
+
+def test_text_around_a_nested_table_stays_in_its_own_cell():
+    html = b"<table><tr><td>name <b>A</b><table><tr><td>x</td><td>1</td></tr></table> tail</td><td>after</td></tr></table>"
+
+    assert extract_text("nested.html", "html", html, MAX) == "x | 1\nname A tail | after"
+
+
+def test_a_layout_table_around_a_data_table_gives_only_the_data_rows():
+    html = b"<table><tr><td><table><tr><td>a</td><td>1</td></tr></table></td></tr></table>"
+
+    assert extract_text("layout.html", "html", html, MAX) == "a | 1"
+
+
+def test_text_that_is_cut_at_a_block_boundary_still_says_it_was_cut():
+    text = extract_text("a.html", "html", b"<p>1234567890</p><p>more</p>", 10)
+
+    assert text == "1234567890\n[file cut here: it is longer than I read]"
+
+
+def test_text_that_fits_exactly_is_not_reported_as_cut():
+    assert extract_text("a.html", "html", b"<p>1234567890</p>", 10) == "1234567890"
+
+
+def test_a_table_row_or_a_json_record_past_the_limit_also_says_the_text_was_cut():
+    table = extract_text("a.html", "html", b"<table><tr><td>1234567890</td></tr><tr><td>more</td></tr></table>", 10)
+    data = extract_text("b.html", "html", b'<script type="application/json">[{"a":1},{"a":2},{"a":3}]</script>', 10)
+
+    assert "file cut here" in table
+    assert "file cut here" in data
+
+
+def test_a_big_json_script_is_not_serialized_past_the_limit():
+    records = ",".join(f'{{"n":{n}}}' for n in range(50_000)).encode()
+    html = b'<script type="application/json">[' + records + b"]</script>"
+
+    with patch("channel_analysis.infra.html_text._compact", wraps=html_text._compact) as compact:
+        text = extract_text("big.html", "html", html, 100)
+
+    assert "file cut here" in text
+    assert compact.call_count < 100
+
+
+def test_a_long_preformatted_block_stops_collecting_at_the_limit():
+    html = b"<pre>" + b"\n".join(b"line %d" % n for n in range(50_000)) + b"</pre>"
+
+    with patch("channel_analysis.infra.html_text._collapsed", wraps=html_text._collapsed) as collapsed:
+        text = extract_text("log.html", "html", html, 100)
+
+    assert "file cut here" in text
+    assert collapsed.call_count < 100
