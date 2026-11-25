@@ -162,6 +162,8 @@ class ChannelAnalysisConfigs:
     # A reply posted "also to the channel" is in the channel's history as a message of its own, and in its thread too.
     BROADCAST_SUBTYPES = frozenset({"thread_broadcast", "reply_broadcast"})
 
+    # The start of a list item in a message's `text` (Slack writes `•`, `◦`, `▪` or `1.`) and in a rich-text block (`-`).
+    LIST_MARKER = re.compile(r"^[ \t]*(?:[-•◦▪‣]|\d+[.)])[ \t]+", re.MULTILINE)
     LABELLED_LINK = re.compile(r"<(https?://[^|>\s]+)\|([^>]+)>")
 
     # What a counts line shows for a missing value (the record's key keeps None, so it can't be mistaken for a value that reads the same).

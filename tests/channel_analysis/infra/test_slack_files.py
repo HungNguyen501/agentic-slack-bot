@@ -33,7 +33,7 @@ def test_describe_lists_every_channel_the_file_is_shared_in(slack):
 def test_text_downloads_from_the_url_slack_gave_and_extracts_it(slack):
     assert SlackChannelFiles().text("F1", TOKEN) == "id\n1\n"
 
-    slack.download_file.assert_called_once_with(RAW["url_private_download"], token=TOKEN, max_bytes=5 * 1024 * 1024)
+    slack.download_file.assert_called_once_with(RAW["url_private_download"], token=TOKEN, max_bytes=5 * 1024 * 1024, allow_html=False)
 
 
 def test_the_last_file_is_not_downloaded_again_for_the_next_page(slack):
@@ -84,3 +84,12 @@ def test_describe_gives_the_same_kind_the_files_text_is_read_as(slack):
     slack.get_file_info.return_value = RAW | {"name": "data.csv", "filetype": "text"}
 
     assert SlackChannelFiles().describe("F1", TOKEN).filetype == "csv"
+
+
+def test_an_html_file_is_downloaded_with_html_allowed_and_any_other_is_not(slack):
+    slack.get_file_info.return_value = {**RAW, "name": "report.html", "filetype": "html"}
+    slack.download_file.return_value = b"<p>1</p>"
+
+    assert SlackChannelFiles().text("F1", TOKEN) == "1"
+
+    assert slack.download_file.call_args.kwargs["allow_html"] is True

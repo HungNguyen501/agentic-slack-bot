@@ -178,14 +178,33 @@ def _for_the_model(history: list[dict]) -> list[dict]:
     return [{k: v for k, v in message.items() if k != "author"} for message in history]
 
 
+def _save_turn(thread_ts: str, history: list[dict], question: str, user_id: str | None, reply: str) -> None:
+    history.append(_question_entry(question, user_id))
+    history.append({"role": "assistant", "content": reply})
+    save_history(thread_ts, history)
+
+
 def _save_answer(thread_ts: str, history: list[dict], question: str, user_id: str | None, answer: str, built_from_channel_content: bool) -> None:
     """Save the question and the answer in the thread's history.
 
     An answer built from channel content is marked, because later runs of the thread have every tool again.
     """
-    history.append(_question_entry(question, user_id))
-    history.append({"role": "assistant", "content": f"{AgentLoopConfigs.UNTRUSTED_ANSWER_MARK}{answer}" if built_from_channel_content else answer})
-    save_history(thread_ts, history)
+    _save_turn(thread_ts, history, question, user_id, f"{AgentLoopConfigs.UNTRUSTED_ANSWER_MARK}{answer}" if built_from_channel_content else answer)
+
+
+def _run_tool_calls(tool_calls: list, messages: list[dict], guard: _ReadGuard, runner: Callable[[str, dict], Callable[[], str]]) -> str | None:
+    """Run one batch of tool calls through the guard, adding each output to `messages`.
+
+    Returns the access-request button message as soon as a call posts one (the reply is that button, so the remaining calls and the
+    model are skipped), else None.
+    """
+    for tool_call in tool_calls:
+        args = json.loads(tool_call.arguments)
+        result = guard.call(tool_call.name, args, runner(tool_call.name, args))
+        messages.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})
+        if tool_category(tool_call.name) == "data_access" and result == AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE:
+            return result
+    return None
 
 
 def _authorization_note(user_id: str | None, admin_users: frozenset[str], unattended: UnattendedRun | None) -> str:
@@ -269,17 +288,12 @@ def run_agent(
         # Reasoning items must be echoed back alongside their function_call items on the next turn.
         messages.extend(item.model_dump(exclude_none=True) for item in response.output)
 
-        for tool_call in tool_calls:
-            args = json.loads(tool_call.arguments)
-            run = partial(dispatch_tool, tool_call.name, args, user_id, admin_users, bot, channel, thread_ts, services, unattended)
-            result = guard.call(tool_call.name, args, run)
-            messages.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})
-
-            if tool_category(tool_call.name) == "data_access" and result == AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE:
-                history.append(_question_entry(question, user_id))
-                history.append({"role": "assistant", "content": result})
-                save_history(thread_ts, history)
-                return AgentReply("", character)
+        posted = _run_tool_calls(
+            tool_calls, messages, guard, lambda name, args: partial(dispatch_tool, name, args, user_id, admin_users, bot, channel, thread_ts, services, unattended)
+        )
+        if posted is not None:
+            _save_turn(thread_ts, history, question, user_id, posted)
+            return AgentReply("", character)
 
     answer = _answer_without_tools(instructions, messages)
     _save_answer(thread_ts, history, question, user_id, answer, guard.read_content)

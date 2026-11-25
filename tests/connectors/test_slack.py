@@ -467,6 +467,12 @@ def download(stream, url=URL, max_bytes=100):
         return slack.download_file(url, token="xoxb-t", max_bytes=max_bytes), fake
 
 
+def test_download_file_accepts_an_html_response_only_when_the_file_is_html():
+    page = FakeStream(content_type="text/html; charset=utf-8", chunks=(b"<p>1</p>",))
+    with patch("connectors.slack.httpx.stream", autospec=True, return_value=page):
+        assert slack.download_file(URL, token="xoxb-t", max_bytes=100, allow_html=True) == b"<p>1</p>"
+
+
 def test_download_file_sends_the_token_and_returns_the_bytes():
     data, fake = download(FakeStream())
 

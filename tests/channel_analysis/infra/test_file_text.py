@@ -180,7 +180,7 @@ def test_an_html_report_gives_its_text_with_one_table_row_per_line():
 
     assert text == (
         "Mail ingestion report\nReport & totals\nRun finished\non time\n"
-        "table | rows\nbridgewell_com.orders | 0\nbridgewell_com.items | 1,204\nline one\nline two"
+        "table | rows\nbridgewell_com.orders | 0\nbridgewell_com.items | 1,204\nline one\n  line two"
     )
 
 
@@ -216,3 +216,9 @@ def test_html_longer_than_the_limit_is_cut_and_says_so():
     text = extract_text("big.html", "html", b"<p>" + b"x" * 100 + b"</p><p>" + b"y" * 100 + b"</p>", 10)
 
     assert "file cut here" in text
+
+
+def test_preformatted_html_keeps_its_indentation_and_ordinary_html_does_not():
+    html = b"<p>a    b</p><pre>if ok:\n    run()\n\n        deeper()</pre><p>  c   d </p><pre>last   line</pre>"
+
+    assert extract_text("code.html", "html", html, MAX) == "a b\nif ok:\n    run()\n        deeper()\nc d\nlast   line"

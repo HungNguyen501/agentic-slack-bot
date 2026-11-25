@@ -282,14 +282,17 @@ class FileDownloadError(Exception):
     """A file couldn't be downloaded; the message says why."""
 
 
-def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
+def download_file(url: str, *, token: str, max_bytes: int, allow_html: bool = False) -> bytes:
     """Download a file Slack hosts, refusing anything bigger than `max_bytes`.
 
     Only https URLs on slack.com are fetched, and `url` must come from Slack's own file info, never from a user, because the
     bot's token is sent along.
 
+    An HTML response is refused unless `allow_html`, because it is what Slack returns when the token can't read files (a sign-in
+    page). The caller passes `allow_html` for a file Slack's own metadata says is HTML, which is served as `text/html` too.
+
     Raises:
-        FileDownloadError: another host, an error status, an HTML page (what Slack returns when the token can't read files), a
+        FileDownloadError: another host, an error status, an HTML page (when not `allow_html`), a
             compressed response, too many bytes or a transfer that takes longer than `SlackConfigs.DOWNLOAD_DEADLINE_SECONDS`.
 
     The bytes are read as they come (`iter_raw`) and the response may not be compressed: decompressing before the size check would
@@ -307,7 +310,7 @@ def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
                 raise FileDownloadError(f"The download took longer than {SlackConfigs.DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
             if response.status_code != 200:
                 raise FileDownloadError(f"Slack answered {response.status_code} for the file.")
-            if response.headers.get("content-type", "").startswith("text/html"):
+            if not allow_html and response.headers.get("content-type", "").startswith("text/html"):
                 raise FileDownloadError("Slack returned a web page instead of the file; the app probably lacks the files:read scope.")
             if response.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
                 raise FileDownloadError("Slack sent the file compressed, which I won't unpack: it could grow far past the size limit.")

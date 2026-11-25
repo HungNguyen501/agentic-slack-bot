@@ -174,7 +174,7 @@ def _analysis_coverage(result: Analysis) -> list[str]:
     if result.unreliable:
         lines.append("UNRELIABLE: more than half the chunks failed, so these counts leave out too much. Say so, and run a narrower window.")
     if result.messages_cut:
-        lines.append(f"Messages longer than one message may add (their end was not read): {result.messages_cut}")
+        lines.append(f"Messages truncated before analysis (their remaining text, possibly including replies, was not read): {result.messages_cut}")
     if result.replies_omitted:
         lines.append(f"Replies not read (rate limited, no access, or over the cap on one thread): up to {result.replies_omitted}; the counts leave them out.")
     if not result.files_included:

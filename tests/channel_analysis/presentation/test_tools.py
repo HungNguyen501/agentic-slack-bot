@@ -338,7 +338,7 @@ def test_messages_that_were_longer_than_one_message_may_add_are_said_to_be_cut(s
 
     reply = run(service, "analyze_channel", ANALYZE_ARGS)
 
-    assert "Messages longer than one message may add (their end was not read): 2" in reply
+    assert "Messages truncated before analysis (their remaining text, possibly including replies, was not read): 2" in reply
 
 
 def test_replies_that_were_not_read_are_said_to_be_missing_from_the_counts(service):
@@ -354,7 +354,7 @@ def test_a_clean_analysis_mentions_neither_cut_messages_nor_missing_replies(serv
 
     reply = run(service, "analyze_channel", ANALYZE_ARGS)
 
-    assert "Replies not read" not in reply and "Messages longer" not in reply
+    assert "Replies not read" not in reply and "Messages truncated" not in reply
 
 
 def test_a_missing_value_is_shown_as_missing_in_the_counts_and_the_sample_and_a_literal_none_is_shown_as_it_is(service):
@@ -372,7 +372,7 @@ def test_a_missing_value_is_shown_as_missing_in_the_counts_and_the_sample_and_a_
 def test_a_clean_analysis_does_not_mention_cut_messages(service):
     service.analyze.return_value = analysis()
 
-    assert "Messages longer" not in run(service, "analyze_channel", ANALYZE_ARGS)
+    assert "Messages truncated" not in run(service, "analyze_channel", ANALYZE_ARGS)
 
 
 def test_when_groups_were_left_out_of_an_unfinished_window_the_group_counts_are_said_not_to_add_up(service):

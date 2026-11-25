@@ -248,3 +248,24 @@ def test_slacks_escaped_entities_in_text_do_not_make_its_rich_text_a_second_copy
     }
 
     assert message_text.flatten_text(message) == "Review R&amp;D &lt;draft&gt; today"
+
+
+def list_message(text, style, *items):
+    section = lambda item: {"type": "rich_text_section", "elements": [{"type": "text", "text": item}]}  # noqa: E731
+    list_block = {"type": "rich_text_list", "style": style, "elements": [section(item) for item in items]}
+    return {"text": text, "blocks": [{"type": "rich_text", "elements": [list_block]}]}
+
+
+@pytest.mark.parametrize(
+    "text, style",
+    [("• one\n• two", "bullet"), ("1. one\n2. two", "ordered"), ("◦ one\n▪ two", "bullet")],
+    ids=["bulleted", "ordered", "nested-bullets"],
+)
+def test_a_list_is_not_listed_twice_whatever_marker_slack_wrote_in_text(text, style):
+    assert message_text.flatten_text(list_message(text, style, "one", "two")) == text
+
+
+def test_a_list_that_says_more_than_text_is_still_kept():
+    flat = message_text.flatten_text(list_message("• one", "bullet", "one", "two"))
+
+    assert "- two" in flat

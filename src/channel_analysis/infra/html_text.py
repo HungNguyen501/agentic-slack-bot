@@ -94,9 +94,13 @@ class _TextBuilder(HTMLParser):
             self._end_line()
 
     def _collapsed(self) -> str:
-        text = " ".join("".join(self._pieces).split())
+        """The pieces as one line. Whitespace runs shrink to one space, except in `<pre>` (outside a table cell), where indentation
+        means something and only the trailing whitespace goes."""
+        raw = "".join(self._pieces)
         self._pieces = []
-        return text
+        if self._pre_depth and not self._in_cell:
+            return raw.rstrip()
+        return " ".join(raw.split())
 
     def _end_line(self) -> None:
         self._add_line(self._collapsed())

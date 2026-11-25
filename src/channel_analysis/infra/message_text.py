@@ -41,8 +41,10 @@ def _words(text: str) -> str:
     """The words of a text without Slack's markup, to tell whether a block only repeats `text`.
 
     A link is `<url|label>` in `text` and `label (url)` in a rich-text block, so both become `label url`. Slack escapes `&`, `<` and
-    `>` in `text` as entities but not in blocks, so they are decoded (`&amp;` last, or `&amp;lt;` would turn into `<`).
+    `>` in `text` as entities but not in blocks, so they are decoded (`&amp;` last, or `&amp;lt;` would turn into `<`). Slack's `text`
+    writes a list with `•` (bullets), `◦` / `▪` (nested) or `1.` (ordered) and a rich-text block here with `-`, so a leading marker is dropped.
     """
+    text = ChannelAnalysisConfigs.LIST_MARKER.sub("", text)
     text = ChannelAnalysisConfigs.LABELLED_LINK.sub(r"\2 \1", text)
     text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     text = re.sub(r"[()<>|]+", " ", text)

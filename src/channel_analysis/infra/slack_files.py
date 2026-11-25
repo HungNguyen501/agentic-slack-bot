@@ -36,11 +36,12 @@ class SlackChannelFiles:
         if self._last and self._last[0] == file_id:
             return self._last[1]
         raw = self._info(file_id, token)
+        is_html = kind_of(str(raw.get("name") or ""), str(raw.get("filetype") or "")) in ChannelAnalysisConfigs.HTML_KINDS
         url = raw.get("url_private_download") or raw.get("url_private")
         if not url:
             raise FileUnreadableError("Slack gave me no download link for that file.")
         try:
-            data = slack.download_file(url, token=token, max_bytes=ChannelAnalysisConfigs.FILE_MAX_BYTES)
+            data = slack.download_file(url, token=token, max_bytes=ChannelAnalysisConfigs.FILE_MAX_BYTES, allow_html=is_html)
         except slack.FileDownloadError as exc:
             raise FileUnreadableError(str(exc)) from exc
         text = file_parser.extract_text_isolated(str(raw.get("name") or ""), str(raw.get("filetype") or ""), data, ChannelAnalysisConfigs.FILE_MAX_CHARS)
