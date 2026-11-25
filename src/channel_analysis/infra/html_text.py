@@ -105,6 +105,8 @@ class _TextBuilder(HTMLParser):
             is_data = (dict(attrs).get("type") or "").split(";")[0].strip().lower() in ChannelAnalysisConfigs.HTML_DATA_SCRIPT_TYPES
             if tag == "script" and is_data and self._skip_depth == 1:
                 self._data_script = []
+        elif self._skip_depth:
+            return  # markup inside a skipped container (a `<template>`) is not part of the page's structure
         elif tag == "table":
             if not self._tables:
                 self._end_line()
@@ -126,6 +128,8 @@ class _TextBuilder(HTMLParser):
             self._skip_depth = max(0, self._skip_depth - 1)
             if self._data_script is not None:
                 self._add_data_script()
+        elif self._skip_depth:
+            return
         elif tag == "table":
             if self._tables:
                 self._end_row()

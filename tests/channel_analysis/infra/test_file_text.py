@@ -318,3 +318,19 @@ def test_a_json_script_inside_a_skipped_container_is_not_data_of_the_page(contai
     html = f'<p>x</p><{container}><script type="application/json">[{{"rows":100}}]</script></{container}><p>y</p>'.encode()
 
     assert extract_text("a.html", "html", html, MAX) == "x\ny"
+
+
+@pytest.mark.parametrize("container", ["template", "noscript"])
+def test_hidden_markup_inside_a_visible_cell_does_not_split_the_row_or_close_the_cell(container):
+    html = (
+        f"<table><tr><td>orders<{container}><tr><td>hidden</td></tr><p>x</p></{container}> total</td><td>42</td></tr>"
+        f"<tr><td>items</td><{container}></td></{container}><td>7</td></tr></table><p>after</p>"
+    ).encode()
+
+    assert extract_text("a.html", "html", html, MAX) == "orders total | 42\nitems | 7\nafter"
+
+
+def test_hidden_block_markup_does_not_end_the_line_of_the_visible_text():
+    html = b"<p>visible <template><div>hidden</div><br></template>text</p>"
+
+    assert extract_text("a.html", "html", html, MAX) == "visible text"
