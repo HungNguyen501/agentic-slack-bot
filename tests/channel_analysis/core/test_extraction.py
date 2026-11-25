@@ -17,6 +17,10 @@ def item(hours_ago=1, text="text", link="https://acme.slack.com/archives/C1/p1")
 # --- validate_spec
 
 
+def test_allowed_values_that_differ_in_more_than_case_pass():
+    extraction.validate_spec(ExtractionSpec("i", (ExtractionField("region", "", ("US", "EU", "Asia-Pacific")),)), ())
+
+
 def test_a_valid_spec_passes():
     extraction.validate_spec(SPEC, ("table", "status"))
 
@@ -38,12 +42,15 @@ def test_a_valid_spec_passes():
         (SPEC, ("table", "status", "x", "y"), "different fields"),
         (SPEC, ("nope",), "not one of the fields"),
         (ExtractionSpec("i", (ExtractionField("m", "the item number"),)), (), "reserved"),
+        (ExtractionSpec("i", (ExtractionField("region", "", ("US", "us")),)), (), "differ only in case"),
+        (ExtractionSpec("i", (ExtractionField("region", "", ("EU", "Us", "uS")),)), (), "differ only in case"),
         (ExtractionSpec("i", (ExtractionField("status\n", ""),)), (), "snake_case"),
         (ExtractionSpec("i", (ExtractionField("status ", ""),)), (), "snake_case"),
     ],
     ids=[
         "no-instruction", "long-instruction", "no-fields", "too-many-fields", "bad-name", "digit-first", "repeated-name", "long-description",
-        "long-value", "many-values", "repeated-group", "too-many-groups", "unknown-group", "reserved-m", "trailing-newline", "trailing-space",
+        "long-value", "many-values", "repeated-group", "too-many-groups", "unknown-group", "reserved-m",
+        "case-twins", "case-triplet", "trailing-newline", "trailing-space",
     ],
 )  # fmt: skip
 def test_a_bad_spec_is_refused_in_words(spec, group_by, message):

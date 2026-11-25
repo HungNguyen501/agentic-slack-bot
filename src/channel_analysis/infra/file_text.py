@@ -16,15 +16,10 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from channel_analysis.core import limits
 from channel_analysis.core.errors import FileUnreadableError
+from channel_analysis.infra.file_kinds import PLAIN_KINDS, kind_of
 
-PLAIN_TYPES = frozenset({"csv", "tsv", "txt", "text", "json", "log", "md", "markdown", "yaml", "yml", "xml", "sql"})
 SUPPORTED = "CSV, TSV, text, JSON, logs, PDF with a text layer, and Excel (.xlsx)"
 _PARSE_ERRORS = (zipfile.BadZipFile, InvalidFileException, ElementTree.ParseError, KeyError, ValueError, OSError)
-
-
-def kind_of(name: str, filetype: str) -> str:
-    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    return extension or filetype.lower()
 
 
 def extract_text(name: str, filetype: str, data: bytes, max_chars: int) -> str:
@@ -34,7 +29,7 @@ def extract_text(name: str, filetype: str, data: bytes, max_chars: int) -> str:
         FileUnreadableError: an unsupported type, a PDF without text, a damaged file, or an archive that unpacks to too much.
     """
     kind = kind_of(name, filetype)
-    if kind in PLAIN_TYPES:
+    if kind in PLAIN_KINDS:
         text = data.decode("utf-8-sig", errors="replace")
     elif kind == "pdf":
         text = _pdf_text(data, max_chars)

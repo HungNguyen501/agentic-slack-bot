@@ -14,6 +14,8 @@ MESSAGE_OVERHEAD_CHARS = 200
 FILE_LINE_OVERHEAD_CHARS = 50
 # What one `:name:×3` reaction adds besides its name and its count: the colons, the ×, and the space after it.
 REACTION_OVERHEAD_CHARS = 4
+# A reply is shown under `  ↳ ` and every line of it is indented by four spaces.
+REPLY_INDENT_CHARS = 4
 
 # Messages asked of Slack in one call, and how many a single tool call may scan while looking for matches. With replies
 # on, each message with a thread costs one more Slack call (about 50 a minute are allowed), so both are smaller.

@@ -4,6 +4,7 @@ from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAnalysisError, FileUnreadableError
 from channel_analysis.core.models import FileMeta
 from channel_analysis.infra import file_parser
+from channel_analysis.infra.file_kinds import kind_of
 from channel_analysis.infra.slack_history import slack_access_errors
 from connectors import slack
 
@@ -23,9 +24,10 @@ class SlackChannelFiles:
 
     def describe(self, file_id: str, token: str) -> FileMeta:
         raw = self._info(file_id, token)
+        name = str(raw.get("name") or raw.get("title") or file_id)
         return FileMeta(
-            name=str(raw.get("name") or raw.get("title") or file_id),
-            filetype=str(raw.get("filetype") or "unknown"),
+            name=name,
+            filetype=kind_of(name, str(raw.get("filetype") or "unknown")),
             size=int(raw.get("size") or 0),
             shared_in=_shared_in(raw),
         )

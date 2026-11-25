@@ -1,6 +1,12 @@
 from dataclasses import dataclass
 
-from channel_analysis.core.limits import FILE_LINE_OVERHEAD_CHARS, ITEM_MARKER_OVERHEAD_CHARS, MESSAGE_OVERHEAD_CHARS, REACTION_OVERHEAD_CHARS
+from channel_analysis.core.limits import (
+    FILE_LINE_OVERHEAD_CHARS,
+    ITEM_MARKER_OVERHEAD_CHARS,
+    MESSAGE_OVERHEAD_CHARS,
+    REACTION_OVERHEAD_CHARS,
+    REPLY_INDENT_CHARS,
+)
 
 
 @dataclass(frozen=True)
@@ -40,7 +46,14 @@ class ChannelMessage:
         """Characters this message takes in a page, replies included."""
         files = sum(len(f.name) + len(f.filetype) + FILE_LINE_OVERHEAD_CHARS for f in self.files)
         reactions = sum(len(name) + len(str(count)) + REACTION_OVERHEAD_CHARS for name, count in self.reactions)
-        return len(self.author) + len(self.text) + files + reactions + MESSAGE_OVERHEAD_CHARS + sum(reply.size for reply in self.replies)
+        return len(self.author) + len(self.text) + files + reactions + MESSAGE_OVERHEAD_CHARS + sum(reply.size_as_reply for reply in self.replies)
+
+    @property
+    def size_as_reply(self) -> int:
+        """Characters this message takes in a page when it is a reply: its own size, and the indent of every line it is shown on
+        (its header, its text lines, its files, its reactions)."""
+        lines = 2 + self.text.count("\n") + len(self.files) + bool(self.reactions)
+        return self.size + REPLY_INDENT_CHARS * lines
 
 
 @dataclass(frozen=True)

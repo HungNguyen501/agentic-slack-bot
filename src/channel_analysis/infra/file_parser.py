@@ -6,6 +6,7 @@ import sys
 from channel_analysis.core import limits
 from channel_analysis.core.errors import FileUnreadableError
 from channel_analysis.infra import file_text
+from channel_analysis.infra.file_kinds import PLAIN_KINDS, kind_of
 
 
 def extract_text_isolated(name: str, filetype: str, data: bytes, max_chars: int) -> str:
@@ -18,7 +19,7 @@ def extract_text_isolated(name: str, filetype: str, data: bytes, max_chars: int)
     Raises:
         FileUnreadableError: the file can't be read, or the parser went over its limits.
     """
-    if file_text.kind_of(name, filetype) in file_text.PLAIN_TYPES:
+    if kind_of(name, filetype) in PLAIN_KINDS:
         return file_text.extract_text(name, filetype, data, max_chars)
     try:
         done = subprocess.run(

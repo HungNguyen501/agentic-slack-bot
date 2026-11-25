@@ -57,10 +57,10 @@ def _clip(message: ChannelMessage) -> ChannelMessage:
     used = 0
     for reply in message.replies:
         reply = _clip(reply)
-        if used + reply.size > limits.REPLIES_CHAR_LIMIT and replies:
+        if used + reply.size_as_reply > limits.REPLIES_CHAR_LIMIT and replies:
             break
         replies.append(reply)
-        used += reply.size
+        used += reply.size_as_reply
     omitted = message.omitted_replies + len(message.replies) - len(replies)
     return replace(message, text=text, replies=tuple(replies), omitted_replies=omitted)
 

@@ -3,6 +3,7 @@ import re
 from datetime import UTC, datetime
 
 from channel_analysis.core.models import FileRef
+from channel_analysis.infra.file_kinds import kind_of
 
 # Subtypes that say nothing a report would be about.
 NOISE_SUBTYPES = frozenset(
@@ -42,7 +43,8 @@ def files_of(message: dict) -> tuple[FileRef, ...]:
     files = []
     for f in message.get("files") or []:
         if f.get("id") and f.get("mode") != "tombstone":
-            files.append(FileRef(str(f["id"]), str(f.get("name") or f.get("title") or f["id"]), str(f.get("filetype") or "unknown"), int(f.get("size") or 0)))
+            name = str(f.get("name") or f.get("title") or f["id"])
+            files.append(FileRef(str(f["id"]), name, kind_of(name, str(f.get("filetype") or "unknown")), int(f.get("size") or 0)))
     return tuple(files)
 
 

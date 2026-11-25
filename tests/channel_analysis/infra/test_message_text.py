@@ -214,6 +214,12 @@ def test_author_of(message, author):
     assert message_text.author_of(message) == author
 
 
+def test_a_file_is_given_the_kind_that_reading_it_and_paging_it_will_both_use():
+    message = {"files": [{"id": "F1", "name": "report.pdf.backup", "filetype": "pdf", "size": 9}, {"id": "F2", "name": "data.csv", "filetype": "text", "size": 3}]}
+
+    assert [(f.name, f.filetype) for f in message_text.files_of(message)] == [("report.pdf.backup", "pdf"), ("data.csv", "csv")]
+
+
 def test_reactions_and_files_are_read():
     message = {
         "reactions": [{"name": "white_check_mark", "count": 2}, {"count": 1}],

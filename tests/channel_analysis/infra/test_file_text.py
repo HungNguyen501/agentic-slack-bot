@@ -127,3 +127,9 @@ def test_a_quote_in_a_sheet_name_does_not_change_where_the_records_end():
 
     assert text.startswith("## Sheet: Q'1 report\n")
     assert text.count('"') % 2 == 0
+
+
+def test_a_supported_file_with_an_odd_suffix_is_read_by_its_slack_filetype():
+    assert "Hello report" in extract_text("report.pdf.backup", "pdf", pdf_with_text("Hello report"), MAX)
+    assert extract_text("rows.backup", "csv", b"id\n1\n", MAX) == "id\n1\n"
+    assert extract_text("counts.old", "xlsx", xlsx_with({"S": [["a"]]}), MAX) == "## Sheet: S\na\n"

@@ -74,3 +74,13 @@ def test_a_missing_scope_is_the_files_scope(slack):
 
     assert raised.value.code == "files_scope"
     assert "files:read" in str(raised.value)
+
+
+def test_describe_gives_the_same_kind_the_files_text_is_read_as(slack):
+    slack.get_file_info.return_value = RAW | {"name": "rows.backup", "filetype": "csv"}
+
+    assert SlackChannelFiles().describe("F1", TOKEN).filetype == "csv"
+
+    slack.get_file_info.return_value = RAW | {"name": "data.csv", "filetype": "text"}
+
+    assert SlackChannelFiles().describe("F1", TOKEN).filetype == "csv"

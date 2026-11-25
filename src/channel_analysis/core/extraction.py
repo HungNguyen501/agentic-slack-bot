@@ -41,6 +41,10 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
             raise ChannelAnalysisError(
                 f"`allowed_values` of `{field.name}` takes at most {limits.MAX_ALLOWED_VALUES} values of at most {limits.MAX_ALLOWED_VALUE_CHARS} characters."
             )
+    for field in spec.fields:
+        lowered = [value.lower() for value in field.allowed_values]
+        if len(set(lowered)) != len(lowered):
+            raise ChannelAnalysisError(f"`allowed_values` of `{field.name}` has values that differ only in case; values are matched ignoring case, so give each once.")
     if len(set(names)) != len(names):
         raise ChannelAnalysisError("Each field needs its own name.")
     if len(group_by) > limits.MAX_GROUP_BY or len(set(group_by)) != len(group_by):
