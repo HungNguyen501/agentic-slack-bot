@@ -64,7 +64,7 @@ def test_a_bad_spec_is_refused_in_words(spec, group_by, message):
 def test_a_message_becomes_an_item_with_its_files_reactions_and_replies():
     message = make_message(
         1, "agility_po_costs skipped", link="https://x/p1", files=(FileRef("F1", "rows.csv", "csv", 5),), reactions=(("eyes", 2),),
-        replies=(make_message(0.5, "thanks", author="<@U1>"),), omitted_replies=3,
+        replies=(make_message(0.5, "thanks", author="<@U1>"),), omitted_replies=3, reply_count=4,
     )  # fmt: skip
 
     (built,), whole = extraction.message_items(message)
@@ -73,7 +73,14 @@ def test_a_message_becomes_an_item_with_its_files_reactions_and_replies():
     assert (built.ts, built.link) == (message.ts, "https://x/p1")
     assert built.heading.endswith("· Mail Report")
     reply_line = f"↳ [{extraction.format_when(ts_ago(0.5))}] <@U1>: thanks"
-    assert built.text.splitlines() == ["agility_po_costs skipped", "[file rows.csv, csv]", "reactions: :eyes:×2", reply_line, "(3 more replies not shown)"]
+    assert built.text.splitlines() == ["agility_po_costs skipped", "[file rows.csv, csv]", "reactions: :eyes:×2", "replies: 4", reply_line, "(3 more replies not shown)"]
+
+
+@pytest.mark.parametrize("reply_count, line", [(0, "replies: 0"), (5, "replies: 5")])
+def test_the_reply_count_is_said_even_when_no_reply_is_shown(reply_count, line):
+    (built,), _ = extraction.message_items(make_message(1, "PR ready", reply_count=reply_count, replies=()))
+
+    assert built.text.splitlines() == ["PR ready", line]
 
 
 def test_the_reactions_on_a_reply_are_part_of_the_item_so_they_can_be_extracted_as_a_status():
@@ -83,6 +90,7 @@ def test_the_reactions_on_a_reply_are_part_of_the_item_so_they_can_be_extracted_
 
     lines = built.text.splitlines()
     assert lines[1] == "reactions: :rocket:×1"
+    assert lines[2] == "replies: 0"
     assert lines[-1] == "  reactions: :white_check_mark:×3 :eyes:×1"
     assert lines[-2].endswith("<@U1>: approved")
 
@@ -90,18 +98,18 @@ def test_the_reactions_on_a_reply_are_part_of_the_item_so_they_can_be_extracted_
 def test_a_message_with_no_text_still_makes_an_item():
     (built,), _ = extraction.message_items(make_message(1, ""))
 
-    assert built.text == "(no text)"
+    assert built.text == "(no text)\nreplies: 0"
 
 
 def test_a_long_message_is_read_whole_in_pieces_not_cut_at_the_display_limit(monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 100)
+    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 130)
     rows = "".join(f"row {n:03d}: table_{n}\n" for n in range(40))
     message = make_message(1, rows)
 
     items, whole = extraction.message_items(message)
 
     assert whole is True and len(items) > 1
-    assert "".join(i.text for i in items) == rows
+    assert "".join(i.text for i in items) == rows + "\nreplies: 0"
     assert "(continued, part 2)" in items[1].heading and "continued" not in items[0].heading
     assert all((i.ts, i.link) == (message.ts, message.link) for i in items)
 
@@ -187,6 +195,16 @@ def test_the_packer_refuses_a_message_that_needs_more_chunks_than_allowed_and_le
 
     assert packer.add([item(3, "x" * 80)]) is False
     assert [len(chunk) for chunk in packer.chunks] == [1, 1]
+
+
+def test_fits_says_what_add_would_do_without_taking_anything():
+    packer = extraction.ChunkPacker(budget=100, max_chunks=1)
+    assert packer.fits([item(1, "x" * 90)]) and packer.chunks == []
+    packer.add([item(1, "x" * 20)])
+
+    assert packer.fits([item(2, "x" * 90)]) is False
+    assert packer.fits([item(2, "x" * 5)]) is True
+    assert [len(chunk) for chunk in packer.chunks] == [1]
 
 
 def test_the_first_message_is_always_taken_even_if_it_needs_more_chunks_than_allowed():

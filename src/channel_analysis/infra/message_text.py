@@ -54,9 +54,11 @@ _LABELLED_LINK = re.compile(r"<(https?://[^|>\s]+)\|([^>]+)>")
 def _words(text: str) -> str:
     """The words of a text without Slack's markup, to tell whether a block only repeats `text`.
 
-    A link is `<url|label>` in `text` and `label (url)` in a rich-text block, so both become `label url`.
+    A link is `<url|label>` in `text` and `label (url)` in a rich-text block, so both become `label url`. Slack escapes `&`, `<` and
+    `>` in `text` as entities but not in blocks, so they are decoded (`&amp;` last, or `&amp;lt;` would turn into `<`).
     """
     text = _LABELLED_LINK.sub(r"\2 \1", text)
+    text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     text = re.sub(r"[()<>|]+", " ", text)
     return " ".join(re.sub(r"[*_~`]+", " ", text).lower().split())
 
@@ -128,6 +130,8 @@ def _inline(element: dict) -> str:
         return f"{label} ({url})" if label and label != url else url
     if kind == "user":
         return f"<@{element.get('user_id')}>"
+    if kind == "usergroup":
+        return f"<!subteam^{element.get('usergroup_id')}>"
     if kind == "channel":
         return f"<#{element.get('channel_id')}>"
     if kind == "emoji":

@@ -233,3 +233,18 @@ def test_reactions_and_files_are_read():
 @pytest.mark.parametrize("subtype, noise", [("channel_join", True), ("pinned_item", True), ("bot_message", False), (None, False)])
 def test_joins_and_pins_are_noise(subtype, noise):
     assert message_text.is_noise({"subtype": subtype}) is noise
+
+
+def test_a_user_group_mention_in_a_block_only_message_is_kept():
+    message = rich({"type": "text", "text": "Owner: "}, {"type": "usergroup", "usergroup_id": "S123"}, {"type": "text", "text": " fix it"})
+
+    assert message_text.flatten_text(message) == "Owner: <!subteam^S123> fix it"
+
+
+def test_slacks_escaped_entities_in_text_do_not_make_its_rich_text_a_second_copy():
+    message = {
+        "text": "Review R&amp;D &lt;draft&gt; today",
+        "blocks": [{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [{"type": "text", "text": "Review R&D <draft> today"}]}]}],
+    }
+
+    assert message_text.flatten_text(message) == "Review R&amp;D &lt;draft&gt; today"

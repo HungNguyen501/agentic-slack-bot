@@ -167,7 +167,7 @@ def _analysis_coverage(result: Analysis) -> list[str]:
         f"Fields: {', '.join(result.fields)} · counted by: {', '.join(result.group_by) or 'nothing (one overall total)'}",
     ]
     if result.failed_chunks:
-        lines.append("Chunks that failed (their messages are NOT in the counts):")
+        lines.append("Chunks that failed (their records are NOT in the counts; a message that spans other chunks may be counted only in part):")
         lines.extend(f"- {_when(c.start_ts)} to {_when(c.end_ts)}, {c.messages} messages: {c.reason}" for c in result.failed_chunks)
     else:
         lines.append("Chunks that failed: none")

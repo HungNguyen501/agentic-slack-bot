@@ -72,8 +72,9 @@ def cut_page(text: str, offset: int, page_chars: int, header: str | None = None,
 
 def sheet_header(text: str, offset: int) -> str | None:
     """For the text of a workbook (`## Sheet: name` then that sheet's records), the sheet's name line and its first record (all of
-    it, if a cell in it holds a newline), which a page starting at `offset` needs to be read alone; None when the page starts at or
-    before the end of that first record."""
+    it, if a cell in it holds a newline), which a page starting at `offset` needs to be read alone. A page that starts inside that
+    first record (the one before it ended right after the name line) gets the name line alone; None when the page starts at or
+    before the end of the name line."""
     # The bound lets a marker that starts exactly at `offset` count: a page that begins a new sheet already has its name.
     start = text.rfind(_SHEET_MARKER, 0, offset + len(_SHEET_MARKER))
     while start > 0 and not _starts_a_record(text, start):
@@ -81,9 +82,11 @@ def sheet_header(text: str, offset: int) -> str | None:
     if start < 0:
         return None
     name_end = text.find("\n", start)
-    header_end = _record_end(text, name_end + 1) if name_end >= 0 else -1
-    if header_end < 0 or offset <= header_end:
+    if name_end < 0 or offset <= name_end:
         return None
+    header_end = _record_end(text, name_end + 1)
+    if header_end < 0 or offset <= header_end:
+        return text[start:name_end]
     return text[start:header_end]
 
 

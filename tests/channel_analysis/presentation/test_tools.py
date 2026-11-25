@@ -281,7 +281,7 @@ def test_failed_chunks_files_not_read_and_unreliable_are_said_plainly(service):
 
     reply = run(service, "analyze_channel", ANALYZE_ARGS)
 
-    assert "NOT in the counts" in reply
+    assert "NOT in the counts" in reply and "counted only in part" in reply
     assert "- 2027-01-15 02:26 UTC to 2027-01-15 05:13 UTC, 5 messages: The extraction model failed (APITimeoutError)." in reply
     assert "Files not read: scan.pdf (no text layer); big.csv (larger than 5 MB)" in reply
     assert "UNRELIABLE" in reply

@@ -83,6 +83,10 @@ class _FilesRead:
     tried: int = 0
     not_read: list[tuple[str, str]] = field(default_factory=list)
     blocked: str | None = None
+    # The texts of the message in hand, by file ID: `carried` were read by an earlier call that deferred the message, `read` are
+    # those this call has (kept if the message is deferred again).
+    carried: dict[str, str] = field(default_factory=dict)
+    read: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,10 @@ class ChannelAnalysisService:
         self._files = files
         self._extractor = extractor
         self._now = now
+        # The file texts of the one message an analysis call deferred, so the call that picks it up doesn't download and parse them
+        # again (the files adapter keeps only the last file): (channel ID, message ts, texts by file ID). One forked process serves
+        # one agent run, so this is never shared between requesters.
+        self._deferred: tuple[str, str, dict[str, str]] | None = None
 
     def check_access(self, bot: BotConfig, channel: str, requester_id: str) -> ChannelAccess:
         """Say whether the bot and the requester may read `channel`, listing every problem found rather than the first.
@@ -249,12 +257,21 @@ class ChannelAnalysisService:
         messages_read = messages_cut = replies_omitted = 0
         resume_at: str | None = None
         scan_cap = limits.MAX_SCAN_PER_CALL_ANALYSIS_WITH_REPLIES if include_replies else limits.MAX_SCAN_PER_CALL_ANALYSIS
+        deferred, self._deferred = self._deferred, None
         for message, before_message in self._scan(bot, channel_id, window, cursor, terms, include_replies, state, scan_cap):
+            items, whole = extraction.message_items(message)
+            # The message alone is checked first: files are downloaded and parsed (up to seconds each) only for a message that can be taken.
+            if not packer.fits(items):
+                resume_at = before_message
+                break
             # Files are read on a copy: a message that doesn't fit is read again by the next call, and must not count twice.
-            trial = _FilesRead(files.tried, list(files.not_read), files.blocked)
-            items, whole = self._items(bot, message, include_files, trial)
+            carried = deferred[2] if deferred and deferred[:2] == (channel_id, message.ts) else {}
+            trial = _FilesRead(files.tried, list(files.not_read), files.blocked, carried=carried)
+            if include_files:
+                items = self._with_files(bot, message, items, trial)
             if not packer.add(items):
                 resume_at = before_message
+                self._deferred = (channel_id, message.ts, trial.read)
                 break
             files = trial
             messages_read += 1
@@ -265,22 +282,21 @@ class ChannelAnalysisService:
             resume_at = state.next_before
         return _Collected(packer.chunks, files, messages_read, messages_cut, replies_omitted, resume_at, state.scanned)
 
-    def _items(self, bot: BotConfig, message: ChannelMessage, include_files: bool, files: _FilesRead) -> tuple[list[ExtractionItem], bool]:
-        """The items of one message, whole (not the display clip), and with `include_files` the readable files attached to it or to
-        its replies. Also whether the message itself fit in the pieces one message may have. `files` is updated."""
-        items, whole = extraction.message_items(message)
-        if not include_files:
-            return items, whole
+    def _with_files(self, bot: BotConfig, message: ChannelMessage, items: list[ExtractionItem], files: _FilesRead) -> list[ExtractionItem]:
+        """`items` of a message plus the pieces of the readable files attached to it or to its replies. `files` is updated."""
+        items = list(items)
         for source in (message, *message.replies):
             for ref in source.files:
                 items.extend(self._file_pieces(bot, message, source, ref, len(items), files))
-        return items, whole
+        return items
 
     def _file_pieces(self, bot: BotConfig, message: ChannelMessage, source: ChannelMessage, ref: FileRef, items_so_far: int, files: _FilesRead) -> list[ExtractionItem]:
         """The pieces of one attached file as items of `message`; none, with the reason noted in `files`, when it can't be read."""
-        reason = self._file_refusal(ref.size, items_so_far, files)
-        text = None
-        if reason is None:
+        text = files.carried.get(ref.id)
+        reason = None
+        if text is None:
+            reason = self._file_refusal(ref.size, items_so_far, files)
+        if text is None and reason is None:
             files.tried += 1
             try:
                 text = self._files.text(ref.id, bot.bot_token)
@@ -291,6 +307,7 @@ class ChannelAnalysisService:
         if text is None:
             files.not_read.append((ref.name, reason or "it has no text"))
             return []
+        files.read[ref.id] = text
         pieces, whole = extraction.file_items(message, ref, text, limits.MAX_ITEMS_PER_MESSAGE - items_so_far, source)
         if not whole:
             files.not_read.append((ref.name, "only the start of it was read: a message can add only so much"))

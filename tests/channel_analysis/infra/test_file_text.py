@@ -33,6 +33,11 @@ def test_a_pdf_with_a_text_layer_gives_its_text():
     assert "Hello report" in extract_text("report.pdf", "pdf", pdf_with_text("Hello report"), MAX)
 
 
+@pytest.mark.parametrize("text", ["C:\\temp\\file (draft)", "unbalanced ( paren", "Café résumé"], ids=["backslash-and-parens", "lone-paren", "non-ascii"])
+def test_a_pdf_keeps_backslashes_parentheses_and_non_ascii_text(text):
+    assert text in extract_text("report.pdf", "pdf", pdf_with_text(text), MAX)
+
+
 def test_a_pdf_without_text_is_said_to_be_a_scan():
     writer = PdfWriter()
     writer.add_blank_page(100, 100)

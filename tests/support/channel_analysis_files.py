@@ -4,24 +4,28 @@ import io
 import openpyxl
 
 
+def _pdf_literal(text: str) -> bytes:
+    """`text` as the body of a PDF literal string: Latin-1 (what the standard fonts show) with `\\`, `(` and `)` escaped."""
+    return text.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+
+
 def pdf_with_text(text: str) -> bytes:
+    stream = b"BT /F1 14 Tf 10 50 Td (" + _pdf_literal(text) + b") Tj ET"
     objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>",
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-        None,
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     ]
-    stream = f"BT /F1 14 Tf 10 50 Td ({text}) Tj ET"
-    objects[3] = f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream"
-    out, offsets = "%PDF-1.4\n", []
+    out, offsets = b"%PDF-1.4\n", []
     for number, body in enumerate(objects, start=1):
         offsets.append(len(out))
-        out += f"{number} 0 obj\n{body}\nendobj\n"
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
     xref_at = len(out)
-    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n" + "".join(f"{o:010d} 00000 n \n" for o in offsets)
-    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n"
-    return out.encode()
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref_at)
+    return out
 
 
 def xlsx_with(sheets: dict[str, list[list]]) -> bytes:

@@ -467,6 +467,45 @@ def test_a_message_that_does_not_fit_leaves_its_files_to_the_next_call_and_is_no
     assert second.messages_read == 1 and "rows.csv" in extractor.calls[-1][1]
 
 
+def counting_downloads(files):
+    downloads = []
+    read = files.text
+
+    def text(file_id, token):
+        downloads.append(file_id)
+        return read(file_id, token)
+
+    files.text = text
+    return downloads
+
+
+def test_a_message_that_cannot_fit_is_not_enriched_with_its_files_at_all(service, history, extractor, files, monkeypatch):
+    small_chunks(monkeypatch, budget=300, chunks=1)
+    files.texts["F1"] = "table,status\nt,skipped\n"
+    downloads = counting_downloads(files)
+    history.messages = [make_message(1, "x" * 250), make_message(2, "report", files=(FileRef("F1", "rows.csv", "csv", 10),))]
+
+    first = analyze(service, include_files=True)
+
+    assert first.next_before == resume_at(1) and first.messages_read == 1
+    assert downloads == []
+
+
+def test_the_files_of_a_message_that_was_deferred_after_reading_them_are_not_downloaded_again(service, history, extractor, files, monkeypatch):
+    small_chunks(monkeypatch, budget=300, chunks=1)
+    files.texts["F1"] = "y" * 400
+    downloads = counting_downloads(files)
+    history.messages = [make_message(1, "x" * 100), make_message(2, "report", files=(FileRef("F1", "rows.txt", "text", 10),))]
+
+    first = analyze(service, include_files=True)
+    second = analyze(service, include_files=True, before=first.next_before)
+
+    assert first.messages_read == 1 and first.next_before == resume_at(1)
+    assert second.messages_read == 1 and second.files_not_read == ()
+    assert "y" * 400 in extractor.calls[-1][1]
+    assert downloads == ["F1"]
+
+
 # --- arguments and access
 
 

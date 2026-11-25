@@ -90,9 +90,27 @@ def test_a_page_in_the_first_sheet_needs_the_first_sheets_header():
     assert sheet_header(WORKBOOK, WORKBOOK.index("b,2")) == "## Sheet: Counts\ntable,rows"
 
 
-@pytest.mark.parametrize("where", ["## Sheet: Counts", "table,rows", "## Sheet: Failures", "table,error"], ids=["name", "header", "second-name", "second-header"])
-def test_a_page_that_starts_at_or_before_a_sheets_header_repeats_nothing(where):
+@pytest.mark.parametrize("where", ["## Sheet: Counts", "## Sheet: Failures"], ids=["name", "second-name"])
+def test_a_page_that_starts_at_a_sheets_name_repeats_nothing(where):
     assert sheet_header(WORKBOOK, WORKBOOK.index(where)) is None
+
+
+@pytest.mark.parametrize(
+    "where, name", [("table,rows", "## Sheet: Counts"), ("table,error", "## Sheet: Failures")], ids=["header", "second-header"]
+)
+def test_a_page_that_starts_at_a_sheets_columns_repeats_the_sheet_name(where, name):
+    """The page before ended right after the name line, so this page has the columns but not the sheet."""
+    assert sheet_header(WORKBOOK, WORKBOOK.index(where)) == name
+
+
+def test_a_page_cut_after_the_sheet_name_keeps_the_name_on_the_next_page():
+    text = "## Sheet: Counts\n" + "a" * 60 + ",b\n1,2\n"
+
+    first, offset = cut_page(text, 0, 40, repeated_header(text, 0, "xlsx"), True)
+    second, _ = cut_page(text, offset, 200, repeated_header(text, offset, "xlsx"), True)
+
+    assert first == "## Sheet: Counts\n"
+    assert second.startswith("## Sheet: Counts\n" + "a" * 60)
 
 
 def test_a_sheet_marker_inside_a_cell_is_not_taken_for_a_sheet():
@@ -212,7 +230,7 @@ def test_a_workbooks_multiline_first_record_is_repeated_whole_under_its_sheet_na
     text = '## Sheet: S\nid,"note\nmore"\n1,a\n2,b\n'
 
     assert sheet_header(text, text.index("2,b")) == '## Sheet: S\nid,"note\nmore"'
-    assert sheet_header(text, text.index("more")) is None
+    assert sheet_header(text, text.index("more")) == "## Sheet: S"
 
 
 # --- a stray quote must not cost a file its row boundaries

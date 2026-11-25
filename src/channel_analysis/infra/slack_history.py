@@ -146,38 +146,36 @@ class SlackChannelHistory:
         omitted = 0
         reply_count = int(raw.get("reply_count") or 0)
         if threads and reply_count and raw.get("thread_ts") == raw["ts"]:
-            thread = threads.read(channel_id, raw["ts"], token)
-            if thread is None:
-                omitted = reply_count
-            else:
-                fetched = [r for r in thread if r["ts"] != raw["ts"]]
-                # A reply posted after the window's end isn't part of the window, however late it came.
-                in_window = [r for r in fetched if replies_until is None or float(r["ts"]) <= replies_until]
-                # A broadcast reply is also a message of the channel, counted there; nested here it would be counted twice.
-                shown = [r for r in in_window if not message_text.is_noise(r) and not message_text.is_broadcast(r)]
-                replies = tuple(self._reply(r) for r in shown)
-                # Replies come oldest first: once the ones read reach past the window's end, the unread rest is past it too.
-                past_the_window = replies_until is not None and len(in_window) < len(fetched)
-                omitted = 0 if past_the_window else max(reply_count - len(fetched), 0)
-                reply_count = len(shown) + omitted
-        return ChannelMessage(
-            ts=raw["ts"],
-            author=message_text.author_of(raw),
-            text=message_text.flatten_text(raw),
-            link=f"{workspace_url}/archives/{channel_id}/p{raw['ts'].replace('.', '')}",
-            reactions=message_text.reactions_of(raw),
-            files=message_text.files_of(raw),
-            reply_count=reply_count,
-            replies=replies,
-            omitted_replies=omitted,
-        )
+            replies, omitted = self._thread(raw, channel_id, token, threads, replies_until, reply_count)
+            reply_count = len(replies) + omitted
+        link = f"{workspace_url}/archives/{channel_id}/p{raw['ts'].replace('.', '')}"
+        return self._normalize(raw, link=link, reply_count=reply_count, replies=replies, omitted_replies=omitted)
+
+    def _thread(
+        self, raw: dict, channel_id: str, token: str, threads: _ThreadReader, replies_until: float | None, reply_count: int
+    ) -> tuple[tuple[ChannelMessage, ...], int]:
+        """The replies of a thread that belong to the window, and how many more Slack says exist that were not read."""
+        thread = threads.read(channel_id, raw["ts"], token)
+        if thread is None:
+            return (), reply_count
+        fetched = [r for r in thread if r["ts"] != raw["ts"]]
+        # A reply posted after the window's end isn't part of the window, however late it came.
+        in_window = [r for r in fetched if replies_until is None or float(r["ts"]) <= replies_until]
+        # A broadcast reply is also a message of the channel, counted there; nested here it would be counted twice.
+        shown = [r for r in in_window if not message_text.is_noise(r) and not message_text.is_broadcast(r)]
+        # Replies come oldest first: once the ones read reach past the window's end, the unread rest is past it too.
+        past_the_window = replies_until is not None and len(in_window) < len(fetched)
+        omitted = 0 if past_the_window else max(reply_count - len(fetched), 0)
+        return tuple(self._normalize(r) for r in shown), omitted
 
     @staticmethod
-    def _reply(raw: dict) -> ChannelMessage:
+    def _normalize(raw: dict, **extra: object) -> ChannelMessage:
+        """A message or a reply as the core type; `extra` are what only a root has (link, reply count, replies)."""
         return ChannelMessage(
             ts=raw["ts"],
             author=message_text.author_of(raw),
             text=message_text.flatten_text(raw),
             reactions=message_text.reactions_of(raw),
             files=message_text.files_of(raw),
+            **extra,
         )

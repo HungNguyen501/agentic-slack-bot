@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAnalysisError, ExtractionShapeError
 from channel_analysis.core.file_pages import cut_page, is_tabular, repeated_header
-from channel_analysis.core.models import ChannelMessage, ExtractionItem, ExtractionSpec, FileRef, GroupCount, Record
+from channel_analysis.core.models import ChannelMessage, ExtractionField, ExtractionItem, ExtractionSpec, FileRef, GroupCount, Record
 
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 # `m` is the item number in the answer's records; a field of that name would collide with it.
@@ -31,22 +31,30 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
         raise ChannelAnalysisError(f"`fields` takes 1 to {limits.MAX_FIELDS} fields.")
     names = [field.name for field in spec.fields]
     for field in spec.fields:
-        if field.name in _RESERVED_FIELD_NAMES:
-            raise ChannelAnalysisError(f"`{field.name}` is reserved (it numbers the items in the answer); give the field another name.")
-        if not _FIELD_NAME.fullmatch(field.name):
-            raise ChannelAnalysisError(f"Field name `{field.name}` must be snake_case: lower case letters, digits and underscores, starting with a letter.")
-        if len(field.description) > limits.MAX_FIELD_DESCRIPTION_CHARS:
-            raise ChannelAnalysisError(f"The description of `{field.name}` can be at most {limits.MAX_FIELD_DESCRIPTION_CHARS} characters.")
-        if len(field.allowed_values) > limits.MAX_ALLOWED_VALUES or any(len(v) > limits.MAX_ALLOWED_VALUE_CHARS for v in field.allowed_values):
-            raise ChannelAnalysisError(
-                f"`allowed_values` of `{field.name}` takes at most {limits.MAX_ALLOWED_VALUES} values of at most {limits.MAX_ALLOWED_VALUE_CHARS} characters."
-            )
+        _validate_field(field)
     for field in spec.fields:
         lowered = [value.lower() for value in field.allowed_values]
         if len(set(lowered)) != len(lowered):
             raise ChannelAnalysisError(f"`allowed_values` of `{field.name}` has values that differ only in case; values are matched ignoring case, so give each once.")
     if len(set(names)) != len(names):
         raise ChannelAnalysisError("Each field needs its own name.")
+    _validate_group_by(group_by, names)
+
+
+def _validate_field(field: ExtractionField) -> None:
+    if field.name in _RESERVED_FIELD_NAMES:
+        raise ChannelAnalysisError(f"`{field.name}` is reserved (it numbers the items in the answer); give the field another name.")
+    if not _FIELD_NAME.fullmatch(field.name):
+        raise ChannelAnalysisError(f"Field name `{field.name}` must be snake_case: lower case letters, digits and underscores, starting with a letter.")
+    if len(field.description) > limits.MAX_FIELD_DESCRIPTION_CHARS:
+        raise ChannelAnalysisError(f"The description of `{field.name}` can be at most {limits.MAX_FIELD_DESCRIPTION_CHARS} characters.")
+    if len(field.allowed_values) > limits.MAX_ALLOWED_VALUES or any(len(v) > limits.MAX_ALLOWED_VALUE_CHARS for v in field.allowed_values):
+        raise ChannelAnalysisError(
+            f"`allowed_values` of `{field.name}` takes at most {limits.MAX_ALLOWED_VALUES} values of at most {limits.MAX_ALLOWED_VALUE_CHARS} characters."
+        )
+
+
+def _validate_group_by(group_by: tuple[str, ...], names: list[str]) -> None:
     if len(group_by) > limits.MAX_GROUP_BY or len(set(group_by)) != len(group_by):
         raise ChannelAnalysisError(f"`group_by` takes up to {limits.MAX_GROUP_BY} different fields.")
     unknown = [name for name in group_by if name not in names]
@@ -63,6 +71,8 @@ def _message_text(message: ChannelMessage) -> str:
     lines.extend(f"[file {f.name}, {f.filetype}]" for f in message.files)
     if message.reactions:
         lines.append(format_reactions(message.reactions))
+    # Said even when no reply is shown (`include_replies` off, or a thread that couldn't be read), so answered and unanswered posts differ.
+    lines.append(f"replies: {message.reply_count}")
     for reply in message.replies:
         lines.append(f"↳ [{format_when(reply.ts)}] {reply.author}: {reply.text}")
         lines.extend(f"[file {f.name}, {f.filetype}]" for f in reply.files)
@@ -112,9 +122,20 @@ class ChunkPacker:
         self._budget = budget
         self._max_chunks = max_chunks
 
+    def fits(self, items: list[ExtractionItem]) -> bool:
+        """Whether `add` would take these items, without taking them."""
+        return self._layout(items) is not None
+
     def add(self, items: list[ExtractionItem]) -> bool:
         """Put one message's items in. Returns False, leaving everything as it was, when that would need more than the allowed
         number of chunks. The first message is always taken, so a call always makes progress."""
+        layout = self._layout(items)
+        if layout is None:
+            return False
+        self.chunks, self._chars = layout
+        return True
+
+    def _layout(self, items: list[ExtractionItem]) -> tuple[list[list[ExtractionItem]], list[int]] | None:
         chunks = [list(chunk) for chunk in self.chunks]
         chars = list(self._chars)
         for item in items:
@@ -124,9 +145,8 @@ class ChunkPacker:
             chunks[-1].append(item)
             chars[-1] += item.size
         if self.chunks and len(chunks) > self._max_chunks:
-            return False
-        self.chunks, self._chars = chunks, chars
-        return True
+            return None
+        return chunks, chars
 
 
 def render_chunk(items: list[ExtractionItem]) -> str:
