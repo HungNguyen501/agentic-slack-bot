@@ -40,6 +40,10 @@ class Character:
     def is_bound_to_skill(self, skill: str) -> bool:
         return skill_binding(skill) in self.bindings
 
+    def has_skill_binding(self) -> bool:
+        """Whether the character is bound to any skill, that is, may speak an agent reply at all (a feature-only one speaks templates)."""
+        return any(binding.startswith(CharactersConfigs.SKILL_PREFIX) for binding in self.bindings)
+
     def slack_identity(self) -> dict[str, str]:
         """Keyword arguments for `connectors.slack.post_message` that post as this character.
 

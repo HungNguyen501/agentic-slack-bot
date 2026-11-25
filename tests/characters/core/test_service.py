@@ -196,8 +196,25 @@ def test_a_stored_character_without_a_persona_is_not_used_for_a_reply(service, r
     assert service.character_for_skills([], ["core"], CH, TS).name == "g"
 
 
-def test_a_character_picked_by_a_reminder_keeps_speaking_in_that_thread_when_it_has_a_persona(service, repository, thread_store):
-    repository.characters = [make_character("a"), skill_character("g", "core")]
+def test_a_character_bound_to_a_feature_alone_never_speaks_a_reply_even_in_the_thread_where_it_reminded(service, repository, thread_store):
+    repository.characters = [make_character("reminder-only", bindings=("feature:pr_reminder",)), skill_character("g", "core")]
+    thread_store.names[(CH, TS)] = "reminder-only"
+
+    assert service.character_for_skills([], ["core"], CH, TS).name == "g"
+    assert thread_store.names[(CH, TS)] == "reminder-only"  # the reminder's voice for the thread is not taken away
+    assert service.character_for_feature("pr_reminder", CH, TS).name == "reminder-only"
+
+
+def test_with_no_character_bound_to_a_skill_a_reply_is_in_the_default_voice_whatever_the_thread_holds(service, repository, thread_store):
+    repository.characters = [make_character("reminder-only", bindings=("feature:pr_reminder",))]
+    thread_store.names[(CH, TS)] = "reminder-only"
+
+    assert service.character_for_skills(["channel-analysis"], ["core"], CH, TS) is None
+    assert thread_store.names[(CH, TS)] == "reminder-only"
+
+
+def test_a_character_bound_to_a_feature_and_a_skill_keeps_speaking_in_the_thread_where_it_reminded(service, repository, thread_store):
+    repository.characters = [make_character("a", bindings=("feature:pr_reminder", "skill:pr-reminders")), skill_character("g", "core")]
     thread_store.names[(CH, TS)] = "a"
 
     assert service.character_for_skills([], ["core"], CH, TS).name == "a"

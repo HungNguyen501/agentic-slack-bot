@@ -466,3 +466,34 @@ def test_the_model_is_told_which_channel_and_thread_the_request_was_made_in_but_
     assert "[Request made in channel C1, in the thread whose first message is 1.0]\ninvestigate the attachment" in sent
     saved = saved_history.call_args.args[1]
     assert saved[0]["content"] == "investigate the attachment"
+
+
+def test_a_posted_access_request_button_is_the_whole_reply_the_rest_of_the_batch_and_the_model_are_skipped(llm, services, saved_history):
+    from agent.access_control.configs import AccessControlConfigs
+
+    posted = AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("request_data_access", "c1"), tool_call("list_schedules", "c2")], output_text=""),
+        AssertionError("the model must not be asked again once the button is posted"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value=posted) as dispatch_tool:
+        reply = run(services, "I need access to a table")
+
+    assert reply == agent.AgentReply("", ANNA)
+    assert dispatch_tool.call_count == 1
+    assert llm.create_response.call_count == 1
+    saved = saved_history.call_args.args[1]
+    assert saved == [{"role": "user", "content": "I need access to a table", "author": "UADMIN"}, {"role": "assistant", "content": posted}]
+
+
+def test_another_tools_result_does_not_end_the_run(llm, services, saved_history):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("request_data_access", "c1")], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="Sorry, not allowed in this channel."):
+        reply = run(services)
+
+    assert reply.text == "the answer"

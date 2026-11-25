@@ -104,11 +104,14 @@ class CharacterService:
     def character_for_skills(self, routed: Iterable[str], always: Iterable[str], channel: str, thread_ts: str) -> Character | None:
         """The character whose persona shapes an agent reply in a thread, or None for the plain prompt.
 
-        A thread keeps the character it already has, if that character has a persona. Otherwise one is picked at random
-        from the characters bound to a skill the router picked, or, when none is, from those bound to an always-loaded
-        skill (`skill:core` is the default voice for every task), and remembered for the thread.
+        Only a character bound to a skill speaks a reply: one bound to a feature alone (a PR reminder voice) never does, even
+        in a thread where it spoke a reminder. A thread keeps the character it already has if that character may speak
+        replies and has a persona. Otherwise one is picked at random from the characters bound to a skill the router
+        picked, or, when none is, from those bound to an always-loaded skill (`skill:core` is the default voice for every
+        task), and remembered for the thread unless the thread already has a usable character that doesn't speak replies.
         """
-        usable = [c for c in self.usable_characters() if c.persona.strip()]
+        everyone = self.usable_characters()
+        usable = [c for c in everyone if c.persona.strip() and c.has_skill_binding()]
         stored = self._stored_name(channel, thread_ts)
         by_name = {c.name: c for c in usable}
         if stored in by_name:
@@ -121,7 +124,7 @@ class CharacterService:
             candidates = [c for c in usable if any(c.is_bound_to_skill(skill) for skill in default_skills)]
         if not candidates:
             return None
-        return self._pick(candidates, channel, thread_ts, remember=True)
+        return self._pick(candidates, channel, thread_ts, remember=stored not in {c.name for c in everyone})
 
     def _pick(self, candidates: list[Character], channel: str, thread_ts: str, *, remember: bool) -> Character:
         choice = self._rng.choice(candidates)
