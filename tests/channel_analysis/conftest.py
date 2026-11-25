@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
@@ -45,8 +45,18 @@ class FakeHistory:
         if self.script:
             return self.script.pop(0)
         eligible = [m for m in self.messages if float(m.ts) > oldest and (latest is None or float(m.ts) < float(latest))]
-        batch = eligible[:limit]
+        batch = [self._as_read(m, with_replies, replies_until) for m in eligible[:limit]]
         return HistoryBatch(batch, batch[-1].ts if batch else None, exhausted=len(eligible) <= limit, fetched=len(batch))
+
+    @staticmethod
+    def _as_read(message: ChannelMessage, with_replies: bool, replies_until: float | None) -> ChannelMessage:
+        """The message as the real adapter returns it: no replies unless asked for, and none posted after the window's end."""
+        if not with_replies:
+            return replace(message, replies=())
+        if replies_until is None:
+            return message
+        kept = tuple(r for r in message.replies if float(r.ts) <= replies_until)
+        return replace(message, replies=kept, reply_count=max(message.reply_count - (len(message.replies) - len(kept)), 0))
 
     def fetch_thread(self, channel_id: str, thread_ts: str, token: str) -> ChannelMessage | None:
         self.thread_reads.append(thread_ts)

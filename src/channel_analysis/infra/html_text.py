@@ -101,7 +101,9 @@ class _TextBuilder(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in ChannelAnalysisConfigs.HTML_SKIPPED_TAGS:
             self._skip_depth += 1
-            if tag == "script" and (dict(attrs).get("type") or "").split(";")[0].strip().lower() in ChannelAnalysisConfigs.HTML_DATA_SCRIPT_TYPES:
+            # Only a script the reader is not already skipping (not in a `<template>` or `<noscript>`) holds data of the page.
+            is_data = (dict(attrs).get("type") or "").split(";")[0].strip().lower() in ChannelAnalysisConfigs.HTML_DATA_SCRIPT_TYPES
+            if tag == "script" and is_data and self._skip_depth == 1:
                 self._data_script = []
         elif tag == "table":
             if not self._tables:

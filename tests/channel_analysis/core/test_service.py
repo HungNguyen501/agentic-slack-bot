@@ -572,3 +572,25 @@ def test_a_long_thread_is_cut_to_what_a_page_may_carry_and_the_rest_is_counted(s
 
     assert 0 < len(root.replies) < 10
     assert root.omitted_replies == 10 - len(root.replies)
+
+
+# --- replies follow the choice and the window end
+
+
+def test_replies_are_read_only_when_asked_for(service, history):
+    history.messages = [make_message(2, "root", reply_count=1, replies=(make_message(1, "a reply"),))]
+
+    with_replies = read(service, include_replies=True).messages[0]
+    without = read(service, include_replies=False).messages[0]
+
+    assert [r.text for r in with_replies.replies] == ["a reply"]
+    assert without.replies == ()
+
+
+def test_a_reply_posted_after_the_end_of_the_window_is_not_part_of_it(service, history):
+    inside, outside = make_message(30, "inside"), make_message(1, "outside")
+    history.messages = [make_message(50, "root", reply_count=2, replies=(inside, outside))]
+
+    message = read(service, lookback_days=3, end_days_ago=1).messages[0]
+
+    assert [r.text for r in message.replies] == ["inside"]

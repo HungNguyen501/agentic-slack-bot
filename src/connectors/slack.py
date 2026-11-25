@@ -282,6 +282,34 @@ class FileDownloadError(Exception):
     """A file couldn't be downloaded; the message says why."""
 
 
+def _too_slow() -> FileDownloadError:
+    return FileDownloadError(f"The download took longer than {SlackConfigs.DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
+
+
+def _check_download_headers(response: httpx.Response, deadline: float, allow_html: bool) -> None:
+    """Refuse a response that is late, an error, a web page (unless `allow_html`) or compressed, before any of its body is read."""
+    if time.monotonic() > deadline:
+        raise _too_slow()
+    if response.status_code != 200:
+        raise FileDownloadError(f"Slack answered {response.status_code} for the file.")
+    if not allow_html and response.headers.get("content-type", "").startswith("text/html"):
+        raise FileDownloadError("Slack returned a web page instead of the file; the app probably lacks the files:read scope.")
+    if response.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
+        raise FileDownloadError("Slack sent the file compressed, which I won't unpack: it could grow far past the size limit.")
+
+
+def _read_bounded(response: httpx.Response, max_bytes: int, deadline: float) -> bytes:
+    """The raw body, refusing one longer than `max_bytes` or one that is still arriving after `deadline`."""
+    data = bytearray()
+    for chunk in response.iter_raw():
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            raise FileDownloadError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
+        if time.monotonic() > deadline:
+            raise _too_slow()
+    return bytes(data)
+
+
 def download_file(url: str, *, token: str, max_bytes: int, allow_html: bool = False) -> bytes:
     """Download a file Slack hosts, refusing anything bigger than `max_bytes`.
 
@@ -301,28 +329,14 @@ def download_file(url: str, *, token: str, max_bytes: int, allow_html: bool = Fa
     parsed = httpx.URL(url)
     if parsed.scheme != "https" or not (parsed.host == "slack.com" or parsed.host.endswith(".slack.com")):
         raise FileDownloadError("The file is not hosted on Slack.")
-    data = bytearray()
     deadline = time.monotonic() + SlackConfigs.DOWNLOAD_DEADLINE_SECONDS
     try:
         headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
         with httpx.stream("GET", url, headers=headers, timeout=SlackConfigs.DOWNLOAD_WAIT_SECONDS, follow_redirects=False) as response:
-            if time.monotonic() > deadline:
-                raise FileDownloadError(f"The download took longer than {SlackConfigs.DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
-            if response.status_code != 200:
-                raise FileDownloadError(f"Slack answered {response.status_code} for the file.")
-            if not allow_html and response.headers.get("content-type", "").startswith("text/html"):
-                raise FileDownloadError("Slack returned a web page instead of the file; the app probably lacks the files:read scope.")
-            if response.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
-                raise FileDownloadError("Slack sent the file compressed, which I won't unpack: it could grow far past the size limit.")
-            for chunk in response.iter_raw():
-                data.extend(chunk)
-                if len(data) > max_bytes:
-                    raise FileDownloadError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
-                if time.monotonic() > deadline:
-                    raise FileDownloadError(f"The download took longer than {SlackConfigs.DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
+            _check_download_headers(response, deadline, allow_html)
+            return _read_bounded(response, max_bytes, deadline)
     except httpx.HTTPError as exc:
         raise FileDownloadError(f"Could not download the file: {exc}") from exc
-    return bytes(data)
 
 
 def get_bot_user_id(token: str) -> str:

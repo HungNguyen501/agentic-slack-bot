@@ -311,3 +311,10 @@ def test_a_long_preformatted_block_stops_collecting_at_the_limit():
 
     assert "file cut here" in text
     assert collapsed.call_count < 100
+
+
+@pytest.mark.parametrize("container", ["template", "noscript"])
+def test_a_json_script_inside_a_skipped_container_is_not_data_of_the_page(container):
+    html = f'<p>x</p><{container}><script type="application/json">[{{"rows":100}}]</script></{container}><p>y</p>'.encode()
+
+    assert extract_text("a.html", "html", html, MAX) == "x\ny"

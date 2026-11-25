@@ -269,3 +269,29 @@ def test_a_list_that_says_more_than_text_is_still_kept():
     flat = message_text.flatten_text(list_message("• one", "bullet", "one", "two"))
 
     assert "- two" in flat
+
+
+@pytest.mark.parametrize(
+    "text, element",
+    [
+        ("see <#C0123456789|general> now", {"type": "channel", "channel_id": "C0123456789"}),
+        ("ask <@U123|bob> now", {"type": "user", "user_id": "U123"}),
+        ("ping <!subteam^S123|@data-team> now", {"type": "usergroup", "usergroup_id": "S123"}),
+        ("heads up <!here> now", {"type": "broadcast", "range": "here"}),
+        ("heads up <!here|here> now", {"type": "broadcast", "range": "here"}),
+    ],
+    ids=["channel", "user", "user-group", "here", "labelled-here"],
+)
+def test_a_message_with_a_mention_is_not_listed_twice_whether_text_labels_it_or_not(text, element):
+    message = link_message(text, {"type": "text", "text": text.split("<")[0]}, element, {"type": "text", "text": " now"})
+
+    assert message_text.flatten_text(message) == text
+
+
+def test_a_message_with_a_date_is_not_listed_twice_because_text_keeps_the_fallback_a_block_shows():
+    text = "due <!date^1392734382^{date_short}|Feb 18> ok"
+    message = link_message(
+        text, {"type": "text", "text": "due "}, {"type": "date", "timestamp": 1392734382, "format": "{date_short}", "fallback": "Feb 18"}, {"type": "text", "text": " ok"}
+    )
+
+    assert message_text.flatten_text(message) == text

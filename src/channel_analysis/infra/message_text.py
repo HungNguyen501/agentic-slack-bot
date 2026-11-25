@@ -42,10 +42,14 @@ def _words(text: str) -> str:
 
     A link is `<url|label>` in `text` and `label (url)` in a rich-text block, so both become `label url`. Slack escapes `&`, `<` and
     `>` in `text` as entities but not in blocks, so they are decoded (`&amp;` last, or `&amp;lt;` would turn into `<`). Slack's `text`
-    writes a list with `•` (bullets), `◦` / `▪` (nested) or `1.` (ordered) and a rich-text block here with `-`, so a leading marker is dropped.
+    writes a list with `•` (bullets), `◦` / `▪` (nested) or `1.` (ordered) and a rich-text block here with `-`, so a leading marker is dropped. A mention
+    in `text` carries a label (`<#C1|general>`) that a block's element doesn't, so the label is dropped, and `<!here>` reads as `@here`; a date keeps its fallback text.
     """
     text = ChannelAnalysisConfigs.LIST_MARKER.sub("", text)
     text = ChannelAnalysisConfigs.LABELLED_LINK.sub(r"\2 \1", text)
+    text = ChannelAnalysisConfigs.DATE_MENTION.sub(r"\1", text)
+    text = ChannelAnalysisConfigs.LABELLED_MENTION.sub(r"<\1>", text)
+    text = ChannelAnalysisConfigs.BROADCAST_MENTION.sub(r"@\1", text)
     text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     text = re.sub(r"[()<>|]+", " ", text)
     return " ".join(re.sub(r"[*_~`]+", " ", text).lower().split())

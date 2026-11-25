@@ -112,21 +112,38 @@ def _sheets_text(workbook, max_chars: int) -> str:
 
 
 def _limit_resources() -> None:
+    """Lower this process's memory and CPU limits (each on its own, so one that can't be set doesn't skip the other).
+
+    Raises:
+        FileUnreadableError: a limit can't be set on Linux, where the worker runs and where both are enforced: parsing an untrusted
+            file with no memory bound could take the worker down, which a wall-clock timeout doesn't prevent. Elsewhere (a developer's
+            laptop: macOS refuses to lower RLIMIT_AS) the parent's timeout is all there is.
+    """
     try:
         import resource
-
-        resource.setrlimit(resource.RLIMIT_AS, (ChannelAnalysisConfigs.PARSE_MEMORY_BYTES, ChannelAnalysisConfigs.PARSE_MEMORY_BYTES))
-        resource.setrlimit(resource.RLIMIT_CPU, (ChannelAnalysisConfigs.PARSE_CPU_SECONDS, ChannelAnalysisConfigs.PARSE_CPU_SECONDS))
-    except (ImportError, ValueError, OSError):
-        pass  # not every platform lets a process lower these; the parent's timeout still applies
+    except ImportError:
+        return
+    failed = False
+    for which, wanted in ((resource.RLIMIT_AS, ChannelAnalysisConfigs.PARSE_MEMORY_BYTES), (resource.RLIMIT_CPU, ChannelAnalysisConfigs.PARSE_CPU_SECONDS)):
+        try:
+            # A hard limit already below the wanted one is a boundary too: lower the soft limit to it.
+            hard = resource.getrlimit(which)[1]
+            limit = wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
+            resource.setrlimit(which, (limit, limit))
+        except (ValueError, OSError):
+            failed = True
+    if failed and sys.platform.startswith("linux"):
+        raise FileUnreadableError(
+            "I can't open files here: this host won't let me limit the memory and CPU of the file reader, and reading an untrusted file without limits isn't safe."
+        )
 
 
 def main(argv: list[str]) -> int:
     """Child process: the file on stdin, `name filetype max_chars` as arguments, one JSON object on stdout ({"text"} or {"error"})."""
     name, filetype, max_chars = argv[0], argv[1], int(argv[2])
-    _limit_resources()
-    data = sys.stdin.buffer.read()
     try:
+        _limit_resources()
+        data = sys.stdin.buffer.read()
         result = {"text": extract_text(name, filetype, data, max_chars)}
     except FileUnreadableError as exc:
         result = {"error": str(exc)}

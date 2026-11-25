@@ -80,16 +80,45 @@ def test_the_child_gets_none_of_the_workers_secrets(monkeypatch):
 
 
 def test_the_child_lowers_its_memory_and_cpu_limits_before_it_reads_the_file():
-    with patch("resource.setrlimit", autospec=True) as setrlimit:
+    with patch("resource.setrlimit", autospec=True) as setrlimit, patch("resource.getrlimit", autospec=True, return_value=(0, resource.RLIM_INFINITY)):
         file_text._limit_resources()
 
     assert [c.args[0] for c in setrlimit.call_args_list] == [resource.RLIMIT_AS, resource.RLIMIT_CPU]
     assert setrlimit.call_args_list[0].args[1] == (ChannelAnalysisConfigs.PARSE_MEMORY_BYTES, ChannelAnalysisConfigs.PARSE_MEMORY_BYTES)
 
 
-def test_a_platform_that_refuses_the_limits_still_parses():
-    with patch("resource.setrlimit", autospec=True, side_effect=ValueError("not allowed")):
+def test_a_hard_limit_already_below_the_wanted_one_is_the_limit_used():
+    with patch("resource.setrlimit", autospec=True) as setrlimit, patch("resource.getrlimit", autospec=True, return_value=(0, 1000)):
         file_text._limit_resources()
+
+    cpu = ChannelAnalysisConfigs.PARSE_CPU_SECONDS
+    assert [c.args[1] for c in setrlimit.call_args_list] == [(1000, 1000), (min(cpu, 1000), min(cpu, 1000))]
+
+
+def test_a_platform_that_cannot_lower_the_limits_still_parses_outside_linux():
+    with patch("resource.setrlimit", autospec=True, side_effect=ValueError("not allowed")) as setrlimit, patch("sys.platform", "darwin"):
+        file_text._limit_resources()
+
+    assert setrlimit.call_count == 2
+
+
+def test_on_linux_a_limit_that_cannot_be_set_means_the_file_is_not_read_and_the_other_limit_is_still_tried():
+    with (
+        patch("resource.setrlimit", autospec=True, side_effect=[ValueError("not allowed"), None]) as setrlimit,
+        patch("sys.platform", "linux"),
+        pytest.raises(FileUnreadableError, match="limit the memory and CPU"),
+    ):
+        file_text._limit_resources()
+
+    assert setrlimit.call_count == 2
+
+
+def test_the_child_answers_with_an_error_and_reads_nothing_when_the_limits_cannot_be_set(capsys):
+    with patch.object(file_text, "_limit_resources", autospec=True, side_effect=FileUnreadableError("no limits")), patch("sys.stdin") as stdin:
+        file_text.main(["a.pdf", "pdf", "100"])
+
+    assert json.loads(capsys.readouterr().out) == {"error": "no limits"}
+    stdin.buffer.read.assert_not_called()
 
 
 def test_the_childs_stderr_is_not_collected_so_a_warning_heavy_file_cannot_fill_the_workers_memory():

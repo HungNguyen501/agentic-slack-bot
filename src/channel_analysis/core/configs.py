@@ -170,6 +170,11 @@ class ChannelAnalysisConfigs:
     # The start of a list item in a message's `text` (Slack writes `•`, `◦`, `▪` or `1.`) and in a rich-text block (`-`).
     LIST_MARKER = re.compile(r"^[ \t]*(?:[-•◦▪‣]|\d+[.)])[ \t]+", re.MULTILINE)
     LABELLED_LINK = re.compile(r"<(https?://[^|>\s]+)\|([^>]+)>")
+    # A mention in `text` is `<#C1|name>`, `<@U1|name>`, `<!subteam^S1|@team>` or `<!here|here>`; a rich-text block shows the bare `<#C1>`, `<@U1>`, `@here`.
+    # A date in `text` is `<!date^1392734382^{date_short}|Feb 18>`; a block shows the fallback, `Feb 18`.
+    DATE_MENTION = re.compile(r"<!date\^[^|>]*\|([^>]*)>")
+    LABELLED_MENTION = re.compile(r"<([#@!][^|>\s]+)\|[^>]*>")
+    BROADCAST_MENTION = re.compile(r"<!(here|channel|everyone)>")
 
     # What a counts line shows for a missing value (the record's key keeps None, so it can't be mistaken for a value that reads the same).
     MISSING = "(missing)"
