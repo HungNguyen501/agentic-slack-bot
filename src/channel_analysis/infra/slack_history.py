@@ -53,7 +53,8 @@ class _ThreadReader:
     limited: bool = False
 
     def read(self, channel_id: str, ts: str, token: str) -> list[dict] | None:
-        """A thread's messages (at most `REPLIES_FETCH_MAX`, so one call per thread), or None when they can't be read: Slack
+        """A thread's messages (at most `REPLIES_FETCH_MAX`; one page of that size, but Slack may return fewer than asked and follow
+        up with a cursor, so a thread can cost a few calls), or None when they can't be read: Slack
         refuses even after a wait, or says no for this thread. The page then shows the reply count instead of failing, since
         the channel itself was read."""
         for attempt in range(2):

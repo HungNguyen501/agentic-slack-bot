@@ -494,6 +494,13 @@ def test_download_file_explains_why_it_gave_up(stream, message):
         download(stream)
 
 
+def test_download_file_gives_up_on_a_transfer_that_keeps_trickling_past_the_deadline():
+    clock = iter([0.0, 1.0, slack._DOWNLOAD_DEADLINE_SECONDS + 1])
+
+    with patch("connectors.slack.time.monotonic", autospec=True, side_effect=lambda: next(clock)), pytest.raises(slack.FileDownloadError, match="took longer than"):
+        download(FakeStream(chunks=(b"a", b"b", b"c")), max_bytes=1000)
+
+
 def test_conversations_replies_stops_at_max_messages_with_a_page_no_bigger_than_that():
     client = MagicMock()
     client.conversations_replies.return_value = page([{"ts": str(n)} for n in range(5)], "more")

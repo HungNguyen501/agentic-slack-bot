@@ -51,8 +51,8 @@ def llm(saved_history):
         yield openai
 
 
-def run(services, **kwargs):
-    return agent.run_agent("which tables?", "1.0", "C1", user_id="UADMIN", bot=BOT, services=services, **kwargs)
+def run(services, question="which tables?", **kwargs):
+    return agent.run_agent(question, "1.0", "C1", user_id="UADMIN", bot=BOT, services=services, **kwargs)
 
 
 def test_the_character_is_picked_from_the_skills_the_router_chose(llm, services, characters):
@@ -145,6 +145,34 @@ def test_before_any_channel_read_every_tool_is_offered_and_after_it_only_the_rea
     assert {t["name"] for t in second} == agent.READ_ONLY_TOOLS
     assert dispatch_tool.call_count == 1
     assert reply.text == "the answer"
+
+
+def read_then(llm, second_call):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("read_channel_messages", "c1", '{"channel": "alerts"}')], output_text=""),
+        MagicMock(output=[second_call], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+
+def test_after_a_channel_read_another_channel_the_request_does_not_name_is_refused_without_running(llm, services):
+    read_then(llm, tool_call("read_channel_messages", "c2", '{"channel": "C0SECRET001"}'))
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="page") as dispatch_tool:
+        run(services, question="count the failures in #alerts")
+
+    assert [c.args[1] for c in dispatch_tool.call_args_list] == [{"channel": "alerts"}]
+    outputs = [m for m in llm.create_response.call_args_list[-1].kwargs["input"] if m.get("type") == "function_call_output"]
+    assert outputs[-1]["output"] == agent.CHANNEL_OUT_OF_SCOPE_MESSAGE
+
+
+def test_after_a_channel_read_the_same_channel_and_one_the_request_names_can_still_be_read(llm, services):
+    read_then(llm, tool_call("analyze_channel", "c2", '{"channel": "#billing"}'))
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="page") as dispatch_tool:
+        run(services, question="compare #alerts and #billing")
+
+    assert [c.args[0] for c in dispatch_tool.call_args_list] == ["read_channel_messages", "analyze_channel"]
 
 
 def test_a_write_tool_called_after_a_channel_read_is_refused_without_running(llm, services):

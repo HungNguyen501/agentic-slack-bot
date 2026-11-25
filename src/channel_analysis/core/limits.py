@@ -18,7 +18,7 @@ REACTION_OVERHEAD_CHARS = 4
 REPLY_INDENT_CHARS = 4
 
 # Messages asked of Slack in one call, and how many a single tool call may scan while looking for matches. With replies
-# on, each message with a thread costs one more Slack call (about 50 a minute are allowed), so both are smaller.
+# on, each message with a thread costs at least one more Slack call (about 50 a minute are allowed), so both are smaller.
 FETCH_BATCH = 200
 FETCH_BATCH_WITH_REPLIES = 50
 MAX_SCAN_PER_CALL = 600

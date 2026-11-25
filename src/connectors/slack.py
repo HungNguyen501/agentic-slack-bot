@@ -1,6 +1,7 @@
 """Slack Web API client — message posting, history reads, modal views, and mrkdwn chunking."""
 import hashlib
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -239,6 +240,11 @@ def get_file_info(file_id: str, *, token: str) -> dict:
     return dict(WebClient(token=token).files_info(file=file_id)["file"])
 
 
+# httpx's timeout bounds each wait for the server, not the whole transfer: a response that trickles bytes would otherwise run on
+# until the job timeout killed the agent run.
+_DOWNLOAD_DEADLINE_SECONDS = 60.0
+
+
 class FileDownloadError(Exception):
     """A file couldn't be downloaded; the message says why."""
 
@@ -250,12 +256,14 @@ def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
     bot's token is sent along.
 
     Raises:
-        FileDownloadError: another host, an error status, an HTML page (what Slack returns when the token can't read files) or too many bytes.
+        FileDownloadError: another host, an error status, an HTML page (what Slack returns when the token can't read files), too many
+            bytes or a transfer that takes longer than `_DOWNLOAD_DEADLINE_SECONDS`.
     """
     parsed = httpx.URL(url)
     if parsed.scheme != "https" or not (parsed.host == "slack.com" or parsed.host.endswith(".slack.com")):
         raise FileDownloadError("The file is not hosted on Slack.")
     data = bytearray()
+    deadline = time.monotonic() + _DOWNLOAD_DEADLINE_SECONDS
     try:
         with httpx.stream("GET", url, headers={"Authorization": f"Bearer {token}"}, timeout=30.0, follow_redirects=False) as response:
             if response.status_code != 200:
@@ -266,6 +274,8 @@ def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
                 data.extend(chunk)
                 if len(data) > max_bytes:
                     raise FileDownloadError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
+                if time.monotonic() > deadline:
+                    raise FileDownloadError(f"The download took longer than {_DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
     except httpx.HTTPError as exc:
         raise FileDownloadError(f"Could not download the file: {exc}") from exc
     return bytes(data)
