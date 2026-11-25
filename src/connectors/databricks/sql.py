@@ -6,9 +6,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from .client import HOST, WAREHOUSE_ID, TOKEN
-
-_MAX_ROWS = 200
+from .client import DatabricksConfigs
 
 
 class DatabricksQueryError(Exception):
@@ -35,7 +33,7 @@ def _require_select(sql: str) -> str:
 
 
 def _auth_headers() -> dict:
-    return {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+    return {"Authorization": f"Bearer {DatabricksConfigs.TOKEN}", "Content-Type": "application/json"}
 
 
 @contextmanager
@@ -55,7 +53,7 @@ def _execute_statement(statement: str, row_limit: int | None = None) -> dict:
         DatabricksQueryError: the API can't be reached or answers with an error, or the statement failed or was cancelled.
     """
     payload = {
-        "warehouse_id": WAREHOUSE_ID,
+        "warehouse_id": DatabricksConfigs.WAREHOUSE_ID,
         "statement": statement,
         "wait_timeout": "50s",
         "on_wait_timeout": "CANCEL",
@@ -65,7 +63,7 @@ def _execute_statement(statement: str, row_limit: int | None = None) -> dict:
     if row_limit is not None:
         payload["row_limit"] = row_limit
     with _translate_http_errors():
-        resp = httpx.post(f"{HOST}/api/2.0/sql/statements", headers=_auth_headers(), json=payload, timeout=60.0)
+        resp = httpx.post(f"{DatabricksConfigs.HOST}/api/2.0/sql/statements", headers=_auth_headers(), json=payload, timeout=60.0)
         resp.raise_for_status()
         data = resp.json()
 
@@ -90,7 +88,7 @@ def _read_all_rows(first_result: dict) -> list[list]:
             next_chunk = result.get("next_chunk_internal_link")
             if not next_chunk:
                 return rows
-            chunk_resp = httpx.get(f"{HOST}{next_chunk}", headers=_auth_headers(), timeout=60.0)
+            chunk_resp = httpx.get(f"{DatabricksConfigs.HOST}{next_chunk}", headers=_auth_headers(), timeout=60.0)
             chunk_resp.raise_for_status()
             result = chunk_resp.json()
 
@@ -126,8 +124,8 @@ def run_query(sql: str) -> str:
     if not rows:
         return "Query returned no results."
 
-    truncated = len(rows) > _MAX_ROWS
-    display_rows = rows[:_MAX_ROWS]
+    truncated = len(rows) > DatabricksConfigs.MAX_ROWS
+    display_rows = rows[:DatabricksConfigs.MAX_ROWS]
 
     all_rows = [columns] + [
         ["NULL" if cell is None else str(cell) for cell in row]
@@ -141,7 +139,7 @@ def run_query(sql: str) -> str:
         if i == 0:
             lines.append(divider)
 
-    note = f"(showing first {_MAX_ROWS} of {len(rows)} rows)" if truncated else f"{len(rows)} row(s)"
+    note = f"(showing first {DatabricksConfigs.MAX_ROWS} of {len(rows)} rows)" if truncated else f"{len(rows)} row(s)"
     return f"```\n{'\n'.join(lines)}\n```\n_{note}_"
 
 

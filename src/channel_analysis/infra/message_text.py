@@ -2,28 +2,17 @@
 import re
 from datetime import UTC, datetime
 
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.models import FileRef
 from channel_analysis.infra.file_kinds import kind_of
 
-# Subtypes that say nothing a report would be about.
-NOISE_SUBTYPES = frozenset(
-    {
-        "channel_join", "channel_leave", "channel_topic", "channel_purpose", "channel_name",
-        "channel_archive", "channel_unarchive", "pinned_item", "unpinned_item", "group_join", "group_leave",
-    }
-)  # fmt: skip
-
 
 def is_noise(message: dict) -> bool:
-    return message.get("subtype") in NOISE_SUBTYPES
-
-
-# A reply posted "also to the channel" is in the channel's history as a message of its own, and in its thread too.
-BROADCAST_SUBTYPES = frozenset({"thread_broadcast", "reply_broadcast"})
+    return message.get("subtype") in ChannelAnalysisConfigs.NOISE_SUBTYPES
 
 
 def is_broadcast(message: dict) -> bool:
-    return message.get("subtype") in BROADCAST_SUBTYPES
+    return message.get("subtype") in ChannelAnalysisConfigs.BROADCAST_SUBTYPES
 
 
 def author_of(message: dict) -> str:
@@ -48,16 +37,13 @@ def files_of(message: dict) -> tuple[FileRef, ...]:
     return tuple(files)
 
 
-_LABELLED_LINK = re.compile(r"<(https?://[^|>\s]+)\|([^>]+)>")
-
-
 def _words(text: str) -> str:
     """The words of a text without Slack's markup, to tell whether a block only repeats `text`.
 
     A link is `<url|label>` in `text` and `label (url)` in a rich-text block, so both become `label url`. Slack escapes `&`, `<` and
     `>` in `text` as entities but not in blocks, so they are decoded (`&amp;` last, or `&amp;lt;` would turn into `<`).
     """
-    text = _LABELLED_LINK.sub(r"\2 \1", text)
+    text = ChannelAnalysisConfigs.LABELLED_LINK.sub(r"\2 \1", text)
     text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     text = re.sub(r"[()<>|]+", " ", text)
     return " ".join(re.sub(r"[*_~`]+", " ", text).lower().split())

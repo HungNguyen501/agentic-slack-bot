@@ -1,6 +1,7 @@
 """Composition root of the worker service: the one place that builds adapters and the use cases that run on them."""
 import functools
 
+from characters.core.configs import CharactersConfigs
 from agent.dispatch import ToolServices
 from agent.pr_reminders.message import VOICE_SPEC as PR_REMINDER_VOICE_SPEC
 from bots.core.ports import BotRepository
@@ -9,7 +10,6 @@ from channel_analysis.core.service import ChannelAnalysisService
 from channel_analysis.infra.openai_extraction import OpenAIExtractionModel
 from channel_analysis.infra.slack_files import SlackChannelFiles
 from channel_analysis.infra.slack_history import SlackChannelHistory
-from characters.core.models import FEATURE_PR_REMINDER
 from characters.core.service import CharacterService
 from characters.infra.files_source import FilesCharacterSource
 from characters.infra.known_skills import SupabaseKnownSkills
@@ -47,7 +47,7 @@ def character_service() -> CharacterService:
         RedisThreadCharacterStore(redis_client, AgentConfigs.THREAD_CHARACTER_TTL_SECONDS),
         SupabaseKnownSkills(),
         FilesCharacterSource(),
-        {FEATURE_PR_REMINDER: PR_REMINDER_VOICE_SPEC},
+        {CharactersConfigs.FEATURE_PR_REMINDER: PR_REMINDER_VOICE_SPEC},
     )
 
 

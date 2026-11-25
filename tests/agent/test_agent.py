@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
+from agent.agent import AgentLoopConfigs
 from agent import agent
 from agent.dispatch import ToolServices, UnattendedRun
 from agent.skills.loader import SystemPrompt
@@ -83,7 +84,7 @@ def test_the_history_keeps_the_clean_question_and_answer_whatever_the_voice(llm,
     run(services)
 
     saved = saved_history.call_args.args[1]
-    assert saved == [{"role": "user", "content": "which tables?"}, {"role": "assistant", "content": "the answer"}]
+    assert saved == [{"role": "user", "content": "which tables?", "author": "UADMIN"}, {"role": "assistant", "content": "the answer"}]
 
 
 def test_the_processing_limit_message_still_reports_the_character(llm, services):
@@ -142,7 +143,7 @@ def test_before_any_channel_read_every_tool_is_offered_and_after_it_only_the_rea
 
     first, second = (c.kwargs["tools"] for c in llm.create_response.call_args_list)
     assert "remove_schedule" in {t["name"] for t in first}
-    assert {t["name"] for t in second} == agent.READ_ONLY_TOOLS
+    assert {t["name"] for t in second} == agent.ToolPolicy.READ_ONLY_TOOLS
     assert dispatch_tool.call_count == 1
     assert reply.text == "the answer"
 
@@ -163,7 +164,7 @@ def test_after_a_channel_read_another_channel_the_request_does_not_name_is_refus
 
     assert [c.args[1] for c in dispatch_tool.call_args_list] == [{"channel": "alerts"}]
     outputs = [m for m in llm.create_response.call_args_list[-1].kwargs["input"] if m.get("type") == "function_call_output"]
-    assert outputs[-1]["output"] == agent.CHANNEL_OUT_OF_SCOPE_MESSAGE
+    assert outputs[-1]["output"] == agent.AgentLoopConfigs.CHANNEL_OUT_OF_SCOPE_MESSAGE
 
 
 def test_after_a_channel_read_the_same_channel_and_one_the_request_names_can_still_be_read(llm, services):
@@ -204,7 +205,7 @@ def test_a_channel_the_request_does_not_name_is_refused_once_another_tool_return
 
     assert [(c.args[0], c.args[1]) for c in dispatch_tool.call_args_list] == [("execute_query", {"query": "select 1"}), ("read_channel_messages", {"channel": "alerts"})]
     outputs = [m["output"] for m in llm.create_response.call_args_list[-1].kwargs["input"] if m.get("type") == "function_call_output"]
-    assert outputs[1] == agent.CHANNEL_OUT_OF_SCOPE_MESSAGE
+    assert outputs[1] == agent.AgentLoopConfigs.CHANNEL_OUT_OF_SCOPE_MESSAGE
 
 
 def run_channel_call(llm, services, channel_arg, history=(), earlier_tool=None, question="what failed in #alerts?"):
@@ -223,13 +224,30 @@ def test_in_a_thread_that_already_holds_an_answer_a_channel_the_admin_never_poin
 
 
 def test_a_channel_the_admin_pointed_at_in_an_earlier_request_of_the_thread_is_still_allowed(llm, services):
-    history = [{"role": "user", "content": "how many failed in #billing?"}, {"role": "assistant", "content": "12"}]
+    history = [{"role": "user", "content": "how many failed in #billing?", "author": "UADMIN"}, {"role": "assistant", "content": "12"}]
 
     assert run_channel_call(llm, services, "billing", history) == ["read_channel_messages"]
 
 
+@pytest.mark.parametrize("author", ["UOTHER", None], ids=["another-user", "saved-before-authors-were-kept"])
+def test_a_channel_someone_else_pointed_at_earlier_in_the_thread_does_not_open_it_to_the_admin(llm, services, author):
+    entry = {"role": "user", "content": "read #secret-finance", **({"author": author} if author else {})}
+    history = [entry, {"role": "assistant", "content": "done"}]
+
+    assert run_channel_call(llm, services, "secret-finance", history) == []
+
+
+def test_the_author_of_a_saved_question_is_not_sent_to_the_model(llm, services):
+    agent.load_history.return_value = [{"role": "user", "content": "q1", "author": "UADMIN"}, {"role": "assistant", "content": "a1"}]
+
+    run(services)
+
+    sent = llm.create_response.call_args.kwargs["input"]
+    assert {"role": "user", "content": "q1"} in sent and all("author" not in m for m in sent)
+
+
 def test_a_thread_whose_only_answers_were_removed_for_channel_content_still_trusts_the_first_call(llm, services):
-    history = [{"role": "user", "content": "read #alerts"}, {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_REMOVED}]
+    history = [{"role": "user", "content": "read #alerts"}, {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED}]
 
     assert run_channel_call(llm, services, "other-channel", history) == ["read_channel_messages"]
 
@@ -321,8 +339,8 @@ def test_an_answer_built_from_channel_content_is_marked_as_data_in_the_saved_his
 
     saved = saved_history.call_args.args[1]
     assert reply.text == "11 of 34 reports were empty"
-    assert saved[-1] == {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_MARK + "11 of 34 reports were empty"}
-    assert saved[-2] == {"role": "user", "content": "which tables?"}
+    assert saved[-1] == {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_MARK + "11 of 34 reports were empty"}
+    assert saved[-2] == {"role": "user", "content": "which tables?", "author": "UADMIN"}
 
 
 def test_an_answer_that_never_touched_channel_content_is_saved_as_it_is(llm, saved_history, services):
@@ -354,7 +372,7 @@ def test_an_answer_built_from_channel_content_does_not_come_back_with_the_histor
     second_input = openai.create_response.call_args_list[2].kwargs["input"]
     second_tools = {t["name"] for t in openai.create_response.call_args_list[2].kwargs["tools"]}
     assert injected not in str(second_input)
-    assert {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_REMOVED} in second_input
+    assert {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED} in second_input
     assert {"role": "user", "content": "which tables?"} in second_input
     assert {"remove_schedule", "add_schedule"} <= second_tools
     assert store["1.0"][-1] == {"role": "assistant", "content": "done"}
@@ -363,12 +381,12 @@ def test_an_answer_built_from_channel_content_does_not_come_back_with_the_histor
 
 def test_only_answers_marked_as_built_from_channel_content_are_replaced():
     history = [
-        {"role": "user", "content": agent.UNTRUSTED_ANSWER_MARK + "typed by the admin"},
+        {"role": "user", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_MARK + "typed by the admin"},
         {"role": "assistant", "content": "an ordinary answer"},
-        {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_MARK + "from a channel"},
+        {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_MARK + "from a channel"},
     ]
 
-    assert agent._without_untrusted_answers(history) == [history[0], history[1], {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_REMOVED}]
+    assert agent._without_untrusted_answers(history) == [history[0], history[1], {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED}]
 
 
 @pytest.mark.parametrize("name", ["read_channel_messages", "read_channel_file", "analyze_channel"])
@@ -383,7 +401,7 @@ def test_each_tool_that_returns_channel_content_narrows_the_run_and_marks_the_sa
         run(services)
 
     assert [c.args[0] for c in dispatch_tool.call_args_list] == [name]
-    assert saved_history.call_args.args[1][-1]["content"].startswith(agent.UNTRUSTED_ANSWER_MARK)
+    assert saved_history.call_args.args[1][-1]["content"].startswith(AgentLoopConfigs.UNTRUSTED_ANSWER_MARK)
 
 
 def test_when_every_iteration_asks_for_another_tool_the_collected_results_still_become_an_answer(llm, saved_history, services):
@@ -397,7 +415,7 @@ def test_when_every_iteration_asks_for_another_tool_the_collected_results_still_
     last = llm.create_response.call_args_list[-1].kwargs
     assert llm.create_response.call_count == 11
     assert "tools" not in last
-    assert last["input"][-1] == {"role": "user", "content": agent.TOOL_LIMIT_NOTICE}
+    assert last["input"][-1] == {"role": "user", "content": AgentLoopConfigs.TOOL_LIMIT_NOTICE}
     assert any(m.get("type") == "function_call_output" for m in last["input"])
     assert reply.text == final.output_text and reply.character == ANNA
 
@@ -409,7 +427,8 @@ def test_the_answer_after_the_tool_limit_is_saved_and_marked_when_channel_conten
         run(services)
 
     saved = saved_history.call_args.args[1]
-    assert saved[-2:] == [{"role": "user", "content": "which tables?"}, {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_MARK + "partial"}]
+    marked = AgentLoopConfigs.UNTRUSTED_ANSWER_MARK + "partial"
+    assert saved[-2:] == [{"role": "user", "content": "which tables?", "author": "UADMIN"}, {"role": "assistant", "content": marked}]
 
 
 def test_the_answer_after_the_tool_limit_of_a_run_that_read_no_channel_is_saved_as_it_is(llm, saved_history, services):
@@ -427,4 +446,4 @@ def test_when_even_the_final_answer_comes_back_empty_the_processing_limit_messag
     with patch("agent.agent.dispatch_tool", autospec=True, return_value="run"):
         reply = run(services)
 
-    assert reply.text == agent.PROCESSING_LIMIT_MESSAGE
+    assert reply.text == AgentLoopConfigs.PROCESSING_LIMIT_MESSAGE

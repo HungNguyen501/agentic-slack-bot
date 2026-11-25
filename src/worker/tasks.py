@@ -19,10 +19,16 @@ from worker import wiring
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
 
-# Any Slack mention token like <@U12345>; the fallback when the bot's own user id can't be looked up.
-_MENTION_RE = re.compile(r"<@[^>]+>\s*", re.UNICODE)
 
-_THINKING_INTERVAL_SECONDS = 1.0
+class WorkerConfigs:
+    """The mention pattern and the pacing of the thinking animation."""
+
+    # Any Slack mention token like <@U12345>; the fallback when the bot's own user id can't be looked up.
+    MENTION_RE = re.compile(r"<@[^>]+>\s*", re.UNICODE)
+
+    THINKING_INTERVAL_SECONDS = 1.0
+    MIN_GLOBAL_UPDATE_GAP_SECONDS = 1.0
+
 
 # Every conversation's animation thread shares this lock/timestamp so this worker process
 # never fires more than one chat.update per _MIN_GLOBAL_UPDATE_GAP_SECONDS in total, no matter
@@ -32,7 +38,6 @@ _THINKING_INTERVAL_SECONDS = 1.0
 # own budget); fine at this app's scale, but move to a Redis-backed limiter if that stops holding.
 _animation_lock = threading.Lock()
 _last_animation_update = 0.0
-_MIN_GLOBAL_UPDATE_GAP_SECONDS = 1.0
 
 
 @functools.cache
@@ -49,7 +54,7 @@ def _strip_bot_mention(text: str, bot_token: str) -> str:
         bot_mention = re.compile(rf"<@{re.escape(_bot_user_id(bot_token))}(\|[^>]*)?>\s*")
     except (SlackClientError, OSError):
         log.warning("Could not look up the bot's user id; stripping every mention from the request")
-        return _MENTION_RE.sub("", text).strip()
+        return WorkerConfigs.MENTION_RE.sub("", text).strip()
     return bot_mention.sub("", text).strip()
 
 
@@ -63,7 +68,7 @@ def _throttled_animation_update(channel: str, ts: str, text: str, token: str) ->
     global _last_animation_update
     with _animation_lock:
         now = time.monotonic()
-        if now - _last_animation_update < _MIN_GLOBAL_UPDATE_GAP_SECONDS:
+        if now - _last_animation_update < WorkerConfigs.MIN_GLOBAL_UPDATE_GAP_SECONDS:
             return
         _last_animation_update = now
     slack.update_message(channel, ts, text, token=token)
@@ -77,7 +82,7 @@ def _animate_thinking(channel: str, ts: str, token: str, stop_event: threading.E
     so setting the event both ends the loop and skips any remaining wait immediately.
     """
     frame = 0
-    while not stop_event.wait(_THINKING_INTERVAL_SECONDS):
+    while not stop_event.wait(WorkerConfigs.THINKING_INTERVAL_SECONDS):
         frame += 1
         text = " ".join([":pepe-pray:"] * frame)
         try:

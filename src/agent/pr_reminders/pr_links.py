@@ -1,14 +1,8 @@
 """Find GitHub pull request links in Slack messages and work out which thread each one lives in. Pure, no I/O."""
 import json
-import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-
-_PR_URL_RE = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)")
-
-# GraphQL's Int is 32-bit: one larger number makes GitHub reject the whole query, failing every PR in the batch.
-_MAX_PR_NUMBER = 2**31 - 1
-_MAX_PR_NUMBER_DIGITS = len(str(_MAX_PR_NUMBER))
+from agent.pr_reminders.configs import PrRemindersConfigs
 
 
 @dataclass(frozen=True)
@@ -50,10 +44,10 @@ def _pr_number(digits: str) -> int | None:
     """The PR number in `digits`, or None if it can't be one. The length is checked before `int()`, which raises on
     absurdly long digit strings (a Slack message can hold thousands of digits)."""
     significant = digits.lstrip("0")
-    if not significant or len(significant) > _MAX_PR_NUMBER_DIGITS:
+    if not significant or len(significant) > PrRemindersConfigs.MAX_PR_NUMBER_DIGITS:
         return None
     number = int(significant)
-    return number if number <= _MAX_PR_NUMBER else None
+    return number if number <= PrRemindersConfigs.MAX_PR_NUMBER else None
 
 
 def find_pr_refs(text: str) -> list[PrRef]:
@@ -63,7 +57,7 @@ def find_pr_refs(text: str) -> list[PrRef]:
     large to be a PR are ignored.
     """
     refs = {}
-    for owner, repo, digits in _PR_URL_RE.findall(text):
+    for owner, repo, digits in PrRemindersConfigs.PR_URL_RE.findall(text):
         number = _pr_number(digits)
         if number is not None:
             refs[PrRef(owner.lower(), repo.lower(), number)] = None

@@ -16,6 +16,11 @@ class Bucket(Enum):
     INACCESSIBLE = auto()  # GitHub returned null: the credentials can't see the repo, or the PR doesn't exist
 
 
+def is_approved_or_merged(bucket: Bucket) -> bool:
+    """Whether the PR is finished in the way that earns a check mark on the message that shared it."""
+    return bucket in (Bucket.APPROVED, Bucket.MERGED)
+
+
 @dataclass(frozen=True)
 class PrStatus:
     link: PrLink

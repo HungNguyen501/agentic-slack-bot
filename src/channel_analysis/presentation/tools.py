@@ -2,17 +2,13 @@
 import logging
 
 from bots.core.models import BotConfig
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAnalysisError
 from channel_analysis.core.extraction import format_when as _when
 from channel_analysis.core.models import Analysis, ChannelAccess, ChannelMessage, ChannelSlice, ExtractionField, ExtractionSpec, FilePage, GroupCount
-from channel_analysis.core.read_scope import ACCESS_CHECK_PREFIX
 from channel_analysis.core.service import ChannelAnalysisService
 
 log = logging.getLogger("channel_analysis.tools")
-
-# What a counts line shows for a missing value (the record's key keeps None, so it can't be mistaken for a value that reads the same).
-MISSING = "(missing)"
 
 
 def _int_arg(args: dict, name: str) -> int:
@@ -37,7 +33,7 @@ def _terms_arg(args: dict) -> tuple[str, ...]:
 def _format_access(access: ChannelAccess) -> str:
     # Only the ID: a channel's name is typed by whoever can rename it, and this text goes in front of the model, which can call tools.
     where = access.channel_id or "that channel"
-    subject = f"{ACCESS_CHECK_PREFIX}{where}"
+    subject = f"{ChannelAnalysisConfigs.ACCESS_CHECK_PREFIX}{where}"
     if not access.problems:
         lines = [f"{subject}: OK. I can read it and you may see it."]
     elif access.ok:
@@ -46,7 +42,7 @@ def _format_access(access: ChannelAccess) -> str:
         lines = [f"{subject}: NOT OK. Do not read this channel until the blocking problems are fixed; tell the admin each one and how to fix it."]
     lines.extend(f"- {'BLOCKING' if p.blocking else 'warning'}: {p.message}" for p in access.problems)
     if access.empty_window:
-        lines.append(f"- note: there are no messages in the last {limits.DEFAULT_LOOKBACK_DAYS} days.")
+        lines.append(f"- note: there are no messages in the last {ChannelAnalysisConfigs.DEFAULT_LOOKBACK_DAYS} days.")
     return "\n".join(lines)
 
 
@@ -151,8 +147,8 @@ def _spec_arg(args: dict) -> ExtractionSpec:
 
 def _shown(value: str | None) -> str:
     if value is None:
-        return MISSING
-    return value if len(value) <= limits.MAX_VALUE_CHARS else value[: limits.MAX_VALUE_CHARS] + "…"
+        return ChannelAnalysisConfigs.MISSING
+    return value if len(value) <= ChannelAnalysisConfigs.MAX_VALUE_CHARS else value[: ChannelAnalysisConfigs.MAX_VALUE_CHARS] + "…"
 
 
 def _group_line(group: GroupCount, group_by: tuple[str, ...]) -> str:

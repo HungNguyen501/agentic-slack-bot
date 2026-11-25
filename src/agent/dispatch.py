@@ -19,15 +19,21 @@ from schedules.presentation.tools import dispatch_schedule_tool
 
 log = logging.getLogger("agent.dispatch")
 
-# Tools that return what channels and files hold; text in them is not the admin's, so once one has run, the rest of that run
-# may use only the read-only tools below (a crafted post must not be able to remove a schedule or add a character).
-UNTRUSTED_CONTENT_TOOLS = frozenset({"read_channel_messages", "read_channel_file", "analyze_channel"})
-# `execute_query` is not here on purpose: connectors/databricks/sql.py only checks that a statement starts with SELECT or WITH,
-# so it can't be relied on to stop a statement a post asked for. It comes back to this set only once it is read-only for sure.
-# Read-only tools whose output only admins wrote (schedules and characters are admin-only to change), so it can't carry a stranger's
-# instruction: they don't end the point up to which the channels the agent names are taken as the request's (see `agent._ReadGuard`).
-ADMIN_AUTHORED_TOOLS = frozenset({"list_schedules", "list_characters"})
-READ_ONLY_TOOLS = frozenset({"get_job_run_details", "list_schedules", "list_synced_datasets", "list_characters", "check_channel_access"} | UNTRUSTED_CONTENT_TOOLS)
+
+class ToolPolicy:
+    """Which tools may run once a run has read text that someone else wrote."""
+
+    # Tools that return what channels and files hold; text in them is not the admin's, so once one has run, the rest of that run
+    # may use only the read-only tools below (a crafted post must not be able to remove a schedule or add a character).
+    UNTRUSTED_CONTENT_TOOLS = frozenset({"read_channel_messages", "read_channel_file", "analyze_channel"})
+    # Read-only tools whose output only admins wrote (schedules and characters are admin-only to change), so it can't carry a stranger's
+    # instruction: they don't end the point up to which the channels the agent names are taken as the request's (see `agent._ReadGuard`).
+    ADMIN_AUTHORED_TOOLS = frozenset({"list_schedules", "list_characters"})
+    # `execute_query` is not here on purpose: connectors/databricks/sql.py only checks that a statement starts with SELECT or WITH,
+    # so it can't be relied on to stop a statement a post asked for. It comes back to this set only once it is read-only for sure.
+    READ_ONLY_TOOLS = frozenset(
+        {"get_job_run_details", "list_schedules", "list_synced_datasets", "list_characters", "check_channel_access"} | UNTRUSTED_CONTENT_TOOLS
+    )
 
 
 @dataclass(frozen=True)
@@ -50,7 +56,7 @@ class ToolServices:
 
 def get_agent_tools(read_only: bool = False) -> list[dict]:
     """Return the OpenAI function-calling tool schema for all agent tools, or only the read-only ones after untrusted content was read."""
-    return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS if not read_only or tool.name in READ_ONLY_TOOLS]
+    return [tool.to_openai_schema() for tool in AgentConfigs.TOOLS if not read_only or tool.name in ToolPolicy.READ_ONLY_TOOLS]
 
 
 def tool_category(name: str) -> str | None:

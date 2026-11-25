@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAccessError, ChannelAnalysisError, ExtractionError, ExtractionShapeError, FileUnreadableError
 from channel_analysis.core.models import ExtractionField, ExtractionSpec, FileRef
 from tests.support.channel_analysis import BOT, CHANNEL, NOW, WINDOW_START, make_info, make_message, resume_at, ts_ago
@@ -54,8 +54,8 @@ def tables(*names):
 
 
 def small_chunks(monkeypatch, budget=300, chunks=2):
-    monkeypatch.setattr(limits, "CHUNK_CHAR_BUDGET", budget)
-    monkeypatch.setattr(limits, "MAX_CHUNKS_PER_CALL", chunks)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "CHUNK_CHAR_BUDGET", budget)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_CHUNKS_PER_CALL", chunks)
 
 
 # --- the happy path
@@ -126,7 +126,7 @@ def test_rejected_records_are_counted_and_the_valid_ones_kept(service, history, 
 
 
 def test_the_sample_is_newest_first_and_capped(service, history, extractor, monkeypatch):
-    monkeypatch.setattr(limits, "SAMPLE_RECORDS", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "SAMPLE_RECORDS", 2)
     history.messages = [make_message(n, f"m{n}") for n in (1, 2, 3)]
     extractor.respond = one_record_per_item()
 
@@ -137,7 +137,7 @@ def test_the_sample_is_newest_first_and_capped(service, history, extractor, monk
 
 
 def test_groups_past_the_cap_are_summarized_not_listed(service, history, extractor, monkeypatch):
-    monkeypatch.setattr(limits, "MAX_GROUPS_LISTED", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_GROUPS_LISTED", 2)
     history.messages = [make_message(1, "t_alpha"), make_message(2, "t_beta"), make_message(3, "t_gamma"), make_message(4, "t_gamma")]
     extractor.respond = tables("t_alpha", "t_beta", "t_gamma")
 
@@ -190,7 +190,7 @@ def test_the_cursor_carries_the_window_start_like_a_read(service, history, extra
 
 def test_a_message_bigger_than_a_whole_call_is_still_taken_so_the_call_makes_progress(service, history, extractor, files, monkeypatch):
     small_chunks(monkeypatch, budget=100, chunks=1)
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 90)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 90)
     files.texts["F1"] = "line\n" * 100
     history.messages = [make_message(1, "report", files=(FileRef("F1", "log.txt", "text", 500),)), make_message(2, "older")]
     extractor.respond = one_record_per_item()
@@ -202,8 +202,8 @@ def test_a_message_bigger_than_a_whole_call_is_still_taken_so_the_call_makes_pro
 
 
 def test_a_scan_that_stops_at_its_cap_returns_a_cursor(service, history, extractor, monkeypatch):
-    monkeypatch.setattr(limits, "MAX_SCAN_PER_CALL_ANALYSIS_WITH_REPLIES", 3)
-    monkeypatch.setattr(limits, "FETCH_BATCH_WITH_REPLIES", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_SCAN_PER_CALL_ANALYSIS_WITH_REPLIES", 3)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "FETCH_BATCH_WITH_REPLIES", 2)
     history.messages = [make_message(n, "noise") for n in range(1, 9)]
 
     result = analyze(service, contains=("needle",))
@@ -217,8 +217,8 @@ def test_the_extraction_scan_cap_is_bigger_than_a_page_reads(service, history, e
 
     analyze(service, include_replies=False)
 
-    assert limits.MAX_SCAN_PER_CALL_ANALYSIS > limits.MAX_SCAN_PER_CALL
-    assert history.fetches[0]["limit"] == limits.FETCH_BATCH
+    assert ChannelAnalysisConfigs.MAX_SCAN_PER_CALL_ANALYSIS > ChannelAnalysisConfigs.MAX_SCAN_PER_CALL
+    assert history.fetches[0]["limit"] == ChannelAnalysisConfigs.FETCH_BATCH
 
 
 # --- failures
@@ -393,7 +393,7 @@ def test_a_file_becomes_more_items_of_its_message(service, history, extractor, f
 @pytest.mark.parametrize(
     "ref, text_error, expected",
     [
-        (FileRef("F1", "huge.csv", "csv", limits.FILE_MAX_BYTES + 1), None, ("huge.csv", "it is larger than 5 MB")),
+        (FileRef("F1", "huge.csv", "csv", ChannelAnalysisConfigs.FILE_MAX_BYTES + 1), None, ("huge.csv", "it is larger than 5 MB")),
         (FileRef("F1", "scan.pdf", "pdf", 10), FileUnreadableError("That PDF has no text layer."), ("scan.pdf", "That PDF has no text layer.")),
         (FileRef("F1", "x.csv", "csv", 10), ChannelAnalysisError("I can't find that file."), ("x.csv", "I can't find that file.")),
     ],
@@ -430,7 +430,7 @@ def test_when_slack_refuses_files_the_rest_are_not_tried(service, history, extra
 
 
 def test_a_call_reads_at_most_the_allowed_number_of_files(service, history, extractor, files, monkeypatch):
-    monkeypatch.setattr(limits, "MAX_FILES_PER_CALL", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_FILES_PER_CALL", 2)
     for n in (1, 2, 3):
         files.texts[f"F{n}"] = f"file {n}"
     history.messages = [make_message(1, "a", files=tuple(FileRef(f"F{n}", f"f{n}.txt", "text", 5) for n in (1, 2, 3)))]
@@ -442,8 +442,8 @@ def test_a_call_reads_at_most_the_allowed_number_of_files(service, history, extr
 
 
 def test_a_message_adds_only_so_many_pieces_and_says_a_file_was_cut(service, history, extractor, files, monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 40)
-    monkeypatch.setattr(limits, "MAX_ITEMS_PER_MESSAGE", 3)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 40)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_ITEMS_PER_MESSAGE", 3)
     files.texts["F1"] = "line of text\n" * 100
     history.messages = [make_message(1, "report", files=(FileRef("F1", "log.txt", "text", 500),))]
 
@@ -547,7 +547,7 @@ def test_the_channel_checks_apply_to_an_analysis_too(service, history, extractor
 
 def test_a_row_past_the_display_cut_reaches_the_extractor_and_a_page_read_still_cuts_it(service, history, extractor):
     body = "".join(f"row {n:04d} ok\n" for n in range(400)) + "row 9999 table_needle failed"
-    assert len(body) > limits.MESSAGE_CHAR_LIMIT
+    assert len(body) > ChannelAnalysisConfigs.MESSAGE_CHAR_LIMIT
     history.messages = [make_message(1, body)]
     extractor.respond = one_record_per_item(table="table_needle")
 
@@ -561,7 +561,7 @@ def test_a_row_past_the_display_cut_reaches_the_extractor_and_a_page_read_still_
 
 
 def test_replies_past_the_pages_display_budget_reach_the_extractor(service, history, extractor, monkeypatch):
-    monkeypatch.setattr(limits, "REPLIES_CHAR_LIMIT", 300)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "REPLIES_CHAR_LIMIT", 300)
     replies = tuple(make_message(0.5, f"reply {n} " + "x" * 120, ts=f"{1799990000 + n}.000000") for n in range(10))
     history.messages = [make_message(1, "root", replies=replies)]
 
@@ -573,8 +573,8 @@ def test_replies_past_the_pages_display_budget_reach_the_extractor(service, hist
 
 
 def test_a_message_longer_than_one_message_may_add_is_counted_as_cut(service, history, extractor, monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 100)
-    monkeypatch.setattr(limits, "MAX_ITEMS_PER_MESSAGE", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 100)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_ITEMS_PER_MESSAGE", 2)
     history.messages = [make_message(1, "line of text\n" * 60), make_message(2, "short")]
 
     result = analyze(service)
@@ -618,7 +618,7 @@ def test_a_reply_file_that_cannot_be_read_is_listed_not_silently_skipped(service
 
 
 def test_files_of_the_root_and_of_its_replies_share_the_files_budget(service, history, extractor, files, monkeypatch):
-    monkeypatch.setattr(limits, "MAX_FILES_PER_CALL", 1)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_FILES_PER_CALL", 1)
     files.texts.update({"F1": "root file", "F8": "reply file"})
     reply = make_message(0.5, "r", files=(REPLY_FILE,))
     history.messages = [make_message(2, "root", files=(FileRef("F1", "root.txt", "text", 5),), replies=(reply,))]
@@ -642,7 +642,7 @@ def test_a_term_that_is_only_the_name_of_a_file_in_a_reply_matches_the_message(s
 def test_a_workbooks_later_pages_of_the_file_tool_start_with_their_sheet_and_columns(service, files, history, monkeypatch):
     from channel_analysis.core.models import FileMeta
 
-    monkeypatch.setattr(limits, "FILE_PAGE_CHARS", 200)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "FILE_PAGE_CHARS", 200)
     files.metas["FX"] = FileMeta("counts.xlsx", "xlsx", 100, frozenset({CHANNEL}))
     files.texts["FX"] = "## Sheet: Counts\ntable,rows\n" + "".join(f"t{n},{n}\n" for n in range(60))
     first = service.read_file(BOT, CHANNEL, ADMIN, "FX")
@@ -693,7 +693,7 @@ def test_replies_left_out_of_a_message_that_did_not_fit_are_counted_by_the_call_
 
 
 def test_every_attempt_at_a_file_counts_against_the_files_a_call_may_try_even_when_it_fails(service, history, extractor, files, monkeypatch):
-    monkeypatch.setattr(limits, "MAX_FILES_PER_CALL", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_FILES_PER_CALL", 2)
     tried = []
 
     def damaged(file_id, token):

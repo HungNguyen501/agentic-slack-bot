@@ -113,7 +113,7 @@ src/channel_analysis/
   core/
     models.py        ChannelMessage, FileRef, HistoryBatch, ChannelSlice, ChannelAccess, AccessProblem, FilePage (frozen dataclasses)
     errors.py        ChannelAnalysisError (message fit to show an admin)
-    limits.py        window, page, scan and file limits (table below)
+    configs.py       ChannelAnalysisConfigs: window, page, scan and file limits (table below), formats and wording
     reference.py     parse_channel_reference: "C123", "<#C123|name>", "#name" -> id or name (pure)
     file_pages.py    cuts a text into pages at line boundaries, repeats a CSV header on later pages (pure)
     ports.py         ChannelHistory, ChannelFiles (Protocols)
@@ -252,7 +252,7 @@ Infra maps Slack errors to one core `ChannelAnalysisError` with wording an admin
 
 `check_access` does not raise for a permission problem; it returns it as data, because finding problems is its job. `read_channel_messages` raises `ChannelAnalysisError` for the first one.
 
-### Limits (feature constants in `core/limits.py`)
+### Limits (feature constants in `ChannelAnalysisConfigs`, `core/configs.py`)
 
 | Constant | Value | Reason |
 |---|---|---|
@@ -441,7 +441,7 @@ No migration. No new Redis key. No new Slack scope. No new dependency.
 - `read_channel_messages`: a timeline (use case 6), quotes and themes (10, 12), a small window, or when the agent needs to see the wording. It can still read a page to check what an extracted count means.
 - Both can run in one request: analyze for the numbers, then read one or two linked messages for the wording.
 
-### Limits (constants in `core/limits.py`; untuned, see "Measuring before fixing")
+### Limits (constants in `ChannelAnalysisConfigs`, `core/configs.py`; untuned, see "Measuring before fixing")
 
 | Constant | Value | Reason |
 |---|---|---|

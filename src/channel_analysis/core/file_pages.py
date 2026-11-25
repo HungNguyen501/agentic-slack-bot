@@ -1,8 +1,6 @@
 from collections.abc import Iterator
 
-from channel_analysis.core.limits import HEADER_MAX_PAGE_SHARE
-
-SHEET_MARKER = "## Sheet: "
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 
 
 def is_tabular(filetype: str) -> bool:
@@ -58,7 +56,7 @@ def cut_page(text: str, offset: int, page_chars: int, header: str | None = None,
     """
     if offset >= len(text):
         return "", None
-    repeat = bool(header) and offset > 0 and len(header) + 1 <= page_chars * HEADER_MAX_PAGE_SHARE
+    repeat = bool(header) and offset > 0 and len(header) + 1 <= page_chars * ChannelAnalysisConfigs.HEADER_MAX_PAGE_SHARE
     prefix = f"{header}\n" if repeat else ""
     budget = max(page_chars - len(prefix), 1)
     end = offset + budget
@@ -76,9 +74,9 @@ def sheet_header(text: str, offset: int) -> str | None:
     first record (the one before it ended right after the name line) gets the name line alone; None when the page starts at or
     before the end of the name line."""
     # The bound lets a marker that starts exactly at `offset` count: a page that begins a new sheet already has its name.
-    start = text.rfind(SHEET_MARKER, 0, offset + len(SHEET_MARKER))
+    start = text.rfind(ChannelAnalysisConfigs.SHEET_MARKER, 0, offset + len(ChannelAnalysisConfigs.SHEET_MARKER))
     while start > 0 and not _starts_a_record(text, start):
-        start = text.rfind(SHEET_MARKER, 0, start)
+        start = text.rfind(ChannelAnalysisConfigs.SHEET_MARKER, 0, start)
     if start < 0:
         return None
     name_end = text.find("\n", start)

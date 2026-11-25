@@ -3,14 +3,23 @@ import httpx
 
 from common.configs import Configs
 
-HOST = Configs.DATABRICKS_HOST.rstrip("/")
-WAREHOUSE_ID = Configs.DATABRICKS_WAREHOUSE_ID
-TOKEN = Configs.DATABRICKS_ACCESS_TOKEN
+
+class DatabricksConfigs:
+    """The workspace the connector talks to (from the environment) and how much of a SCIM listing or a query result it reads."""
+
+    HOST = Configs.DATABRICKS_HOST.rstrip("/")
+    WAREHOUSE_ID = Configs.DATABRICKS_WAREHOUSE_ID
+    TOKEN = Configs.DATABRICKS_ACCESS_TOKEN
+
+    SCIM_PAGE_SIZE = 100
+    SCIM_MAX_PAGES = 20  # safety cap: up to ~2000 resources
+
+    MAX_ROWS = 200
 
 
 def auth_headers() -> dict:
     """Bearer auth header for the workspace PAT."""
-    return {"Authorization": f"Bearer {TOKEN}"}
+    return {"Authorization": f"Bearer {DatabricksConfigs.TOKEN}"}
 
 
 def raise_for_status_with_body(resp: httpx.Response) -> None:

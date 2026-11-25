@@ -1,6 +1,6 @@
 from slack_sdk.errors import SlackApiError
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAnalysisError, FileUnreadableError
 from channel_analysis.core.models import FileMeta
 from channel_analysis.infra import file_parser
@@ -40,10 +40,10 @@ class SlackChannelFiles:
         if not url:
             raise FileUnreadableError("Slack gave me no download link for that file.")
         try:
-            data = slack.download_file(url, token=token, max_bytes=limits.FILE_MAX_BYTES)
+            data = slack.download_file(url, token=token, max_bytes=ChannelAnalysisConfigs.FILE_MAX_BYTES)
         except slack.FileDownloadError as exc:
             raise FileUnreadableError(str(exc)) from exc
-        text = file_parser.extract_text_isolated(str(raw.get("name") or ""), str(raw.get("filetype") or ""), data, limits.FILE_MAX_CHARS)
+        text = file_parser.extract_text_isolated(str(raw.get("name") or ""), str(raw.get("filetype") or ""), data, ChannelAnalysisConfigs.FILE_MAX_CHARS)
         self._last = (file_id, text)
         return text
 

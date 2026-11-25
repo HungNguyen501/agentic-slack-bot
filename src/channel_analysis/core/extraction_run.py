@@ -3,7 +3,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from channel_analysis.core import extraction, limits
+from channel_analysis.core import extraction
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ExtractionError, ExtractionShapeError
 from channel_analysis.core.models import ExtractionItem, ExtractionSpec, FailedChunk, GroupCount, Record
 from channel_analysis.core.ports import ExtractionModel
@@ -39,7 +40,7 @@ def run_extraction(extractor: ExtractionModel, spec: ExtractionSpec, chunks: lis
     """Extract every chunk, `EXTRACT_PARALLELISM` at a time, and return the outcomes in the chunks' order."""
     if not chunks:
         return []
-    with ThreadPoolExecutor(max_workers=min(limits.EXTRACT_PARALLELISM, len(chunks))) as pool:
+    with ThreadPoolExecutor(max_workers=min(ChannelAnalysisConfigs.EXTRACT_PARALLELISM, len(chunks))) as pool:
         futures = [pool.submit(extract_chunk, extractor, spec, chunk) for chunk in chunks]
         return [future.result() for future in futures]
 
@@ -53,7 +54,7 @@ def extract_chunk(extractor: ExtractionModel, spec: ExtractionSpec, chunk: list[
     failure = "no answer"
     for _ in range(2):
         try:
-            answer = extractor.complete_json(system, user, limits.CHUNK_TIMEOUT_SECONDS)
+            answer = extractor.complete_json(system, user, ChannelAnalysisConfigs.CHUNK_TIMEOUT_SECONDS)
             prompt_tokens += answer.prompt_tokens
             completion_tokens += answer.completion_tokens
             records, rejected = extraction.read_records(answer.data, chunk, spec)
@@ -78,6 +79,6 @@ def count_outcomes(outcomes: list[ChunkOutcome], group_by: tuple[str, ...]) -> T
     )
     records = extraction.drop_duplicates([record for o in outcomes for record in o.records])
     groups = extraction.count_groups(records, group_by)
-    cap = limits.MAX_GROUPS_LISTED
-    sample = sorted(records, key=lambda r: float(r.ts), reverse=True)[: limits.SAMPLE_RECORDS]
+    cap = ChannelAnalysisConfigs.MAX_GROUPS_LISTED
+    sample = sorted(records, key=lambda r: float(r.ts), reverse=True)[: ChannelAnalysisConfigs.SAMPLE_RECORDS]
     return Totals(failed, len(records), sum(o.rejected for o in outcomes), groups[:cap], len(groups[cap:]), sum(g.records for g in groups[cap:]), tuple(sample))

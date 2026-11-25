@@ -1,9 +1,8 @@
 """GitHub GraphQL query for PR approval state, and the matching response parser. Pure, no I/O."""
 import json
 
+from agent.pr_reminders.configs import PrRemindersConfigs
 from agent.pr_reminders.pr_links import PrRef
-
-_PR_FIELDS = "url title state isDraft reviewDecision createdAt latestOpinionatedReviews(first: 20) { totalCount nodes { state } }"
 
 
 class GithubQueryError(RuntimeError):
@@ -21,7 +20,7 @@ def build_query(refs: list[PrRef]) -> str:
     """Build one query that fetches every PR, aliasing repositories as r0, r1, … and PRs as p<number>."""
     repos = []
     for index, ((owner, repo), numbers) in enumerate(_group_by_repo(refs).items()):
-        prs = " ".join(f"p{number}: pullRequest(number: {number}) {{ {_PR_FIELDS} }}" for number in numbers)
+        prs = " ".join(f"p{number}: pullRequest(number: {number}) {{ {PrRemindersConfigs.PR_FIELDS} }}" for number in numbers)
         # json.dumps yields a valid GraphQL string, and pr_links only lets [\w.-] through anyway.
         repos.append(f"r{index}: repository(owner: {json.dumps(owner)}, name: {json.dumps(repo)}) {{ {prs} }}")
     return "query { " + " ".join(repos) + " }"

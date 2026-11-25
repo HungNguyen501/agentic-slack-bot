@@ -6,18 +6,13 @@ from dataclasses import dataclass
 
 from slack_sdk.errors import SlackApiError
 
-from channel_analysis.core import limits
-from channel_analysis.core.errors import ACCESS_MESSAGES, ChannelAccessError
+from channel_analysis.core.configs import ChannelAnalysisConfigs
+from channel_analysis.core.errors import ChannelAccessError
 from channel_analysis.core.models import ChannelInfo, ChannelMessage, HistoryBatch
 from channel_analysis.infra import message_text
 from connectors import slack
 
 log = logging.getLogger("channel_analysis.slack_history")
-
-
-# A 429's Retry-After can be long; waiting it all out would hold the worker and run into the job timeout. This is all one
-# fetch may wait for, however many threads it reads.
-_MAX_RETRY_AFTER_SECONDS = 30.0
 
 
 def _error_code(exc: SlackApiError) -> str | None:
@@ -43,7 +38,7 @@ def slack_access_errors(files: bool = False) -> Iterator[None]:
         code = _error_code(exc)
         if code == "missing_scope":
             raise ChannelAccessError("files_scope" if files else "missing_scope", detail=exc.response.get("needed")) from exc
-        if code in ACCESS_MESSAGES and code != "files_scope":
+        if code in ChannelAnalysisConfigs.ACCESS_MESSAGES and code != "files_scope":
             raise ChannelAccessError(code, retry_after=_retry_after(exc)) from exc
         raise
 
@@ -69,7 +64,7 @@ class _ThreadReader:
             nonlocal retried
             if _error_code(exc) != "ratelimited":
                 return False
-            wait = min(_retry_after(exc) or 1.0, _MAX_RETRY_AFTER_SECONDS - self.waited)
+            wait = min(_retry_after(exc) or 1.0, ChannelAnalysisConfigs.MAX_RETRY_AFTER_SECONDS - self.waited)
             if retried or wait <= 0:
                 self.limited = True
                 log.warning("Slack is still rate limiting conversations.replies; the rest of this page is shown without replies")
@@ -81,7 +76,7 @@ class _ThreadReader:
 
         try:
             with slack_access_errors():
-                return slack.conversations_replies(channel_id, ts, token=token, max_messages=limits.REPLIES_FETCH_MAX, retry=wait_and_retry)
+                return slack.conversations_replies(channel_id, ts, token=token, max_messages=ChannelAnalysisConfigs.REPLIES_FETCH_MAX, retry=wait_and_retry)
         except (SlackApiError, ChannelAccessError) as exc:
             code = exc.code if isinstance(exc, ChannelAccessError) else _error_code(exc)
             if code != "ratelimited":  # a rate limit that stopped the read was logged where it was given up on

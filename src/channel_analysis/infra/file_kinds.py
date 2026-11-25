@@ -1,7 +1,6 @@
 """What kind of file a name and a Slack filetype add up to. One answer, used to read a file, to page it and to say what it is."""
 
-PLAIN_KINDS = frozenset({"csv", "tsv", "txt", "text", "json", "log", "md", "markdown", "yaml", "yml", "xml", "sql"})
-SUPPORTED_KINDS = PLAIN_KINDS | {"pdf", "xlsx"}
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 
 
 def kind_of(name: str, filetype: str) -> str:
@@ -11,8 +10,8 @@ def kind_of(name: str, filetype: str) -> str:
     """
     extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     slack_type = filetype.lower()
-    if extension in SUPPORTED_KINDS:
+    if extension in ChannelAnalysisConfigs.SUPPORTED_KINDS:
         return extension
-    if slack_type in SUPPORTED_KINDS:
+    if slack_type in ChannelAnalysisConfigs.SUPPORTED_KINDS:
         return slack_type
     return extension or slack_type

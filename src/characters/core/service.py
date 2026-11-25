@@ -4,6 +4,7 @@ import random
 from collections import Counter
 from collections.abc import Iterable, Mapping
 
+from characters.core.configs import CharactersConfigs
 from characters.core.errors import (
     CharacterConflictError,
     CharacterExistsError,
@@ -12,7 +13,7 @@ from characters.core.errors import (
     InvalidCharacterError,
     InvalidSeedError,
 )
-from characters.core.models import GLOBAL_SKILL, SKILL_PREFIX, Character, CharacterChanges, CharacterOverview, RemovedCharacter, SeedResult
+from characters.core.models import Character, CharacterChanges, CharacterOverview, RemovedCharacter, SeedResult
 from characters.core.ports import CharacterRepository, CharacterSource, KnownSkills, ThreadCharacterStore
 from characters.core.validation import VoiceSpec, character_problems
 
@@ -95,7 +96,7 @@ class CharacterService:
 
         candidates = [c for c in usable if c.is_bound_to_feature(feature)]
         if not candidates:
-            candidates = [c for c in usable if c.is_bound_to_skill(GLOBAL_SKILL) and feature in c.voices]
+            candidates = [c for c in usable if c.is_bound_to_skill(CharactersConfigs.GLOBAL_SKILL) and feature in c.voices]
         if not candidates:
             return None
         return self._pick(candidates, channel, thread_ts, remember=stored not in by_name)
@@ -116,7 +117,7 @@ class CharacterService:
         routed_skills = set(routed)
         candidates = [c for c in usable if any(c.is_bound_to_skill(skill) for skill in routed_skills)]
         if not candidates:
-            default_skills = {*always, GLOBAL_SKILL}
+            default_skills = {*always, CharactersConfigs.GLOBAL_SKILL}
             candidates = [c for c in usable if any(c.is_bound_to_skill(skill) for skill in default_skills)]
         if not candidates:
             return None
@@ -130,9 +131,9 @@ class CharacterService:
 
     def _unknown_skills(self, character: Character, known: frozenset[str]) -> tuple[str, ...]:
         return tuple(
-            binding.removeprefix(SKILL_PREFIX)
+            binding.removeprefix(CharactersConfigs.SKILL_PREFIX)
             for binding in character.bindings
-            if isinstance(binding, str) and binding.startswith(SKILL_PREFIX) and binding.removeprefix(SKILL_PREFIX) not in known
+            if isinstance(binding, str) and binding.startswith(CharactersConfigs.SKILL_PREFIX) and binding.removeprefix(CharactersConfigs.SKILL_PREFIX) not in known
         )
 
     def list_characters(self) -> list[CharacterOverview]:

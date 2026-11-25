@@ -1,11 +1,9 @@
 """Access-control edits to the data-platform repo: rules_v2.yaml / service_principals.yaml on a per-ticket branch and PR."""
 import re
 
+from agent.access_control.configs import AccessControlConfigs
 from common.configs import GithubConfigs
 from connectors import github
-
-_RULES_PATH = "core/platform/configs/prod/access_control/rules_v2.yaml"
-_SERVICE_PRINCIPALS_PATH = "core/platform/configs/prod/access_control/service_principals.yaml"
 
 
 def _branch_name(ticket_id: str) -> str:
@@ -16,7 +14,7 @@ def _branch_name(ticket_id: str) -> str:
 
 def base_rule_emails() -> set[str]:
     """Return every user_email already present in rules_v2.yaml on the base branch (i.e. existing users)."""
-    content, _ = github.get_file(_RULES_PATH, GithubConfigs.BASE_BRANCH)
+    content, _ = github.get_file(AccessControlConfigs.RULES_PATH, GithubConfigs.BASE_BRANCH)
     return set(re.findall(r"^\s*(?:-\s+)?user_email:\s*(\S+)", content, flags=re.MULTILINE))
 
 
@@ -58,12 +56,12 @@ def open_data_access_pr(
     branch = _branch_name(ticket_id)
     github.ensure_branch(branch)
 
-    current_rules_content, _ = github.get_file(_RULES_PATH, branch)
+    current_rules_content, _ = github.get_file(AccessControlConfigs.RULES_PATH, branch)
     if rules_entry_text not in current_rules_content:
         if not current_rules_content.endswith("\n"):
             current_rules_content += "\n"
         github.update_file(
-            _RULES_PATH,
+            AccessControlConfigs.RULES_PATH,
             branch,
             current_rules_content + rules_entry_text,
             f"govern: {ticket_id} Add/ update row filter access rule for {user_email}",
@@ -71,7 +69,7 @@ def open_data_access_pr(
 
     if service_principals_yaml is not None:
         github.update_file(
-            _SERVICE_PRINCIPALS_PATH,
+            AccessControlConfigs.SERVICE_PRINCIPALS_PATH,
             branch,
             service_principals_yaml,
             f"govern: {ticket_id} Update service principals audit snapshot for {user_email}",

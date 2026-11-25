@@ -301,7 +301,7 @@ def test_the_missing_scope_is_kept_in_redis_under_a_hash_of_the_token_with_an_ex
 
     [(key, ttl)] = redis.marks.items()
     assert key.startswith("slack_no_customize:") and "xoxb-secret-token" not in key
-    assert ttl == slack._NO_CUSTOMIZE_TTL_SECONDS
+    assert ttl == slack.SlackConfigs.NO_CUSTOMIZE_TTL_SECONDS
 
 
 def test_the_mark_is_found_by_a_later_job_that_shares_nothing_but_redis(redis):
@@ -470,6 +470,7 @@ def test_download_file_sends_the_token_and_returns_the_bytes():
     assert data == b"id\n1\n"
     assert fake.call_args.kwargs["headers"] == {"Authorization": "Bearer xoxb-t"}
     assert fake.call_args.kwargs["follow_redirects"] is False
+    assert fake.call_args.kwargs["timeout"] == slack.SlackConfigs.DOWNLOAD_WAIT_SECONDS
 
 
 @pytest.mark.parametrize("url", ["https://evil.test/f.csv", "http://files.slack.com/f.csv", "https://slack.com.evil.test/f.csv", "https://notslack.com/f.csv"])
@@ -495,7 +496,7 @@ def test_download_file_explains_why_it_gave_up(stream, message):
 
 
 def test_download_file_gives_up_on_a_transfer_that_keeps_trickling_past_the_deadline():
-    clock = iter([0.0, 1.0, slack._DOWNLOAD_DEADLINE_SECONDS + 1])
+    clock = iter([0.0, 1.0, slack.SlackConfigs.DOWNLOAD_DEADLINE_SECONDS + 1])
 
     with patch("connectors.slack.time.monotonic", autospec=True, side_effect=lambda: next(clock)), pytest.raises(slack.FileDownloadError, match="took longer than"):
         download(FakeStream(chunks=(b"a", b"b", b"c")), max_bytes=1000)
@@ -551,4 +552,11 @@ def test_a_page_that_keeps_failing_is_asked_for_again_only_a_few_times_even_if_r
         messages = slack.conversations_replies("C1", "1", token="t", retry=lambda exc: True)
 
     assert [m["ts"] for m in messages] == ["1"]
-    assert client.conversations_replies.call_count == 1 + 1 + slack._MAX_PAGE_RETRIES
+    assert client.conversations_replies.call_count == 1 + 1 + slack.SlackConfigs.MAX_PAGE_RETRIES
+
+
+def test_download_file_gives_up_when_the_headers_alone_took_the_whole_budget():
+    clock = iter([0.0, slack.SlackConfigs.DOWNLOAD_DEADLINE_SECONDS + 1])
+
+    with patch("connectors.slack.time.monotonic", autospec=True, side_effect=lambda: next(clock)), pytest.raises(slack.FileDownloadError, match="took longer than"):
+        download(FakeStream())

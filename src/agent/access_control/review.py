@@ -5,9 +5,9 @@ user chose exact-keyword detection over LLM-inferred intent, so this is plain, t
 control flow rather than another agent tool.
 """
 import logging
-import re
 from datetime import UTC, datetime
 
+from agent.access_control.configs import AccessControlConfigs
 from agent.access_control import principals, service_principals
 from agent.access_control.access_request_categories import channel_authorized, get_access_request_category
 from agent.access_control.access_requests import AccessRequest, get_access_request, list_approved_access_requests, update_access_request_status
@@ -18,11 +18,6 @@ from agent.pr.access_request_pr import PrEntry, build_pr
 from bots.core.models import BotConfig
 
 log = logging.getLogger("agent.access_control.review")
-
-# Matches a UUID anywhere after the leading approve/reject keyword, so phrasing like
-# "approve data access request ID=<uuid>" or "approve: <uuid>" works, not just the exact
-# `approve <uuid>` form we ask for in the review message.
-_REQUEST_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 
 
 def parse_review_command(question: str) -> tuple[str, list[str]] | None:
@@ -47,7 +42,7 @@ def parse_review_command(question: str) -> tuple[str, list[str]] | None:
     rest = parts[1] if len(parts) > 1 else ""
     seen = set()
     distinct_ids = []
-    for m in _REQUEST_ID_RE.findall(rest):
+    for m in AccessControlConfigs.REQUEST_ID_RE.findall(rest):
         if m.lower() not in seen:
             seen.add(m.lower())
             distinct_ids.append(m)

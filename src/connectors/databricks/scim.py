@@ -7,12 +7,9 @@ import logging
 
 import httpx
 
-from .client import HOST, auth_headers, raise_for_status_with_body
+from .client import DatabricksConfigs, auth_headers, raise_for_status_with_body
 
 log = logging.getLogger("connectors.databricks.scim")
-
-_SCIM_PAGE_SIZE = 100
-_SCIM_MAX_PAGES = 20  # safety cap: up to ~2000 resources
 
 
 def list_scim_resources(resource_path: str) -> list[dict]:
@@ -28,11 +25,11 @@ def list_scim_resources(resource_path: str) -> list[dict]:
     resources: list[dict] = []
     start_index = 1
 
-    for page_num in range(_SCIM_MAX_PAGES):
+    for page_num in range(DatabricksConfigs.SCIM_MAX_PAGES):
         resp = httpx.get(
-            f"{HOST}/api/2.0/preview/scim/v2/{resource_path}",
+            f"{DatabricksConfigs.HOST}/api/2.0/preview/scim/v2/{resource_path}",
             headers=auth_headers(),
-            params={"startIndex": start_index, "count": _SCIM_PAGE_SIZE},
+            params={"startIndex": start_index, "count": DatabricksConfigs.SCIM_PAGE_SIZE},
             timeout=30.0,
         )
         resp.raise_for_status()
@@ -41,14 +38,14 @@ def list_scim_resources(resource_path: str) -> list[dict]:
         resources.extend(page)
 
         total = data.get("totalResults", 0)
-        start_index += _SCIM_PAGE_SIZE
+        start_index += DatabricksConfigs.SCIM_PAGE_SIZE
         if not page or start_index > total:
             return resources
 
-        if page_num == _SCIM_MAX_PAGES - 1:
+        if page_num == DatabricksConfigs.SCIM_MAX_PAGES - 1:
             log.warning(
                 "Hit the %d-page safety cap listing %s; %d of %d fetched",
-                _SCIM_MAX_PAGES, resource_path, len(resources), total,
+                DatabricksConfigs.SCIM_MAX_PAGES, resource_path, len(resources), total,
             )
 
     return resources
@@ -57,7 +54,7 @@ def list_scim_resources(resource_path: str) -> list[dict]:
 def create_service_principal(display_name: str) -> dict:
     """Create a new service principal in the workspace."""
     resp = httpx.post(
-        f"{HOST}/api/2.0/preview/scim/v2/ServicePrincipals",
+        f"{DatabricksConfigs.HOST}/api/2.0/preview/scim/v2/ServicePrincipals",
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={
             "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServicePrincipal"],
@@ -80,7 +77,7 @@ def add_group_member(group_id: str, member_id: str) -> None:
     reference (add_users_to_group/remove_user_from_group), body shape included.
     """
     resp = httpx.patch(
-        f"{HOST}/api/2.0/account/scim/v2/Groups/{group_id}",
+        f"{DatabricksConfigs.HOST}/api/2.0/account/scim/v2/Groups/{group_id}",
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={
             "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],

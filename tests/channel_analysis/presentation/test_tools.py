@@ -3,7 +3,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from bots.core.models import BotConfig
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAnalysisError
 from channel_analysis.core.models import (
     AccessProblem,
@@ -420,7 +420,7 @@ def test_the_use_cases_refusal_is_the_reply(service):
 
 
 def test_a_long_value_is_cut_for_display_only():
-    long = "v" * (limits.MAX_VALUE_CHARS + 30)
+    long = "v" * (ChannelAnalysisConfigs.MAX_VALUE_CHARS + 30)
 
-    assert tools._shown(long) == "v" * limits.MAX_VALUE_CHARS + "…"
-    assert tools._shown("short") == "short" and tools._shown(None) == tools.MISSING
+    assert tools._shown(long) == "v" * ChannelAnalysisConfigs.MAX_VALUE_CHARS + "…"
+    assert tools._shown("short") == "short" and tools._shown(None) == ChannelAnalysisConfigs.MISSING

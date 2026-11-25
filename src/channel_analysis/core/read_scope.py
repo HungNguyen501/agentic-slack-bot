@@ -1,20 +1,7 @@
 """Which channels a run may read once it has read channel content (pure)."""
-import re
-
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAnalysisError
 from channel_analysis.core.reference import ChannelReference, normalize_channel_name, parse_channel_reference
-
-# Every tool that takes a `channel` argument and reads through the admin's access.
-CHANNEL_TOOLS = frozenset({"check_channel_access", "read_channel_messages", "read_channel_file", "analyze_channel"})
-_CHANNEL_ID = re.compile(r"\b[CG][A-Z0-9]{8,}\b")
-# The line a check starts its answer with, naming the channel it resolved. The agent trusts only the ID on this line: the lines
-# after it quote Slack's own error details.
-ACCESS_CHECK_PREFIX = "Access check for "
-_CHECKED_CHANNEL = re.compile(rf"^{ACCESS_CHECK_PREFIX}([CG][A-Z0-9]{{8,}})\b")
-# How a request names a channel on purpose: `#name` or a mention `<#C123|name>`. A bare word that happens to be a channel's name
-# ("billing complaints") is a topic, not a choice of channel.
-_HASH_NAME = re.compile(r"(?<![\w<&])#([\w-]+)")
-_MENTION_NAME = re.compile(r"<#[CG][A-Z0-9]{8,}\|([^>]+)>")
 
 
 class ReadScope:
@@ -28,12 +15,12 @@ class ReadScope:
     """
 
     def __init__(self, request: str, current_channel: str | None) -> None:
-        self._ids = set(_CHANNEL_ID.findall(request))
+        self._ids = set(ChannelAnalysisConfigs.CHANNEL_ID.findall(request))
         if current_channel:
             self._ids.add(current_channel)
         # `#42` is an issue or PR number far more often than a channel, so a number alone is not a channel name.
-        hashed = (name for name in _HASH_NAME.findall(request) if not name.isdigit())
-        self._names = {normalize_channel_name(name) for name in (*hashed, *_MENTION_NAME.findall(request))}
+        hashed = (name for name in ChannelAnalysisConfigs.HASH_NAME.findall(request) if not name.isdigit())
+        self._names = {normalize_channel_name(name) for name in (*hashed, *ChannelAnalysisConfigs.MENTION_NAME.findall(request))}
 
     def trust(self, channel: str | None) -> None:
         """Take `channel`, as the agent named it before any channel content was read."""
@@ -48,7 +35,7 @@ class ReadScope:
     def trust_resolved(self, check_result: str) -> None:
         """Take the channel an access check says it checked (its first line), so the agent can read by ID a channel it checked by
         name. Only the result of a check that ran goes here: it holds no message or file content."""
-        checked = _CHECKED_CHANNEL.match(check_result)
+        checked = ChannelAnalysisConfigs.CHECKED_CHANNEL.match(check_result)
         if checked:
             self._ids.add(checked.group(1))
 

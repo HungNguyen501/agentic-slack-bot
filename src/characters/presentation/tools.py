@@ -2,6 +2,7 @@
 import logging
 from datetime import UTC
 
+from characters.core.configs import CharactersConfigs
 from characters.core.errors import (
     CharacterConflictError,
     CharacterExistsError,
@@ -13,8 +14,6 @@ from characters.core.models import Character, CharacterChanges, CharacterOvervie
 from characters.core.service import CharacterService
 
 log = logging.getLogger("characters.tools")
-
-_OPTIONAL_TEXTS = ("song", "artist", "icon_emoji", "icon_url", "persona")
 
 
 def _describe(overview: CharacterOverview) -> str:
@@ -132,7 +131,7 @@ def _parse_character(args: dict) -> tuple[Character | None, list[str]]:
     bindings = _text_list(args, "bindings", problems)
     if not args.get("bindings"):
         problems.append("bindings is required: say what the character speaks for ('feature:pr_reminder' or 'skill:<name>')")
-    texts = _texts(args, _OPTIONAL_TEXTS, problems)
+    texts = _texts(args, CharactersConfigs.OPTIONAL_TEXT_FIELDS, problems)
     voices = _voices(args, problems)
     enabled = _flag(args, "enabled", True, problems)
     if problems:
@@ -142,7 +141,7 @@ def _parse_character(args: dict) -> tuple[Character | None, list[str]]:
 
 def _parse_changes(args: dict, problems: list[str]) -> CharacterChanges:
     """Build the requested changes from the tool arguments; what is wrong with their shape is added to `problems`."""
-    texts = _texts(args, ("display_name", *_OPTIONAL_TEXTS), problems)
+    texts = _texts(args, ("display_name", *CharactersConfigs.OPTIONAL_TEXT_FIELDS), problems)
     return CharacterChanges(
         **{key: value for key, value in texts.items() if value is not None},
         enabled=_flag(args, "enabled", None, problems),

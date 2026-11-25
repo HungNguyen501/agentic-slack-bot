@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from pypdf import PdfWriter
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import FileUnreadableError
 from channel_analysis.core.file_pages import sheet_header
 from channel_analysis.infra.file_text import extract_text
@@ -90,7 +90,7 @@ def test_a_workbook_that_opens_but_has_a_damaged_sheet_is_unreadable_not_a_crash
 
 
 def test_a_workbook_that_unpacks_to_far_more_than_it_weighs_is_refused_before_it_is_opened(monkeypatch):
-    monkeypatch.setattr(limits, "XLSX_MAX_UNCOMPRESSED_BYTES", 1000)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "XLSX_MAX_UNCOMPRESSED_BYTES", 1000)
     data = damage_member(xlsx_with({"S": [["a"]]}), "xl/worksheets/sheet1.xml", b"<worksheet>" + b" " * 5000 + b"</worksheet>")
 
     with patch("channel_analysis.infra.file_text.openpyxl.load_workbook", autospec=True) as load, pytest.raises(FileUnreadableError, match="unpacks to far more"):
@@ -100,7 +100,7 @@ def test_a_workbook_that_unpacks_to_far_more_than_it_weighs_is_refused_before_it
 
 
 def test_a_workbook_with_too_many_members_is_refused(monkeypatch):
-    monkeypatch.setattr(limits, "XLSX_MAX_MEMBERS", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "XLSX_MAX_MEMBERS", 2)
 
     with pytest.raises(FileUnreadableError, match="unpacks to far more"):
         extract_text("many.xlsx", "xlsx", xlsx_with({"S": [["a"]]}), MAX)
@@ -156,3 +156,10 @@ def test_a_sheet_name_with_line_breaks_stays_on_one_line_so_the_first_record_is_
 
     assert text == "## Sheet: Sales  2026\ntable,rows\na,1\n"
     assert sheet_header(text, text.index("a,1")) == "## Sheet: Sales  2026\ntable,rows"
+
+
+def test_a_cell_with_a_carriage_return_stays_one_quoted_cell():
+    # The workbook format turns a lone CR into a newline when it is read; either way the cell is quoted.
+    data = xlsx_with({"S": [["id", "note"], [1, "first\rsecond"]]})
+
+    assert extract_text("r.xlsx", "xlsx", data, MAX) == '## Sheet: S\nid,note\n1,"first\nsecond"\n'

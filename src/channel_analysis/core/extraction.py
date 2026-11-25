@@ -1,15 +1,10 @@
 """The pure side of `analyze_channel`: what is sent to the extraction model, how its records are checked, and how they are counted."""
-import re
 from datetime import UTC, datetime
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAnalysisError, ExtractionShapeError
 from channel_analysis.core.file_pages import cut_page, is_tabular, repeated_header
 from channel_analysis.core.models import ChannelMessage, ExtractionField, ExtractionItem, ExtractionSpec, FileRef, GroupCount, Record
-
-_FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-# `m` is the item number in the answer's records; a field of that name would collide with it.
-_RESERVED_FIELD_NAMES = frozenset({"m"})
 
 
 def format_when(ts: str | float) -> str:
@@ -25,10 +20,10 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
     """
     if not spec.instruction.strip():
         raise ChannelAnalysisError("`instruction` must say how to fill one record.")
-    if len(spec.instruction) > limits.MAX_INSTRUCTION_CHARS:
-        raise ChannelAnalysisError(f"`instruction` can be at most {limits.MAX_INSTRUCTION_CHARS} characters.")
-    if not 1 <= len(spec.fields) <= limits.MAX_FIELDS:
-        raise ChannelAnalysisError(f"`fields` takes 1 to {limits.MAX_FIELDS} fields.")
+    if len(spec.instruction) > ChannelAnalysisConfigs.MAX_INSTRUCTION_CHARS:
+        raise ChannelAnalysisError(f"`instruction` can be at most {ChannelAnalysisConfigs.MAX_INSTRUCTION_CHARS} characters.")
+    if not 1 <= len(spec.fields) <= ChannelAnalysisConfigs.MAX_FIELDS:
+        raise ChannelAnalysisError(f"`fields` takes 1 to {ChannelAnalysisConfigs.MAX_FIELDS} fields.")
     names = [field.name for field in spec.fields]
     for field in spec.fields:
         _validate_field(field)
@@ -42,15 +37,16 @@ def validate_spec(spec: ExtractionSpec, group_by: tuple[str, ...]) -> None:
 
 
 def _validate_field(field: ExtractionField) -> None:
-    if field.name in _RESERVED_FIELD_NAMES:
+    if field.name in ChannelAnalysisConfigs.RESERVED_FIELD_NAMES:
         raise ChannelAnalysisError(f"`{field.name}` is reserved (it numbers the items in the answer); give the field another name.")
-    if not _FIELD_NAME.fullmatch(field.name):
+    if not ChannelAnalysisConfigs.FIELD_NAME.fullmatch(field.name):
         raise ChannelAnalysisError(f"Field name `{field.name}` must be snake_case: lower case letters, digits and underscores, starting with a letter.")
-    if len(field.description) > limits.MAX_FIELD_DESCRIPTION_CHARS:
-        raise ChannelAnalysisError(f"The description of `{field.name}` can be at most {limits.MAX_FIELD_DESCRIPTION_CHARS} characters.")
-    if len(field.allowed_values) > limits.MAX_ALLOWED_VALUES or any(len(v) > limits.MAX_ALLOWED_VALUE_CHARS for v in field.allowed_values):
+    if len(field.description) > ChannelAnalysisConfigs.MAX_FIELD_DESCRIPTION_CHARS:
+        raise ChannelAnalysisError(f"The description of `{field.name}` can be at most {ChannelAnalysisConfigs.MAX_FIELD_DESCRIPTION_CHARS} characters.")
+    configs = ChannelAnalysisConfigs
+    if len(field.allowed_values) > configs.MAX_ALLOWED_VALUES or any(len(v) > configs.MAX_ALLOWED_VALUE_CHARS for v in field.allowed_values):
         raise ChannelAnalysisError(
-            f"`allowed_values` of `{field.name}` takes at most {limits.MAX_ALLOWED_VALUES} values of at most {limits.MAX_ALLOWED_VALUE_CHARS} characters."
+            f"`allowed_values` of `{field.name}` takes at most {configs.MAX_ALLOWED_VALUES} values of at most {configs.MAX_ALLOWED_VALUE_CHARS} characters."
         )
     # The model's answer is stripped before it is matched, so a label with spaces around it (or only spaces) could never match.
     if any(not value or value != value.strip() for value in field.allowed_values):
@@ -58,8 +54,8 @@ def _validate_field(field: ExtractionField) -> None:
 
 
 def _validate_group_by(group_by: tuple[str, ...], names: list[str]) -> None:
-    if len(group_by) > limits.MAX_GROUP_BY or len(set(group_by)) != len(group_by):
-        raise ChannelAnalysisError(f"`group_by` takes up to {limits.MAX_GROUP_BY} different fields.")
+    if len(group_by) > ChannelAnalysisConfigs.MAX_GROUP_BY or len(set(group_by)) != len(group_by):
+        raise ChannelAnalysisError(f"`group_by` takes up to {ChannelAnalysisConfigs.MAX_GROUP_BY} different fields.")
     unknown = [name for name in group_by if name not in names]
     if unknown:
         raise ChannelAnalysisError(f"`group_by` names `{unknown[0]}`, which is not one of the fields ({', '.join(names)}).")
@@ -93,8 +89,8 @@ def message_items(message: ChannelMessage) -> tuple[list[ExtractionItem], bool]:
     text = _message_text(message)
     items: list[ExtractionItem] = []
     offset: int | None = 0
-    while offset is not None and len(items) < limits.MAX_ITEMS_PER_MESSAGE:
-        piece, offset = cut_page(text, offset, limits.ITEM_CHAR_LIMIT)
+    while offset is not None and len(items) < ChannelAnalysisConfigs.MAX_ITEMS_PER_MESSAGE:
+        piece, offset = cut_page(text, offset, ChannelAnalysisConfigs.ITEM_CHAR_LIMIT)
         items.append(ExtractionItem(message.ts, message.link, heading if not items else f"{heading} (continued, part {len(items) + 1})", piece))
     return items, offset is None
 
@@ -110,7 +106,7 @@ def file_items(message: ChannelMessage, file: FileRef, text: str, room: int, sou
     items: list[ExtractionItem] = []
     offset: int | None = 0
     while offset is not None and len(items) < room:
-        piece, offset = cut_page(text, offset, limits.ITEM_CHAR_LIMIT, repeated_header(text, offset, file.filetype), is_tabular(file.filetype))
+        piece, offset = cut_page(text, offset, ChannelAnalysisConfigs.ITEM_CHAR_LIMIT, repeated_header(text, offset, file.filetype), is_tabular(file.filetype))
         heading = f"{format_when(shown.ts)} · {shown.author} · file {file.name} (part {len(items) + 1})"
         items.append(ExtractionItem(message.ts, message.link, heading, piece))
     return items, offset is None
@@ -216,7 +212,7 @@ def _check_record(raw: object, items: list[ExtractionItem], spec: ExtractionSpec
     values: dict[str, str | None] = {}
     for field in spec.fields:
         value = raw.get(field.name)
-        text = None if value is None else str(value).strip()[: limits.MAX_STORED_VALUE_CHARS] or None
+        text = None if value is None else str(value).strip()[: ChannelAnalysisConfigs.MAX_STORED_VALUE_CHARS] or None
         if text is not None and field.name in allowed:
             text = allowed[field.name].get(text.lower())
             if text is None:
@@ -250,7 +246,7 @@ def count_groups(records: list[Record], group_by: tuple[str, ...]) -> tuple[Grou
     counts = []
     for key, members in grouped.items():
         newest_first = sorted(members, key=lambda r: float(r.ts), reverse=True)
-        links = tuple(dict.fromkeys(r.link for r in newest_first if r.link))[: limits.MAX_LINKS_PER_GROUP]
+        links = tuple(dict.fromkeys(r.link for r in newest_first if r.link))[: ChannelAnalysisConfigs.MAX_LINKS_PER_GROUP]
         dates = {datetime.fromtimestamp(float(r.ts), UTC).date() for r in members}
         counts.append(GroupCount(key, len(members), len({r.ts for r in members}), len(dates), links))
     return tuple(sorted(counts, key=lambda c: (-c.records, tuple((value is None, value or "") for value in c.key))))

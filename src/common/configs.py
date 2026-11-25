@@ -56,6 +56,8 @@ class GithubConfigs:
     API: str = f"https://api.github.com/repos/{OWNER}/{REPO}"
     # Not tied to the repo above: PR review reminders query pull requests in whichever repos the credentials can read.
     GRAPHQL_API: str = "https://api.github.com/graphql"
+    # A cached GitHub App installation token is replaced when it has less than this left, so a call never starts with one about to expire.
+    TOKEN_REFRESH_MARGIN_SECONDS: int = 60
 
 
 @dataclass(frozen=True)

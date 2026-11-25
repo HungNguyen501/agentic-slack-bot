@@ -4,9 +4,9 @@ import logging
 import secrets
 from datetime import UTC, datetime
 
+from agent.access_control.configs import AccessControlConfigs
 from agent.access_control import principals
 from agent.access_control.access_request_categories import channel_authorized, get_access_request_category
-from agent.forms.access_request_view import EMAIL_PATTERN
 from agent.service_principal_secrets.store import get as get_cached_secret, upsert as upsert_secret
 from bots.core.models import BotConfig
 from common import crypto
@@ -31,7 +31,7 @@ def dispatch_secret_generation_tool(args: dict, user_id: str | None, channel: st
         requester/channel isn't eligible or no matching service principal exists.
     """
     email = args.get("service_account", "").strip()
-    if not EMAIL_PATTERN.match(email):
+    if not AccessControlConfigs.EMAIL_PATTERN.match(email):
         return f"`{email}` doesn't look like a valid email address. Please provide the service principal's email."
 
     try:

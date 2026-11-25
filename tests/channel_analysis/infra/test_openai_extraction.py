@@ -4,7 +4,7 @@ import httpx
 import pytest
 from openai import APITimeoutError
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ExtractionError, ExtractionShapeError
 from channel_analysis.infra.openai_extraction import OpenAIExtractionModel
 from connectors.openai_client import ChatResult
@@ -24,7 +24,7 @@ def test_the_model_is_asked_in_json_mode_with_no_tools_a_timeout_and_the_configu
         [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": "USER"}],
         model="cheap-model",
         reasoning_effort="low",
-        max_completion_tokens=limits.EXTRACT_MAX_OUTPUT_TOKENS,
+        max_completion_tokens=ChannelAnalysisConfigs.EXTRACT_MAX_OUTPUT_TOKENS,
         json_object=True,
         timeout=90,
         max_retries=0,

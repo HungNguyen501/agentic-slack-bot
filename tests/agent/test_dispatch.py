@@ -187,8 +187,8 @@ def test_a_requester_who_is_not_an_admin_gains_nothing_from_an_unattended_run_se
 
 
 def test_every_tool_that_returns_what_a_channel_holds_narrows_the_run_afterwards():
-    assert {"read_channel_messages", "read_channel_file", "analyze_channel"} == dispatch.UNTRUSTED_CONTENT_TOOLS
-    assert dispatch.UNTRUSTED_CONTENT_TOOLS <= dispatch.READ_ONLY_TOOLS
+    assert {"read_channel_messages", "read_channel_file", "analyze_channel"} == dispatch.ToolPolicy.UNTRUSTED_CONTENT_TOOLS
+    assert dispatch.ToolPolicy.UNTRUSTED_CONTENT_TOOLS <= dispatch.ToolPolicy.READ_ONLY_TOOLS
 
 
 def test_after_channel_content_was_read_only_read_only_tools_are_offered():
@@ -198,5 +198,5 @@ def test_after_channel_content_was_read_only_read_only_tools_are_offered():
     writes = {"remove_schedule", "add_character", "schedule_pr_reminder", "check_pr_approvals", "request_data_access", "generate_service_principal_secret"}
     assert writes <= every - read_only
     assert "execute_query" in every - read_only
-    assert read_only == dispatch.READ_ONLY_TOOLS
-    assert every >= dispatch.READ_ONLY_TOOLS
+    assert read_only == dispatch.ToolPolicy.READ_ONLY_TOOLS
+    assert every >= dispatch.ToolPolicy.READ_ONLY_TOOLS

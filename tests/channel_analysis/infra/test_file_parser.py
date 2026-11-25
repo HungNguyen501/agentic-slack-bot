@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import FileUnreadableError
 from channel_analysis.infra import file_text
 from channel_analysis.infra.file_parser import extract_text_isolated
@@ -47,7 +47,7 @@ def test_a_parser_killed_by_a_limit_leaves_no_answer_and_is_an_unreadable_file()
 
 
 def test_a_parser_that_runs_too_long_is_stopped():
-    timeout = subprocess.TimeoutExpired(cmd="parser", timeout=limits.PARSE_TIMEOUT_SECONDS)
+    timeout = subprocess.TimeoutExpired(cmd="parser", timeout=ChannelAnalysisConfigs.PARSE_TIMEOUT_SECONDS)
     too_slow = patch("channel_analysis.infra.file_parser.subprocess.run", autospec=True, side_effect=timeout)
     with too_slow, pytest.raises(FileUnreadableError, match="took longer than 30 s"):
         extract_text_isolated("slow.pdf", "pdf", b"%PDF", MAX)
@@ -59,7 +59,7 @@ def test_the_child_gets_the_file_on_stdin_a_timeout_and_the_parents_import_path(
 
     assert run.call_args.args[0][-4:] == ["channel_analysis.infra.file_text", "a.pdf", "pdf", "123"]
     assert run.call_args.kwargs["input"] == b"%PDF-data"
-    assert run.call_args.kwargs["timeout"] == limits.PARSE_TIMEOUT_SECONDS
+    assert run.call_args.kwargs["timeout"] == ChannelAnalysisConfigs.PARSE_TIMEOUT_SECONDS
     assert run.call_args.kwargs["env"]["PYTHONPATH"]
 
 
@@ -80,9 +80,17 @@ def test_the_child_lowers_its_memory_and_cpu_limits_before_it_reads_the_file():
         file_text._limit_resources()
 
     assert [c.args[0] for c in setrlimit.call_args_list] == [resource.RLIMIT_AS, resource.RLIMIT_CPU]
-    assert setrlimit.call_args_list[0].args[1] == (limits.PARSE_MEMORY_BYTES, limits.PARSE_MEMORY_BYTES)
+    assert setrlimit.call_args_list[0].args[1] == (ChannelAnalysisConfigs.PARSE_MEMORY_BYTES, ChannelAnalysisConfigs.PARSE_MEMORY_BYTES)
 
 
 def test_a_platform_that_refuses_the_limits_still_parses():
     with patch("resource.setrlimit", autospec=True, side_effect=ValueError("not allowed")):
         file_text._limit_resources()
+
+
+def test_the_childs_stderr_is_not_collected_so_a_warning_heavy_file_cannot_fill_the_workers_memory():
+    with patch("channel_analysis.infra.file_parser.subprocess.run", autospec=True, return_value=completed(json.dumps({"text": "x"}).encode())) as run:
+        extract_text_isolated("a.pdf", "pdf", b"%PDF", 100)
+
+    kwargs = run.call_args.kwargs
+    assert kwargs["stderr"] == subprocess.DEVNULL and kwargs["stdout"] == subprocess.PIPE and "capture_output" not in kwargs

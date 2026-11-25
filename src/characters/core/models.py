@@ -3,26 +3,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
-
-FEATURE_PREFIX = "feature:"
-SKILL_PREFIX = "skill:"
-
-# The always-loaded skill every agent reply uses: a character bound to it is the default voice of the whole bot.
-GLOBAL_SKILL = "core"
-
-# Features whose messages the code posts from templates (see `VoiceSpec`).
-FEATURE_PR_REMINDER = "pr_reminder"
-
-# The fields of a `Character` that `CharacterChanges` replaces one for one (bindings and voices have their own rules).
-_PLAIN_FIELDS = ("display_name", "song", "artist", "enabled", "icon_emoji", "icon_url", "persona")
+from characters.core.configs import CharactersConfigs
 
 
 def feature_binding(feature: str) -> str:
-    return f"{FEATURE_PREFIX}{feature}"
+    return f"{CharactersConfigs.FEATURE_PREFIX}{feature}"
 
 
 def skill_binding(skill: str) -> str:
-    return f"{SKILL_PREFIX}{skill}"
+    return f"{CharactersConfigs.SKILL_PREFIX}{skill}"
 
 
 @dataclass(frozen=True)
@@ -109,7 +98,7 @@ class CharacterChanges:
         then `add_bindings` are appended (without duplicates) and `remove_bindings` taken out, so a binding that is both
         added and removed ends up removed.
         """
-        fields = {key: getattr(self, key) for key in _PLAIN_FIELDS if getattr(self, key) is not None}
+        fields = {key: getattr(self, key) for key in CharactersConfigs.PLAIN_FIELDS if getattr(self, key) is not None}
         fields |= {key: None for key in ("icon_emoji", "icon_url") if fields.get(key) == ""}
         bindings = tuple(self.bindings) if self.bindings is not None else current.bindings
         bindings = tuple(b for b in dict.fromkeys((*bindings, *self.add_bindings)) if b not in self.remove_bindings)

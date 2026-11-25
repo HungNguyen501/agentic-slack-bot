@@ -3,10 +3,10 @@ import os
 import subprocess
 import sys
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import FileUnreadableError
 from channel_analysis.infra import file_text
-from channel_analysis.infra.file_kinds import PLAIN_KINDS, kind_of
+from channel_analysis.infra.file_kinds import kind_of
 
 
 def extract_text_isolated(name: str, filetype: str, data: bytes, max_chars: int) -> str:
@@ -19,19 +19,22 @@ def extract_text_isolated(name: str, filetype: str, data: bytes, max_chars: int)
     Raises:
         FileUnreadableError: the file can't be read, or the parser went over its limits.
     """
-    if kind_of(name, filetype) in PLAIN_KINDS:
+    if kind_of(name, filetype) in ChannelAnalysisConfigs.PLAIN_KINDS:
         return file_text.extract_text(name, filetype, data, max_chars)
     try:
         done = subprocess.run(
             [sys.executable, "-m", "channel_analysis.infra.file_text", name, filetype, str(max_chars)],
             input=data,
-            capture_output=True,
-            timeout=limits.PARSE_TIMEOUT_SECONDS,
+            # The answer is on stdout (bounded by `max_chars`). stderr is never read, and a damaged PDF can make the parser warn for
+            # its whole CPU budget, which would pile up in this process, outside the child's memory limit.
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=ChannelAnalysisConfigs.PARSE_TIMEOUT_SECONDS,
             env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": os.pathsep.join(sys.path), "PYTHONDONTWRITEBYTECODE": "1"},
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise FileUnreadableError(f"Reading `{name}` took longer than {limits.PARSE_TIMEOUT_SECONDS} s, so I stopped.") from exc
+        raise FileUnreadableError(f"Reading `{name}` took longer than {ChannelAnalysisConfigs.PARSE_TIMEOUT_SECONDS} s, so I stopped.") from exc
     try:
         result = json.loads(done.stdout)
     except ValueError as exc:

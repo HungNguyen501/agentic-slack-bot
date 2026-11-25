@@ -12,11 +12,11 @@ Three layers, feature-first. Each feature is a top-level package under `src/` wi
 src/
   <feature>/                  e.g. pr_reminders, access_control, dataset_sync, service_principal_secrets, schedules, bots, agent
     presentation/             agent-tool handlers and event/job handlers: parse input, call one use case, map the result and errors to a reply
-    core/                     use cases, ports (Protocols), entities / value objects, pure rules, core errors
+    core/                     use cases, ports (Protocols), entities / value objects, pure rules, core errors, and `configs.py`: the feature's own configs class
     infra/                    adapters that implement the ports, on top of connectors/ (Supabase, Redis, Slack, GitHub, Databricks, OpenAI)
   receiver/ worker/ scheduler/   service entry points: transport glue (FastAPI route, RQ task, cron loop) + that service's composition root
-  connectors/                 generic external clients; no feature logic, no feature imports (unchanged)
-  common/                     config, cron/crypto helpers; no feature rules
+  connectors/                 generic external clients; no feature logic, no feature imports (unchanged); each big client has its own configs class at the top of its module
+  common/                     what several modules share: env-backed settings (`configs.py`), cron/crypto helpers; no feature rules
 tests/                        mirrors src/
 ```
 
@@ -34,7 +34,7 @@ Service entry points (`receiver/app.py`, `worker/tasks.py`, `scheduler/app.py`) 
 
 ## Dependency rule
 
-- Imports point inward: `presentation → core ← infra`. `core` imports only the standard library, `common` (non-secret tunables, wording, pure helpers) and the `core` of features it genuinely needs. No cycles.
+- Imports point inward: `presentation → core ← infra`. `core` imports only the standard library, `common` (shared settings, pure helpers) and the `core` of features it genuinely needs. No cycles.
 - A feature uses another feature only through that feature's `core/` (its use cases, models, ports). Never its `infra/` or `presentation/`.
 - `connectors/` is imported only by `infra/` and by composition roots. `connectors/` and `common/` import no feature.
 - **Ports live in `core/`**, as `typing.Protocol` classes, named for the capability, not the vendor (`ReminderStore`, `PrStatusSource`, `ThreadReader`; not `SupabaseStore`). The adapter in `infra/` implements it.
@@ -58,9 +58,21 @@ Service entry points (`receiver/app.py`, `worker/tasks.py`, `scheduler/app.py`) 
 | A call to Slack / GitHub / Databricks / OpenAI for a feature | Generic call in `connectors/` (only if reusable and task-agnostic); the feature-specific use of it in `<feature>/infra/` behind a port |
 | A new scheduled job or RQ task | Use case in `<feature>/core/`; thin task in `worker/tasks.py` (job path string stays stable) that calls the wired handler |
 | A new env var | `common/configs.py`; passed into `core/` as a parameter or via an adapter, never read inside `core/` |
+| A new constant: limit, timeout, retry cap, regex, format marker, message wording, set of tool names | An attribute of the owning module's configs class (`<Feature>Configs` in `<feature>/core/configs.py`; see "Configs"), not a module-level name |
 | A table or capability used by several features (`bots`, `schedules`) | Its own feature; others depend on its `core/` |
 
-Feature-specific models, limits and wording that are not env-backed live in that feature's `core/`, not in `common/configs.py`.
+Feature-specific models, limits and wording that are not env-backed live in that feature's `core/` (the constants in its configs class, see below), not in `common/configs.py`.
+
+## Configs
+
+Every big module (a feature package, a connector, a service) has **its own configs class**. `common/configs.py` is for what several modules share; it never holds one feature's limits or wording.
+
+- **`common/configs.py`** — settings read from the environment (hosts, tokens, model names, switches) and tunables that more than one module really uses. It imports no feature. A value that two features need goes here, or into the `core/` of the one feature that owns the concept and the other uses it through that `core/`.
+- **A feature's class** — `<Feature>Configs` in `<feature>/core/configs.py` (`ChannelAnalysisConfigs`, `DatasetSyncConfigs`, `CharactersConfigs`; the unmigrated `agent/` features keep theirs beside the code: `AccessControlConfigs`, `PrRemindersConfigs`). It holds everything that is the feature's own and not env-backed: size limits, timeouts and retry caps, formats it writes or parses (a prefix, a marker), regexes, wording, sets of tool names. Several small classes by concern are fine when one would grow past a screen (`ToolPolicy`, `ReadGuardMessages`), each named for what it holds.
+- **A connector's or service's class** — at the top of its own module (`SlackConfigs` in `connectors/slack.py`); nothing outside imports a connector's internals, only the class's attributes where a test needs them.
+- **Shape** — a class with `UPPER_CASE` attributes that is never instantiated, no methods, a short comment for each value whose reason is not obvious. Compiled regexes and `frozenset`s are attributes too. A feature module has no other module-level constants: its logger and its private helper functions are the exceptions.
+- **No environment in a feature's class.** `core/` may not read env vars, so an env-backed value stays in `common/configs.py` and reaches the feature as a parameter or through an adapter. To make one of a feature's tunables env-configurable, add the env field to `common/configs.py` and pass it in from the wiring; the feature's class keeps the default.
+- **Tests** change a value with `monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_RETRY_AFTER_SECONDS", 5)`, never by editing module state.
 
 ## Testing per layer
 
@@ -90,8 +102,9 @@ The tree is still organised by task under `agent/` and `connectors/db/`, with I/
 | `agent/service_principal_secrets/store.py` | `service_principal_secrets/infra/` |
 | `agent/{agent,dispatch,history}.py`, `agent/skills/` | `agent/` (loop in core with LLM / history / skill-source ports), `skills/` |
 | `connectors/db/agent_skills.py` | `skills/infra/`; `connectors/db/connection.py` stays |
-| `ReminderConfig`, `ReminderMessages` in `common/configs.py` | `pr_reminders/core/` |
+| `ReminderConfig`, `ReminderMessages` in `common/configs.py` | `pr_reminders/core/` (with its `PrRemindersConfigs`) |
+| `AgentConfigs` in `common/configs.py` (the tool schemas, reasoning effort, TTLs of the access flows) | The agent's own class beside `agent/` when it is migrated; the env-backed fields (`GPT_MODEL`) stay in `common/configs.py` |
 
 ## Enforcement
 
-By review for now: apply the skill's "Reviewing for violations" checklist to any diff touching these layers (`/code-review` is expected to flag a `core/` import of a connector or SDK, a handler with business conditionals, a use case constructing its own client, and an adapter that branches on business state). Planned follow-up, once the first features are migrated: an `import-linter` layers contract encoding the dependency rule above, with today's violations frozen so it blocks only new ones. Until it exists, the dependency rule is checked by hand.
+By review for now: apply the skill's "Reviewing for violations" checklist to any diff touching these layers (`/code-review` is expected to flag a `core/` import of a connector or SDK, a handler with business conditionals, a use case constructing its own client, an adapter that branches on business state, and a module-level constant in a feature module or a feature's limit or wording added to `common/configs.py`). Planned follow-up, once the first features are migrated: an `import-linter` layers contract encoding the dependency rule above, with today's violations frozen so it blocks only new ones. Until it exists, the dependency rule is checked by hand.

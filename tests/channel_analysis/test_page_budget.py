@@ -1,7 +1,7 @@
 """The size estimate that fills a page (core) must cover what the page really shows (presentation)."""
 import pytest
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.models import ChannelMessage, FileRef
 from channel_analysis.presentation.tools import _format_message, _format_slice
 from tests.support.channel_analysis import BOT, CHANNEL, make_message
@@ -38,9 +38,9 @@ def test_what_a_message_renders_to_never_exceeds_the_size_that_filled_the_page(n
     assert rendered(message) <= message.size
 
 
-@pytest.mark.parametrize("budget", [limits.PAGE_CHAR_BUDGET, 20_000, 12_000])
+@pytest.mark.parametrize("budget", [ChannelAnalysisConfigs.PAGE_CHAR_BUDGET, 20_000, 12_000])
 def test_four_threads_of_long_multiline_replies_fill_pages_that_stay_within_the_budget(service, history, monkeypatch, budget):
-    monkeypatch.setattr(limits, "PAGE_CHAR_BUDGET", budget)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "PAGE_CHAR_BUDGET", budget)
     reply = lambda: make_message(0.5, lines(1500), author="<@U1>")  # noqa: E731
     history.messages = [make_message(n, f"root {n}", replies=(reply(), reply(), reply()), reply_count=3) for n in range(1, 5)]
     pages, before = [], None
@@ -65,4 +65,4 @@ def test_a_thread_of_multiline_replies_is_cut_to_what_one_thread_may_add_countin
 
     shown = len("\n".join(_format_message(message)))
     assert len(message.replies) < 6 and message.omitted_replies == 6 - len(message.replies)
-    assert shown <= limits.REPLIES_CHAR_LIMIT + limits.MESSAGE_CHAR_LIMIT + 3000
+    assert shown <= ChannelAnalysisConfigs.REPLIES_CHAR_LIMIT + ChannelAnalysisConfigs.MESSAGE_CHAR_LIMIT + 3000

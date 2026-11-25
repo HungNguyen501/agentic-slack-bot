@@ -1,16 +1,11 @@
 """Limits on PR reminders: how often one may run and how long it lives. Pure, no I/O."""
-import re
 from collections.abc import Iterable
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from agent.pr_reminders.configs import PrRemindersConfigs
 from common.configs import AgentConfigs
 from common.cron import CronError, validate_cron
-
-# A user mention as Slack writes it (<@U123ABCDE> or <@U123ABCDE|name>) or a bare user ID. Channel, here and user-group
-# mentions don't match, so a request can't be used to broadcast. Real IDs are at least 9 characters; requiring that keeps
-# a word like UNKNOWN or WHO, which an LLM might pass, from becoming a mention that pings nobody.
-_USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]{8,})(?:\|[^>]*)?>|([UW][A-Z0-9]{8,})")
 
 
 class ReminderRequestError(ValueError):
@@ -60,7 +55,7 @@ def parse_mentions(values: Iterable[object]) -> list[str]:
     """
     user_ids: dict[str, None] = {}
     for value in values:
-        match = _USER_MENTION_RE.fullmatch(value.strip()) if isinstance(value, str) else None
+        match = PrRemindersConfigs.USER_MENTION_RE.fullmatch(value.strip()) if isinstance(value, str) else None
         if match is None:
             raise ReminderRequestError(f"I can only remind people by @mention, and '{value}' isn't one. Mention each person as @name.")
         user_ids[match.group(1) or match.group(2)] = None

@@ -1,26 +1,4 @@
-# What an admin is told for each way a channel can be unreadable. The codes are Slack's where Slack has one.
-ACCESS_MESSAGES: dict[str, str] = {
-    "channel_not_found": (
-        "I can't find that channel. If it is private and I am not in it, it looks the same as a channel that does not exist: "
-        "invite me, then send the channel link or ID."
-    ),
-    "channel_search_incomplete": (
-        "This workspace has too many channels for me to find that one by name. Send me the channel link or its ID instead."
-    ),
-    "is_dm": "That is a direct message, and I only read channels.",
-    "is_archived": "That channel is archived.",
-    "not_in_channel": "I'm not a member of that channel, so I can't read it. Invite me with `/invite` and try again.",
-    "missing_scope": (
-        "My Slack app is missing a permission it needs to read channels (channels:history, groups:history, channels:read or groups:read). "
-        "A workspace admin needs to add it and reinstall the app."
-    ),
-    "files_scope": "My Slack app is missing the files:read permission, so I can read messages but not files. A workspace admin needs to add it and reinstall the app.",
-    "private_not_member": "That is a private channel and you are not a member of it, so I won't read it for you. Ask a member to run this, or join the channel first.",
-    "membership_unverified": (
-        "That is a private channel and I could not confirm you are a member of it (it has too many members to check), so I won't read it for you."
-    ),
-    "ratelimited": "Slack is rate limiting me. Try again in a minute.",
-}
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 
 
 class ChannelAnalysisError(Exception):
@@ -33,7 +11,7 @@ class ChannelAccessError(ChannelAnalysisError):
     def __init__(self, code: str, detail: str | None = None, retry_after: float | None = None) -> None:
         self.code = code
         self.retry_after = retry_after
-        message = ACCESS_MESSAGES[code]
+        message = ChannelAnalysisConfigs.ACCESS_MESSAGES[code]
         super().__init__(f"{message} (Slack says it needs: {detail})" if detail else message)
 
 

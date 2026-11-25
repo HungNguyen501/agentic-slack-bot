@@ -1,6 +1,7 @@
 import pytest
 
-from channel_analysis.core import extraction, limits
+from channel_analysis.core import extraction
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAnalysisError, ExtractionShapeError
 from channel_analysis.core.models import ExtractionField, ExtractionItem, ExtractionSpec, FileRef, Record
 from tests.support.channel_analysis import make_message, ts_ago
@@ -102,7 +103,7 @@ def test_a_message_with_no_text_still_makes_an_item():
 
 
 def test_a_long_message_is_read_whole_in_pieces_not_cut_at_the_display_limit(monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 130)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 130)
     rows = "".join(f"row {n:03d}: table_{n}\n" for n in range(40))
     message = make_message(1, rows)
 
@@ -115,8 +116,8 @@ def test_a_long_message_is_read_whole_in_pieces_not_cut_at_the_display_limit(mon
 
 
 def test_a_message_longer_than_one_message_may_add_is_cut_and_says_so(monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 50)
-    monkeypatch.setattr(limits, "MAX_ITEMS_PER_MESSAGE", 3)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 50)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_ITEMS_PER_MESSAGE", 3)
 
     items, whole = extraction.message_items(make_message(1, "line of text\n" * 100))
 
@@ -132,7 +133,7 @@ def test_replies_that_are_beyond_the_display_budget_are_still_in_the_items():
 
 
 def test_a_file_becomes_pieces_that_carry_the_messages_time_and_link(monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 80)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 80)
     message = make_message(1, "report", link="https://x/p1")
     text = "table,rows\n" + "".join(f"t{n},{n}\n" for n in range(40))
 
@@ -156,7 +157,7 @@ def test_a_file_attached_to_a_reply_belongs_to_the_root_message_but_shows_the_re
 
 
 def test_every_piece_of_a_workbook_starts_with_its_sheet_and_its_columns(monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 200)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 200)
     counts = "## Sheet: Counts\ntable,rows\n" + "".join(f"t{n},{n}\n" for n in range(40))
     failures = "## Sheet: Failures\ntable,error\n" + "".join(f"f{n},boom\n" for n in range(40))
 
@@ -174,7 +175,7 @@ def test_every_piece_of_a_workbook_starts_with_its_sheet_and_its_columns(monkeyp
 
 
 def test_a_file_that_needs_more_pieces_than_the_room_is_cut_and_says_so(monkeypatch):
-    monkeypatch.setattr(limits, "ITEM_CHAR_LIMIT", 20)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "ITEM_CHAR_LIMIT", 20)
 
     pieces, whole = extraction.file_items(make_message(1), FileRef("F1", "log.txt", "text", 9), "line\n" * 50, room=2)
 
@@ -292,12 +293,12 @@ def test_values_are_text_cut_at_the_stored_bound_and_undeclared_keys_are_dropped
     records, _ = read({"records": [{"m": "1", "table": 12345, "status": "loaded", "extra": "ignored"}, {"m": 1, "table": "x" * 5000}]})
 
     assert records[0].values == {"table": "12345", "status": "loaded"}
-    assert len(records[1].values["table"]) == limits.MAX_STORED_VALUE_CHARS
+    assert len(records[1].values["table"]) == ChannelAnalysisConfigs.MAX_STORED_VALUE_CHARS
     assert records[1].values["status"] is None
 
 
 def test_values_that_differ_only_after_the_display_cut_stay_distinct_records_and_groups():
-    long = "x" * (limits.MAX_VALUE_CHARS + 50)
+    long = "x" * (ChannelAnalysisConfigs.MAX_VALUE_CHARS + 50)
     records, _ = read({"records": [{"m": 1, "table": long + "A"}, {"m": 1, "table": long + "B"}]})
 
     assert len(records) == 2

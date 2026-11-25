@@ -10,8 +10,10 @@ mentions); everything that comes from GitHub is escaped first so a PR title can'
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta
 
+from agent.pr_reminders.configs import PrRemindersConfigs
+from characters.core.configs import CharactersConfigs
 from agent.pr_reminders.status import PrStatus
-from characters.core.models import FEATURE_PR_REMINDER, Character
+from characters.core.models import Character
 from characters.core.validation import TemplateField, VoiceSpec
 from common.configs import ReminderMessages
 
@@ -36,7 +38,7 @@ class PrReminderVoice:
     @classmethod
     def from_character(cls, character: Character | None) -> "PrReminderVoice":
         """The character's voice, with every field it doesn't set taken from the default; the default for no character."""
-        block = character.voices.get(FEATURE_PR_REMINDER, {}) if character else {}
+        block = character.voices.get(CharactersConfigs.FEATURE_PR_REMINDER, {}) if character else {}
         overrides = {f.name: tuple(block[f.name]) if f.name == "headers" else block[f.name] for f in fields(cls) if f.name in block}
         return replace(DEFAULT_VOICE, **overrides)
 
@@ -72,8 +74,6 @@ DEFAULT_VOICE = PrReminderVoice(
 )
 
 
-_SCHEDULE_ID = frozenset({"schedule_id"})
-
 # What a character's `pr_reminder` block may contain: the placeholders each template of the default voice is filled with.
 VOICE_SPEC = VoiceSpec(
     fields={
@@ -88,8 +88,8 @@ VOICE_SPEC = VoiceSpec(
         "author_court_with_waiting": TemplateField(),
         "author_court_alone": TemplateField(),
         "author_line": TemplateField(),
-        "schedule_footer": TemplateField(placeholders=_SCHEDULE_ID, required=_SCHEDULE_ID),
-        "expired": TemplateField(placeholders=_SCHEDULE_ID, required=_SCHEDULE_ID),
+        "schedule_footer": TemplateField(placeholders=PrRemindersConfigs.SCHEDULE_ID, required=PrRemindersConfigs.SCHEDULE_ID),
+        "expired": TemplateField(placeholders=PrRemindersConfigs.SCHEDULE_ID, required=PrRemindersConfigs.SCHEDULE_ID),
         "unreadable": TemplateField(placeholders=frozenset({"schedule_id", "error_code"}), required=frozenset({"schedule_id", "error_code"})),
     },
     mandatory=frozenset({"headers"}),

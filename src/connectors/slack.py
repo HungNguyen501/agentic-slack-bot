@@ -14,11 +14,27 @@ from connectors.redis_client import client as redis_client
 
 log = logging.getLogger("connectors.slack")
 
-# An app whose token lacks chat:write.customize is remembered in Redis (`slack_no_customize:{sha256(token)[:16]}`), not in
-# memory: `rq worker` forks a process per job, so a module-level set would be forgotten after every message or run.
-# Without it every message from such an app costs two Slack calls (the refused attempt, then the retry) and a warning.
-# It expires so that adding the scope and reinstalling the app takes effect without a restart.
-_NO_CUSTOMIZE_TTL_SECONDS = 600
+
+class SlackConfigs:
+    """How long and how often the connector keeps trying."""
+
+    # An app whose token lacks chat:write.customize is remembered in Redis (`slack_no_customize:{sha256(token)[:16]}`), not in
+    # memory: `rq worker` forks a process per job, so a module-level set would be forgotten after every message or run.
+    # Without it every message from such an app costs two Slack calls (the refused attempt, then the retry) and a warning.
+    # It expires so that adding the scope and reinstalling the app takes effect without a restart.
+    NO_CUSTOMIZE_TTL_SECONDS = 600
+
+    # How often one page may be asked for again when the caller's `retry` keeps saying yes.
+    MAX_PAGE_RETRIES = 3
+    # httpx's timeout bounds each wait for the server (connecting, the headers, each chunk), not the whole transfer: a response that
+    # trickles bytes would otherwise run on until the job timeout killed the agent run. So the transfer also has a deadline, checked
+    # after the headers and after every chunk; it can overrun by at most one wait.
+    DOWNLOAD_DEADLINE_SECONDS = 60.0
+    DOWNLOAD_WAIT_SECONDS = 10.0
+
+    # The code fence of a Slack message; closing an open code block adds `CLOSE_COST` to a chunk.
+    FENCE = "```"
+    CLOSE_COST = len("\n" + FENCE)
 
 
 def _no_customize_key(token: str) -> str:
@@ -34,7 +50,7 @@ def _lacks_customize_scope(token: str) -> bool:
 
 def _remember_missing_customize_scope(token: str) -> None:
     try:
-        redis_client.set(_no_customize_key(token), "1", ex=_NO_CUSTOMIZE_TTL_SECONDS)
+        redis_client.set(_no_customize_key(token), "1", ex=SlackConfigs.NO_CUSTOMIZE_TTL_SECONDS)
     except RedisError:
         log.warning("Could not remember that this Slack app lacks chat:write.customize", exc_info=True)
 
@@ -79,7 +95,7 @@ def post_message(
         response = client.chat_postMessage(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
         # Only now is the missing scope proven: had the retry failed too, the cause could be something else.
         _remember_missing_customize_scope(token)
-        log.warning("Slack app lacks chat:write.customize; posted as the bot instead of %s (remembered for %d s)", username, _NO_CUSTOMIZE_TTL_SECONDS)
+        log.warning("Slack app lacks chat:write.customize; posted as the bot instead of %s (remembered for %d s)", username, SlackConfigs.NO_CUSTOMIZE_TTL_SECONDS)
     return str(response["ts"])
 
 
@@ -122,17 +138,13 @@ def delete_message(channel: str, ts: str, *, token: str) -> None:
     WebClient(token=token).chat_delete(channel=channel, ts=ts)
 
 
-# How often one page may be asked for again when the caller's `retry` keeps saying yes.
-_MAX_PAGE_RETRIES = 3
-
-
 def _collect_pages(
     fetch: Callable[[str | None], Any], max_messages: int | None = None, retry: Callable[[SlackApiError], bool] | None = None
 ) -> tuple[list[dict], bool]:
     """Follow Slack cursor pagination, calling `fetch(cursor)` until the last page or `max_messages` is reached.
 
     When a page fails and `retry` is given, `retry(error)` says whether to ask for that same page again (it does any waiting; a page
-    is asked for again at most `_MAX_PAGE_RETRIES` times). If it says no, the pages read so far are returned as not finished; with
+    is asked for again at most `SlackConfigs.MAX_PAGE_RETRIES` times). If it says no, the pages read so far are returned as not finished; with
     none read, the error is raised.
 
     Returns the messages and whether some were left unread (because of `max_messages`, or a page that could not be read).
@@ -147,7 +159,7 @@ def _collect_pages(
             if retry is None:
                 raise
             failures += 1
-            if failures <= _MAX_PAGE_RETRIES and retry(exc):
+            if failures <= SlackConfigs.MAX_PAGE_RETRIES and retry(exc):
                 continue
             if not messages:
                 raise
@@ -266,11 +278,6 @@ def get_file_info(file_id: str, *, token: str) -> dict:
     return dict(WebClient(token=token).files_info(file=file_id)["file"])
 
 
-# httpx's timeout bounds each wait for the server, not the whole transfer: a response that trickles bytes would otherwise run on
-# until the job timeout killed the agent run.
-_DOWNLOAD_DEADLINE_SECONDS = 60.0
-
-
 class FileDownloadError(Exception):
     """A file couldn't be downloaded; the message says why."""
 
@@ -283,15 +290,17 @@ def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
 
     Raises:
         FileDownloadError: another host, an error status, an HTML page (what Slack returns when the token can't read files), too many
-            bytes or a transfer that takes longer than `_DOWNLOAD_DEADLINE_SECONDS`.
+            bytes or a transfer that takes longer than `SlackConfigs.DOWNLOAD_DEADLINE_SECONDS`.
     """
     parsed = httpx.URL(url)
     if parsed.scheme != "https" or not (parsed.host == "slack.com" or parsed.host.endswith(".slack.com")):
         raise FileDownloadError("The file is not hosted on Slack.")
     data = bytearray()
-    deadline = time.monotonic() + _DOWNLOAD_DEADLINE_SECONDS
+    deadline = time.monotonic() + SlackConfigs.DOWNLOAD_DEADLINE_SECONDS
     try:
-        with httpx.stream("GET", url, headers={"Authorization": f"Bearer {token}"}, timeout=30.0, follow_redirects=False) as response:
+        with httpx.stream("GET", url, headers={"Authorization": f"Bearer {token}"}, timeout=SlackConfigs.DOWNLOAD_WAIT_SECONDS, follow_redirects=False) as response:
+            if time.monotonic() > deadline:
+                raise FileDownloadError(f"The download took longer than {SlackConfigs.DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
             if response.status_code != 200:
                 raise FileDownloadError(f"Slack answered {response.status_code} for the file.")
             if response.headers.get("content-type", "").startswith("text/html"):
@@ -301,7 +310,7 @@ def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
                 if len(data) > max_bytes:
                     raise FileDownloadError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
                 if time.monotonic() > deadline:
-                    raise FileDownloadError(f"The download took longer than {_DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
+                    raise FileDownloadError(f"The download took longer than {SlackConfigs.DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
     except httpx.HTTPError as exc:
         raise FileDownloadError(f"Could not download the file: {exc}") from exc
     return bytes(data)
@@ -328,20 +337,16 @@ def open_view(trigger_id: str, view: dict, *, token: str) -> None:
     WebClient(token=token).views_open(trigger_id=trigger_id, view=view)
 
 
-_FENCE = "```"
-_CLOSE_COST = len("\n" + _FENCE)  # what closing an open code block adds to a chunk
-
-
 def _next_fence(line: str, fence: str | None) -> str | None:
     """Code-block state after `line`: the opening fence (with any language tag) if inside one, else None.
 
     Counts every ``` on the line, so a complete one-line block like ```x``` leaves the state unchanged.
     """
-    if line.count(_FENCE) % 2 == 0:
+    if line.count(SlackConfigs.FENCE) % 2 == 0:
         return fence
     if fence is not None:
         return None
-    return _FENCE + line[line.rindex(_FENCE) + len(_FENCE):].strip() if line.startswith(_FENCE) else _FENCE
+    return SlackConfigs.FENCE + line[line.rindex(SlackConfigs.FENCE) + len(SlackConfigs.FENCE):].strip() if line.startswith(SlackConfigs.FENCE) else SlackConfigs.FENCE
 
 
 class _Chunker:
@@ -357,7 +362,7 @@ class _Chunker:
 
     def add(self, line: str, after: str | None) -> None:
         """Append `line`, flushing first if it (plus a closing fence, if it leaves a block open) wouldn't fit."""
-        closing = _CLOSE_COST if after is not None else 0
+        closing = SlackConfigs.CLOSE_COST if after is not None else 0
         if self._content and self._length + self._joined(line) + closing > self.max_len:
             self._flush()
         self._length += self._joined(line)
@@ -375,7 +380,7 @@ class _Chunker:
 
     def _flush(self) -> None:
         if self.fence is not None:
-            self._lines.append(_FENCE)
+            self._lines.append(SlackConfigs.FENCE)
         self.chunks.append("\n".join(self._lines))
         self._lines = [self.fence] if self.fence is not None else []
         self._length = len(self.fence) if self.fence is not None else 0
@@ -407,12 +412,12 @@ def split_message(text: str, max_len: int = 3000) -> list[str]:
     for line in text.splitlines():
         after = _next_fence(line, chunker.fence)
         reopen = len(chunker.fence) + 1 if chunker.fence is not None else 0
-        if reopen + len(line) + (_CLOSE_COST if after is not None else 0) <= max_len:
+        if reopen + len(line) + (SlackConfigs.CLOSE_COST if after is not None else 0) <= max_len:
             chunker.add(line, after)
             continue
 
         in_block = chunker.fence is not None or after is not None
-        size = max(1, max_len - reopen - (_CLOSE_COST if in_block else 0))
+        size = max(1, max_len - reopen - (SlackConfigs.CLOSE_COST if in_block else 0))
         *head, last = (line[i:i + size] for i in range(0, len(line), size))
         for fragment in head:
             chunker.add(fragment, chunker.fence)

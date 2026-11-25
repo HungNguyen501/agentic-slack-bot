@@ -5,7 +5,11 @@ from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
-_DAY_HORIZON = 800
+
+class CronConfigs:
+    """How far ahead a cron expression is searched for its next runs."""
+
+    DAY_HORIZON = 800
 
 
 class CronError(ValueError):
@@ -32,7 +36,7 @@ def _shortest_gap_minutes(cron: str, today: date) -> float:
     day_filter = "0 0 " + " ".join(cron.split()[2:])
     eligible = [
         today + timedelta(days=offset)
-        for offset in range(_DAY_HORIZON)
+        for offset in range(CronConfigs.DAY_HORIZON)
         if croniter.match(day_filter, datetime.combine(today + timedelta(days=offset), datetime.min.time()))
     ]
     for earlier, later in pairwise(eligible):

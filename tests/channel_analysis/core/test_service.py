@@ -1,6 +1,6 @@
 import pytest
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ChannelAccessError, ChannelAnalysisError
 from channel_analysis.core.models import FileMeta, FileRef, HistoryBatch
 from channel_analysis.core.service import ChannelAnalysisService
@@ -34,13 +34,13 @@ def test_read_asks_the_history_with_the_window_start_and_the_replies_choice(serv
     assert fetch["oldest"] == NOW - 7 * 86400
     assert fetch["latest"] == f"{NOW:.6f}"
     assert fetch["replies_until"] == NOW
-    assert (fetch["limit"], fetch["with_replies"]) == (limits.FETCH_BATCH, False)
+    assert (fetch["limit"], fetch["with_replies"]) == (ChannelAnalysisConfigs.FETCH_BATCH, False)
 
 
 def test_read_with_replies_uses_the_smaller_batch(service, history):
     read(service)
 
-    assert history.fetches[0]["limit"] == limits.FETCH_BATCH_WITH_REPLIES
+    assert history.fetches[0]["limit"] == ChannelAnalysisConfigs.FETCH_BATCH_WITH_REPLIES
 
 
 def test_end_days_ago_moves_the_window_back(service, history):
@@ -61,7 +61,7 @@ def test_a_messages_size_counts_the_reactions_it_will_show():
 
 
 def test_reaction_heavy_messages_fill_a_page_sooner_so_a_page_stays_within_its_budget(service, history, monkeypatch):
-    monkeypatch.setattr(limits, "PAGE_CHAR_BUDGET", 2500)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "PAGE_CHAR_BUDGET", 2500)
     reactions = tuple((f"custom_emoji_{n}", 12) for n in range(40))
     history.messages = [make_message(n, "x", reactions=reactions) for n in range(1, 7)]
 
@@ -101,7 +101,7 @@ def test_contains_keeps_a_message_with_any_term_in_text_author_file_or_reply(ser
 def test_a_result_carries_the_window_start_and_a_resumed_call_keeps_the_same_window(history, files, extractor, monkeypatch):
     clock = [NOW]
     service = ChannelAnalysisService(history, files, extractor, now=lambda: clock[0])
-    monkeypatch.setattr(limits, "PAGE_CHAR_BUDGET", 600)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "PAGE_CHAR_BUDGET", 600)
     history.messages = [make_message(n, "x" * 200) for n in range(1, 5)]
 
     first = service.read(BOT, CHANNEL, "UADMIN")
@@ -141,7 +141,7 @@ def test_a_bare_timestamp_still_resumes_with_a_window_from_now(service, history)
 
 
 def test_a_page_stops_at_the_budget_and_resumes_without_repeating(service, history, monkeypatch):
-    monkeypatch.setattr(limits, "PAGE_CHAR_BUDGET", 1200)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "PAGE_CHAR_BUDGET", 1200)
     history.messages = [make_message(n, f"m{n}" + "x" * 300) for n in range(1, 8)]
     seen, before, pages = [], None, 0
 
@@ -158,7 +158,7 @@ def test_a_page_stops_at_the_budget_and_resumes_without_repeating(service, histo
 
 
 def test_one_message_bigger_than_the_budget_is_still_returned(service, history, monkeypatch):
-    monkeypatch.setattr(limits, "PAGE_CHAR_BUDGET", 10)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "PAGE_CHAR_BUDGET", 10)
     history.messages = [make_message(1, "a" * 50), make_message(2, "b" * 50)]
 
     page = read(service)
@@ -168,8 +168,8 @@ def test_one_message_bigger_than_the_budget_is_still_returned(service, history, 
 
 
 def test_the_scan_cap_returns_a_resume_cursor_even_when_nothing_matched(service, history, monkeypatch):
-    monkeypatch.setattr(limits, "MAX_SCAN_PER_CALL_WITH_REPLIES", 3)
-    monkeypatch.setattr(limits, "FETCH_BATCH_WITH_REPLIES", 2)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_SCAN_PER_CALL_WITH_REPLIES", 3)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "FETCH_BATCH_WITH_REPLIES", 2)
     history.messages = [make_message(n, "noise") for n in range(1, 8)] + [make_message(9, "needle")]
 
     first = read(service, contains=("needle",))
@@ -183,8 +183,8 @@ def test_the_scan_cap_returns_a_resume_cursor_even_when_nothing_matched(service,
 
 
 def test_a_channel_of_nothing_but_noise_stops_at_the_scan_cap_instead_of_fetching_on(service, history, monkeypatch):
-    monkeypatch.setattr(limits, "MAX_SCAN_PER_CALL_WITH_REPLIES", 50)
-    monkeypatch.setattr(limits, "FETCH_BATCH_WITH_REPLIES", 10)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "MAX_SCAN_PER_CALL_WITH_REPLIES", 50)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "FETCH_BATCH_WITH_REPLIES", 10)
     history.script = [HistoryBatch([], ts_ago(n + 1), exhausted=False, fetched=10) for n in range(20)]
 
     page = read(service)
@@ -213,22 +213,22 @@ def test_a_batch_with_nothing_at_all_ends_the_window(service, history):
 
 
 def test_a_long_text_is_cut_and_marked(service, history):
-    history.messages = [make_message(1, "x" * (limits.MESSAGE_CHAR_LIMIT + 500))]
+    history.messages = [make_message(1, "x" * (ChannelAnalysisConfigs.MESSAGE_CHAR_LIMIT + 500))]
 
     message = read(service).messages[0]
 
     assert message.text.endswith("…[cut]")
-    assert len(message.text) < limits.MESSAGE_CHAR_LIMIT + 20
+    assert len(message.text) < ChannelAnalysisConfigs.MESSAGE_CHAR_LIMIT + 20
 
 
 def test_a_term_past_the_cut_still_matches(service, history):
-    history.messages = [make_message(1, "x" * (limits.MESSAGE_CHAR_LIMIT + 10) + " needle")]
+    history.messages = [make_message(1, "x" * (ChannelAnalysisConfigs.MESSAGE_CHAR_LIMIT + 10) + " needle")]
 
     assert len(read(service, contains=("needle",)).messages) == 1
 
 
 def test_replies_past_the_thread_limit_are_counted_not_shown(service, history, monkeypatch):
-    monkeypatch.setattr(limits, "REPLIES_CHAR_LIMIT", 700)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "REPLIES_CHAR_LIMIT", 700)
     replies = tuple(make_message(1, "r" * 100, ts=f"{NOW - 3000 + n:.6f}") for n in range(6))
     history.messages = [make_message(1, "root", reply_count=6, replies=replies)]
 
@@ -471,7 +471,7 @@ def csv_file(files):
 
 
 def test_read_file_returns_the_first_page_and_where_the_next_starts(service, csv_file, monkeypatch):
-    monkeypatch.setattr(limits, "FILE_PAGE_CHARS", 20)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "FILE_PAGE_CHARS", 20)
 
     page = service.read_file(BOT, CHANNEL, ADMIN, "F1")
 
@@ -481,7 +481,7 @@ def test_read_file_returns_the_first_page_and_where_the_next_starts(service, csv
 
 
 def test_a_later_csv_page_repeats_the_header(service, csv_file, monkeypatch):
-    monkeypatch.setattr(limits, "FILE_PAGE_CHARS", 20)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "FILE_PAGE_CHARS", 20)
     first = service.read_file(BOT, CHANNEL, ADMIN, "F1")
 
     second = service.read_file(BOT, CHANNEL, ADMIN, "F1", offset=first.next_offset)
@@ -491,7 +491,7 @@ def test_a_later_csv_page_repeats_the_header(service, csv_file, monkeypatch):
 
 
 def test_a_text_file_has_no_header_repeated(service, files, monkeypatch):
-    monkeypatch.setattr(limits, "FILE_PAGE_CHARS", 20)
+    monkeypatch.setattr(ChannelAnalysisConfigs, "FILE_PAGE_CHARS", 20)
     files.metas["F2"] = FileMeta("notes.txt", "text", 100, frozenset({CHANNEL}))
     files.texts["F2"] = "".join(f"line {n}\n" for n in range(10))
 
@@ -508,7 +508,7 @@ def test_read_file_refuses_a_file_shared_in_another_channel(service, files):
 
 
 def test_read_file_refuses_a_file_over_the_size_limit_before_downloading(service, files):
-    files.metas["F4"] = FileMeta("big.csv", "csv", limits.FILE_MAX_BYTES + 1, frozenset({CHANNEL}))
+    files.metas["F4"] = FileMeta("big.csv", "csv", ChannelAnalysisConfigs.FILE_MAX_BYTES + 1, frozenset({CHANNEL}))
 
     with pytest.raises(ChannelAnalysisError, match="up to 5 MB"):
         service.read_file(BOT, CHANNEL, ADMIN, "F4")

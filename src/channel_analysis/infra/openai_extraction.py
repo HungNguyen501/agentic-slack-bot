@@ -2,7 +2,7 @@ import json
 
 from openai import OpenAIError
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import ExtractionError, ExtractionShapeError
 from channel_analysis.core.models import ModelAnswer
 from connectors import openai_client
@@ -20,7 +20,7 @@ class OpenAIExtractionModel:
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 model=self._model,
                 reasoning_effort="low",
-                max_completion_tokens=limits.EXTRACT_MAX_OUTPUT_TOKENS,
+                max_completion_tokens=ChannelAnalysisConfigs.EXTRACT_MAX_OUTPUT_TOKENS,
                 json_object=True,
                 timeout=timeout_seconds,
                 # With the SDK's own retries the timeout would apply to each attempt, and a hung chunk would take three times as long.

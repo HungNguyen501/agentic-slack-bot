@@ -14,12 +14,10 @@ import openpyxl
 import pypdf
 from openpyxl.utils.exceptions import InvalidFileException
 
-from channel_analysis.core import limits
+from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import FileUnreadableError
-from channel_analysis.core.file_pages import SHEET_MARKER
-from channel_analysis.infra.file_kinds import PLAIN_KINDS, kind_of
+from channel_analysis.infra.file_kinds import kind_of
 
-SUPPORTED = "CSV, TSV, text, JSON, logs, PDF with a text layer, and Excel (.xlsx)"
 _PARSE_ERRORS = (zipfile.BadZipFile, InvalidFileException, ElementTree.ParseError, KeyError, ValueError, OSError)
 
 
@@ -30,14 +28,14 @@ def extract_text(name: str, filetype: str, data: bytes, max_chars: int) -> str:
         FileUnreadableError: an unsupported type, a PDF without text, a damaged file, or an archive that unpacks to too much.
     """
     kind = kind_of(name, filetype)
-    if kind in PLAIN_KINDS:
+    if kind in ChannelAnalysisConfigs.PLAIN_KINDS:
         text = data.decode("utf-8-sig", errors="replace")
     elif kind == "pdf":
         text = _pdf_text(data, max_chars)
     elif kind == "xlsx":
         text = _xlsx_text(data, max_chars)
     else:
-        raise FileUnreadableError(f"I can't read `{name}` ({filetype}). I read {SUPPORTED}.")
+        raise FileUnreadableError(f"I can't read `{name}` ({filetype}). I read {ChannelAnalysisConfigs.SUPPORTED_FILES_TEXT}.")
     if len(text) > max_chars:
         text = text[:max_chars] + "\n[file cut here: it is longer than I read]"
     return text
@@ -67,7 +65,7 @@ def _check_archive(data: bytes) -> None:
     stops at them, so they bound what parsing can read."""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         members = archive.infolist()
-    if len(members) > limits.XLSX_MAX_MEMBERS or sum(member.file_size for member in members) > limits.XLSX_MAX_UNCOMPRESSED_BYTES:
+    if len(members) > ChannelAnalysisConfigs.XLSX_MAX_MEMBERS or sum(member.file_size for member in members) > ChannelAnalysisConfigs.XLSX_MAX_UNCOMPRESSED_BYTES:
         raise FileUnreadableError("That Excel file unpacks to far more than I read (more than 100 MB), so I won't open it.")
 
 
@@ -90,7 +88,7 @@ def _sheets_text(workbook, max_chars: int) -> str:
         # A quote in the name would flip the quote count that tells a record's end from a newline inside a cell, and a line break would
         # make the rest of the name look like the sheet's first record. Excel won't take either, but a crafted file can hold them.
         title = sheet.title.replace('"', "'").replace("\r", " ").replace("\n", " ")
-        out.write(f"{SHEET_MARKER}{title}\n")
+        out.write(f"{ChannelAnalysisConfigs.SHEET_MARKER}{title}\n")
         writer = csv.writer(out, lineterminator="\n")
         # A first cell that reads like a sheet marker is quoted, so a page cut can't mistake its row for the start of a sheet.
         quoting_writer = csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_ALL)
@@ -102,7 +100,7 @@ def _sheets_text(workbook, max_chars: int) -> str:
                 cells.pop()
             if not cells:
                 continue
-            (quoting_writer if isinstance(cells[0], str) and cells[0].startswith(SHEET_MARKER) else writer).writerow(cells)
+            (quoting_writer if isinstance(cells[0], str) and cells[0].startswith(ChannelAnalysisConfigs.SHEET_MARKER) else writer).writerow(cells)
             if out.tell() > max_chars:
                 return out.getvalue()
     return out.getvalue()
@@ -112,8 +110,8 @@ def _limit_resources() -> None:
     try:
         import resource
 
-        resource.setrlimit(resource.RLIMIT_AS, (limits.PARSE_MEMORY_BYTES, limits.PARSE_MEMORY_BYTES))
-        resource.setrlimit(resource.RLIMIT_CPU, (limits.PARSE_CPU_SECONDS, limits.PARSE_CPU_SECONDS))
+        resource.setrlimit(resource.RLIMIT_AS, (ChannelAnalysisConfigs.PARSE_MEMORY_BYTES, ChannelAnalysisConfigs.PARSE_MEMORY_BYTES))
+        resource.setrlimit(resource.RLIMIT_CPU, (ChannelAnalysisConfigs.PARSE_CPU_SECONDS, ChannelAnalysisConfigs.PARSE_CPU_SECONDS))
     except (ImportError, ValueError, OSError):
         pass  # not every platform lets a process lower these; the parent's timeout still applies
 
