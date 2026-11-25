@@ -8,6 +8,8 @@ from channel_analysis.infra.file_kinds import kind_of
     [
         ("rows.csv", "csv", "csv"),
         ("Report.PDF", "pdf", "pdf"),
+        ("mail_ingestion_report.HTML", "html", "html"),
+        ("report.htm", "binary", "htm"),
         ("counts.xlsx", "xlsx", "xlsx"),
         ("notes.txt", "text", "txt"),
         ("report.pdf.backup", "pdf", "pdf"),

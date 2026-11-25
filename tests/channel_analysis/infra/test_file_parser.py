@@ -31,6 +31,10 @@ def test_a_workbook_is_read_in_a_child_process_that_gives_the_same_text():
     assert extract_text_isolated("counts.xlsx", "xlsx", data, MAX) == "## Sheet: Counts\ntable,rows\na,10\n"
 
 
+def test_an_html_page_is_read_in_a_child_process_that_gives_the_same_text():
+    assert extract_text_isolated("report.html", "html", b"<table><tr><td>a</td><td>10</td></tr></table>", MAX) == "a | 10"
+
+
 def test_what_the_parser_says_about_a_file_comes_back_as_an_unreadable_file():
     with pytest.raises(FileUnreadableError, match="couldn't read that Excel"):
         extract_text_isolated("bad.xlsx", "xlsx", b"not a zip", MAX)

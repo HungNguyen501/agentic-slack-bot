@@ -6,7 +6,7 @@ Status: phase 1 is accepted and implemented (access check, message and file read
 
 Let an admin ask the bot to read a Slack channel over a period and report insights, for example "go through the Mail Ingestion Report posts for bridgewell_com in the last 30 days and flag the emptiest tables". This replaces the Claude bot used for this today. The same question can run on a cron through the existing scheduled questions.
 
-The feature adds three agent tools. `check_channel_access` runs first and tells the agent whether the bot and the requester can read the channel, with the exact fix for each problem. `read_channel_messages` then returns the messages of the channel in pages. `read_channel_file` opens a file attached to a message (CSV, text, PDF, Excel) when the request needs what is inside it. The agent reads, counts and reasons over what it got, and writes the answer. No new table, no new schedule kind. A second phase (map-reduce extraction, below) is designed now so phase 1 does not block it.
+The feature adds three agent tools. `check_channel_access` runs first and tells the agent whether the bot and the requester can read the channel, with the exact fix for each problem. `read_channel_messages` then returns the messages of the channel in pages. `read_channel_file` opens a file attached to a message (CSV, text, HTML, PDF, Excel) when the request needs what is inside it. The agent reads, counts and reasons over what it got, and writes the answer. No new table, no new schedule kind. A second phase (map-reduce extraction, below) is designed now so phase 1 does not block it.
 
 ## Decisions
 
@@ -34,7 +34,7 @@ Goals:
 - Give the agent what it needs to count correctly: the exact window, the number of messages returned, and a clear "end of window" signal.
 - Work from an @mention and from a scheduled question.
 - Check access first, for the bot and the requester, and say what is wrong and how to fix it.
-- Read files attached to messages (CSV, text, PDF, Excel) when a request needs them.
+- Read files attached to messages (CSV, text, HTML, PDF, Excel) when a request needs them.
 
 Non-goals (v1):
 - Searching across channels or the whole workspace (`search.messages` needs a user token).
@@ -122,7 +122,7 @@ src/channel_analysis/
     slack_history.py SlackChannelHistory: implements ChannelHistory on connectors/slack.py
     message_text.py  flattens text, blocks, attachments, files and reactions of a Slack message into text
     slack_files.py   SlackChannelFiles: implements ChannelFiles (download through Slack, extract text by file type)
-    file_text.py     CSV / TSV / text / JSON / PDF (pypdf) / Excel (openpyxl) to text
+    file_text.py     CSV / TSV / text / JSON / HTML (`html_text.py`, standard library) / PDF (pypdf) / Excel (openpyxl) to text
   presentation/
     tools.py         check_channel_access, read_channel_messages and read_channel_file handlers: parse args, call the service, format the reply
 ```
@@ -195,9 +195,9 @@ Messages show a file as `[file F0123: report.csv, csv, 84 KB]`. The agent opens 
 
 The handler gets the file's URL from `files.info` using `file_id`, never from the model. Before downloading it checks that the file is shared in `channel` (the file's `channels` / `groups` lists), after the same channel checks as the read tool. A file ID from another channel is refused, so the tool cannot be used to read arbitrary files the bot can see.
 
-Text by type: CSV and TSV, plain text, JSON and logs as text; PDF through `pypdf`; Excel through `openpyxl` (one sheet after another, each as CSV-like rows, with the sheet name). A PDF with no text layer, an image, or an unsupported type returns "I can't read this file type or it has no text", with the type.
+Text by type: CSV and TSV, plain text, JSON and logs as text; HTML through the standard-library parser (scripts and styles dropped, block elements end a line, a table row is one line with its cells joined by ` | `, the declared charset is used); PDF through `pypdf`; Excel through `openpyxl` (one sheet after another, each as CSV-like rows, with the sheet name). A PDF with no text layer, an image, or an unsupported type returns "I can't read this file type or it has no text", with the type.
 
-A PDF or a workbook is parsed in a child process (`infra/file_parser.py` runs `python -m channel_analysis.infra.file_text`), not in the worker. The download limit doesn't bound parsing: a small, highly compressed workbook can unpack to far more than it weighs. The child has `PARSE_MEMORY_BYTES` of memory, `PARSE_CPU_SECONDS` of CPU and `PARSE_TIMEOUT_SECONDS` of wall time; a file that goes over a limit is reported as unreadable. A workbook is also refused before it is opened if its archive has more than `XLSX_MAX_MEMBERS` members or unpacks to more than `XLSX_MAX_UNCOMPRESSED_BYTES`. A damaged sheet, which only fails while it is being read, is reported as unreadable too. The child is started with no secrets in its environment (only `PATH` and the import path), so a parser exploit finds none. This is not a filesystem or network sandbox; that needs the operating system (a container profile, seccomp).
+A PDF, a workbook or an HTML page is parsed in a child process (`infra/file_parser.py` runs `python -m channel_analysis.infra.file_text`), not in the worker. The download limit doesn't bound parsing: a small, highly compressed workbook can unpack to far more than it weighs. The child has `PARSE_MEMORY_BYTES` of memory, `PARSE_CPU_SECONDS` of CPU and `PARSE_TIMEOUT_SECONDS` of wall time; a file that goes over a limit is reported as unreadable. A workbook is also refused before it is opened if its archive has more than `XLSX_MAX_MEMBERS` members or unpacks to more than `XLSX_MAX_UNCOMPRESSED_BYTES`. A damaged sheet, which only fails while it is being read, is reported as unreadable too. The child is started with no secrets in its environment (only `PATH` and the import path), so a parser exploit finds none. This is not a filesystem or network sandbox; that needs the operating system (a container profile, seccomp).
 
 The text is cut into pages of at most `FILE_PAGE_CHARS` at line boundaries, so a row is never split. A later CSV page starts with the header row again, unless the header takes more than `HEADER_MAX_PAGE_SHARE` (a quarter) of a page: then it would leave no room and the pages would not advance, so it is not repeated. The result states the file name, type, total characters, and the next `offset` (None at the end). A file over `FILE_MAX_BYTES` is refused before download, and the agent is told its size.
 

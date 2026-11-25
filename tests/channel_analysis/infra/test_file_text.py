@@ -163,3 +163,56 @@ def test_a_cell_with_a_carriage_return_stays_one_quoted_cell():
     data = xlsx_with({"S": [["id", "note"], [1, "first\rsecond"]]})
 
     assert extract_text("r.xlsx", "xlsx", data, MAX) == '## Sheet: S\nid,note\n1,"first\nsecond"\n'
+
+
+REPORT_HTML = b"""<!doctype html><html><head><meta charset="utf-8"><title>Mail ingestion report</title>
+<style>td { color: red }</style><script>var rows = 99;</script></head>
+<body><h1>Report &amp; totals</h1><p>Run   finished<br>on time</p>
+<table><tr><th>table</th><th>rows</th></tr>
+<tr><td>bridgewell_com.orders</td><td>0</td></tr>
+<tr><td>bridgewell_com.items</td><td> 1,204 </td><td></td></tr>
+<tr><td></td></tr></table><pre>line one
+  line two</pre></body></html>"""
+
+
+def test_an_html_report_gives_its_text_with_one_table_row_per_line():
+    text = extract_text("mail_ingestion_report.html", "html", REPORT_HTML, MAX)
+
+    assert text == (
+        "Mail ingestion report\nReport & totals\nRun finished\non time\n"
+        "table | rows\nbridgewell_com.orders | 0\nbridgewell_com.items | 1,204\nline one\nline two"
+    )
+
+
+def test_html_scripts_and_styles_are_not_text():
+    text = extract_text("page.html", "html", REPORT_HTML, MAX)
+
+    assert "var rows" not in text
+    assert "color: red" not in text
+
+
+def test_a_declared_charset_is_used_and_an_unknown_one_falls_back_to_utf8():
+    latin = '<meta charset="iso-8859-1"><p>Café</p>'.encode("latin-1")
+    unknown = '<meta charset="no-such-charset"><p>Café</p>'.encode()
+
+    assert extract_text("a.html", "html", latin, MAX) == "Café"
+    assert extract_text("b.html", "html", unknown, MAX) == "Café"
+
+
+def test_a_byte_order_mark_before_a_declared_charset_is_not_a_line():
+    assert extract_text("a.html", "html", b'\xef\xbb\xbf<meta charset="utf-8"><p>Hi</p>', MAX) == "Hi"
+
+
+def test_a_slack_html_filetype_is_read_whatever_the_name():
+    assert extract_text("report", "html", b"<p>hi</p>", MAX) == "hi"
+
+
+def test_an_html_page_with_no_text_is_unreadable():
+    with pytest.raises(FileUnreadableError, match="no text"):
+        extract_text("empty.html", "html", b"<html><script>x()</script><table><tr><td></td></tr></table></html>", MAX)
+
+
+def test_html_longer_than_the_limit_is_cut_and_says_so():
+    text = extract_text("big.html", "html", b"<p>" + b"x" * 100 + b"</p><p>" + b"y" * 100 + b"</p>", 10)
+
+    assert "file cut here" in text

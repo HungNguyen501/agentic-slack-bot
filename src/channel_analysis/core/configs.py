@@ -131,9 +131,25 @@ class ChannelAnalysisConfigs:
 
     PLAIN_KINDS = frozenset({"csv", "tsv", "txt", "text", "json", "log", "md", "markdown", "yaml", "yml", "xml", "sql"})
 
-    SUPPORTED_KINDS = PLAIN_KINDS | {"pdf", "xlsx"}
+    HTML_KINDS = frozenset({"html", "htm"})
 
-    SUPPORTED_FILES_TEXT = "CSV, TSV, text, JSON, logs, PDF with a text layer, and Excel (.xlsx)"
+    SUPPORTED_KINDS = PLAIN_KINDS | HTML_KINDS | {"pdf", "xlsx"}
+
+    SUPPORTED_FILES_TEXT = "CSV, TSV, text, JSON, logs, HTML, PDF with a text layer, and Excel (.xlsx)"
+
+    # HTML to text: what is dropped, what ends a line, and how a table row is written (a table row is a line, its cells joined by the separator).
+    HTML_SKIPPED_TAGS = frozenset({"script", "style", "template", "noscript"})
+    HTML_BLOCK_TAGS = frozenset(
+        {"address", "article", "aside", "blockquote", "body", "br", "dd", "details", "div", "dl", "dt", "fieldset", "figcaption", "figure",
+         "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "html", "li", "main", "nav", "ol", "p", "pre", "section",
+         "summary", "title", "ul"}
+    )  # fmt: skip
+    HTML_ROW_TAGS = frozenset({"table", "thead", "tbody", "tfoot", "tr"})
+    HTML_CELL_TAGS = frozenset({"td", "th"})
+    HTML_CELL_SEPARATOR = " | "
+    # The encoding a page declares near its top (`<meta charset=...>` or a content-type meta); without one it is read as UTF-8.
+    HTML_CHARSET = re.compile(rb"charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+    HTML_CHARSET_SCAN_BYTES = 2048
 
     # Subtypes that say nothing a report would be about.
     NOISE_SUBTYPES = frozenset(

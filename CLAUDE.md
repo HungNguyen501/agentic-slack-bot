@@ -88,7 +88,7 @@ One character per thread: thread_character:{channel}:{thread_ts} in Redis (14 da
 **Channel analysis** (admins ask the agent to read a channel over a period and report insights; see `.claude/rules/architecture.md` "Channel Analysis"):
 ```
 admin asks → check_channel_access (bot can read it? requester may see it?) → read_channel_messages pages (newest first, `before` cursor)
-  → read_channel_file for a CSV / text / PDF / Excel attached to a message, only when the question needs it
+  → read_channel_file for a CSV / text / HTML / PDF / Excel attached to a message, only when the question needs it
   → the agent counts and writes the answer (window, messages read, whether the whole window was covered)
 for counts over many messages: analyze_channel → a cheaper model (EXTRACTION_MODEL) turns chunks of messages / files into records the agent
   described, code validates, de-duplicates and counts them (per group: records, messages, dates, links) and the agent writes from the counts

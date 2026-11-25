@@ -10,8 +10,8 @@ from channel_analysis.infra.file_kinds import kind_of
 
 
 def extract_text_isolated(name: str, filetype: str, data: bytes, max_chars: int) -> str:
-    """Return the text of a file. A PDF or a workbook is parsed in a child process with memory, CPU and time limits, because a
-    file under the download limit can still unpack to enough to exhaust the worker; plain text needs no parser and stays here.
+    """Return the text of a file. A PDF, a workbook or an HTML page is parsed in a child process with memory, CPU and time
+    limits, because a file under the download limit can still unpack to enough to exhaust the worker; plain text needs no parser and stays here.
 
     The child gets no secrets (only PATH and the import path), so a parser exploit finds none in its environment. It is not a
     filesystem or network sandbox: that needs the operating system (a container profile, seccomp), which these limits don't replace.

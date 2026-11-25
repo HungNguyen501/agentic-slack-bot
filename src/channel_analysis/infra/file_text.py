@@ -1,6 +1,6 @@
 """Turns the bytes of a file into text, by file type.
 
-`extract_text` does the parsing. A PDF or a workbook is parsed through `file_parser.extract_text_isolated`, which runs this module
+`extract_text` does the parsing. A PDF, a workbook or an HTML page is parsed through `file_parser.extract_text_isolated`, which runs this module
 (`python -m channel_analysis.infra.file_text`) in a child process with memory and time limits.
 """
 import csv
@@ -17,6 +17,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from channel_analysis.core.configs import ChannelAnalysisConfigs
 from channel_analysis.core.errors import FileUnreadableError
 from channel_analysis.infra.file_kinds import kind_of
+from channel_analysis.infra.html_text import html_to_text
 
 _PARSE_ERRORS = (zipfile.BadZipFile, InvalidFileException, ElementTree.ParseError, KeyError, ValueError, OSError)
 
@@ -30,6 +31,10 @@ def extract_text(name: str, filetype: str, data: bytes, max_chars: int) -> str:
     kind = kind_of(name, filetype)
     if kind in ChannelAnalysisConfigs.PLAIN_KINDS:
         text = data.decode("utf-8-sig", errors="replace")
+    elif kind in ChannelAnalysisConfigs.HTML_KINDS:
+        text = html_to_text(data, max_chars)
+        if not text:
+            raise FileUnreadableError("That HTML file has no text in it, so I can't read it.")
     elif kind == "pdf":
         text = _pdf_text(data, max_chars)
     elif kind == "xlsx":
