@@ -14,8 +14,8 @@ log = logging.getLogger("channel_analysis.tools")
 def _int_arg(args: dict, name: str) -> int:
     value = args[name]
     try:
-        if isinstance(value, bool):
-            raise ValueError(value)
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            raise ValueError(value)  # int() would cut 1.9 to 1, and -0.5 to 0, which passes the check for a negative number
         return int(value)
     except (TypeError, ValueError):
         raise ChannelAnalysisError(f"`{name}` must be a whole number.") from None
@@ -177,7 +177,10 @@ def _analysis_coverage(result: Analysis) -> list[str]:
         lines.append(f"Messages longer than one message may add (their end was not read): {result.messages_cut}")
     if result.replies_omitted:
         lines.append(f"Replies not read (rate limited, no access, or over the cap on one thread): up to {result.replies_omitted}; the counts leave them out.")
-    lines.append("Files not read: " + ("; ".join(f"{name} ({reason})" for name, reason in result.files_not_read) or "none"))
+    if not result.files_included:
+        lines.append("File contents were not included (include_files was off), so the counts cover message text only.")
+    else:
+        lines.append("Files not read: " + ("; ".join(f"{name} ({reason})" for name, reason in result.files_not_read) or "none"))
     return lines
 
 

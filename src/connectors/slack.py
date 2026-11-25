@@ -289,8 +289,11 @@ def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
     bot's token is sent along.
 
     Raises:
-        FileDownloadError: another host, an error status, an HTML page (what Slack returns when the token can't read files), too many
-            bytes or a transfer that takes longer than `SlackConfigs.DOWNLOAD_DEADLINE_SECONDS`.
+        FileDownloadError: another host, an error status, an HTML page (what Slack returns when the token can't read files), a
+            compressed response, too many bytes or a transfer that takes longer than `SlackConfigs.DOWNLOAD_DEADLINE_SECONDS`.
+
+    The bytes are read as they come (`iter_raw`) and the response may not be compressed: decompressing before the size check would
+    let a small response grow far past `max_bytes` in memory.
     """
     parsed = httpx.URL(url)
     if parsed.scheme != "https" or not (parsed.host == "slack.com" or parsed.host.endswith(".slack.com")):
@@ -298,14 +301,17 @@ def download_file(url: str, *, token: str, max_bytes: int) -> bytes:
     data = bytearray()
     deadline = time.monotonic() + SlackConfigs.DOWNLOAD_DEADLINE_SECONDS
     try:
-        with httpx.stream("GET", url, headers={"Authorization": f"Bearer {token}"}, timeout=SlackConfigs.DOWNLOAD_WAIT_SECONDS, follow_redirects=False) as response:
+        headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
+        with httpx.stream("GET", url, headers=headers, timeout=SlackConfigs.DOWNLOAD_WAIT_SECONDS, follow_redirects=False) as response:
             if time.monotonic() > deadline:
                 raise FileDownloadError(f"The download took longer than {SlackConfigs.DOWNLOAD_DEADLINE_SECONDS:.0f} seconds.")
             if response.status_code != 200:
                 raise FileDownloadError(f"Slack answered {response.status_code} for the file.")
             if response.headers.get("content-type", "").startswith("text/html"):
                 raise FileDownloadError("Slack returned a web page instead of the file; the app probably lacks the files:read scope.")
-            for chunk in response.iter_bytes():
+            if response.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
+                raise FileDownloadError("Slack sent the file compressed, which I won't unpack: it could grow far past the size limit.")
+            for chunk in response.iter_raw():
                 data.extend(chunk)
                 if len(data) > max_bytes:
                     raise FileDownloadError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")

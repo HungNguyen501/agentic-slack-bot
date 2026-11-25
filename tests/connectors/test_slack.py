@@ -441,9 +441,9 @@ def test_workspace_url_file_info_and_file_listing_pass_the_answer_through():
 
 
 class FakeStream:
-    def __init__(self, status=200, content_type="text/csv", chunks=(b"id\n", b"1\n")):
+    def __init__(self, status=200, content_type="text/csv", chunks=(b"id\n", b"1\n"), content_encoding=None):
         self.status_code = status
-        self.headers = {"content-type": content_type}
+        self.headers = {"content-type": content_type, **({"content-encoding": content_encoding} if content_encoding else {})}
         self._chunks = chunks
 
     def __enter__(self):
@@ -452,8 +452,11 @@ class FakeStream:
     def __exit__(self, *exc):
         return False
 
-    def iter_bytes(self):
+    def iter_raw(self):
         return iter(self._chunks)
+
+    def iter_bytes(self):
+        raise AssertionError("iter_bytes decompresses before the size check; the download must read raw bytes")
 
 
 URL = "https://files.slack.com/files-pri/T-F1/download/rows.csv"
@@ -468,7 +471,7 @@ def test_download_file_sends_the_token_and_returns_the_bytes():
     data, fake = download(FakeStream())
 
     assert data == b"id\n1\n"
-    assert fake.call_args.kwargs["headers"] == {"Authorization": "Bearer xoxb-t"}
+    assert fake.call_args.kwargs["headers"] == {"Authorization": "Bearer xoxb-t", "Accept-Encoding": "identity"}
     assert fake.call_args.kwargs["follow_redirects"] is False
     assert fake.call_args.kwargs["timeout"] == slack.SlackConfigs.DOWNLOAD_WAIT_SECONDS
 
@@ -487,8 +490,10 @@ def test_download_file_refuses_a_url_that_is_not_slacks_and_never_sends_the_toke
         (FakeStream(status=403), "403"),
         (FakeStream(content_type="text/html; charset=utf-8"), "files:read"),
         (FakeStream(chunks=(b"x" * 60, b"x" * 60)), "larger than"),
+        (FakeStream(content_encoding="gzip"), "compressed"),
+        (FakeStream(content_encoding="br"), "compressed"),
     ],
-    ids=["status", "html-login-page", "too-big"],
+    ids=["status", "html-login-page", "too-big", "gzip", "brotli"],
 )
 def test_download_file_explains_why_it_gave_up(stream, message):
     with pytest.raises(slack.FileDownloadError, match=message):
@@ -560,3 +565,9 @@ def test_download_file_gives_up_when_the_headers_alone_took_the_whole_budget():
 
     with patch("connectors.slack.time.monotonic", autospec=True, side_effect=lambda: next(clock)), pytest.raises(slack.FileDownloadError, match="took longer than"):
         download(FakeStream())
+
+
+def test_download_file_accepts_an_explicitly_uncompressed_response():
+    data, _ = download(FakeStream(content_encoding="identity"))
+
+    assert data == b"id\n1\n"

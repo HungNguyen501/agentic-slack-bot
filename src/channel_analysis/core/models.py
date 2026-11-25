@@ -206,6 +206,8 @@ class Analysis:
     records_omitted: int
     sample: tuple[Record, ...]
     next_before: str | None
+    # Whether the files attached to the messages were read at all: with it off `files_not_read` is empty without saying anything about files.
+    files_included: bool = True
 
     @property
     def unreliable(self) -> bool:

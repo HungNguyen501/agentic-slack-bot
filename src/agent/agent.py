@@ -2,6 +2,8 @@
 import json
 import logging
 import traceback
+from collections.abc import Callable
+from functools import partial
 from typing import NamedTuple
 
 from agent.access_control.configs import AccessControlConfigs
@@ -42,13 +44,25 @@ class AgentLoopConfigs:
     )
 
 
+def _leaves_trust_open(message: dict, requester: str | None) -> bool:
+    """Whether a message of the thread's history leaves the agent's own choice of channel trusted. An answer does not, unless it was
+    removed for coming from channel content. A question does only when this requester asked it: another user's question (or one saved
+    without an author) stays in the model's input, so a private channel it names could be what the model reaches for."""
+    if message.get("role") == "assistant":
+        return message.get("content") == AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED
+    if message.get("role") == "user":
+        return requester is not None and message.get("author") == requester
+    return True
+
+
 class _ReadGuard:
     """What one run may do with channels, given what it has read.
 
     In a thread's first request, until a tool other than the channel tools and the admin-authored lists has run, a channel the agent
     names is taken as the request's: the model has seen only the request. After that (a query result or a job's error text was
     written by someone else, and a channel's content by anyone), and from the start of any later request in a thread that already
-    holds an answer (an earlier query result may have echoed a stranger's text into it), a channel is allowed only if the admin
+    holds an answer (an earlier query result may have echoed a stranger's text into it) or another user's question (it stays in the
+    model's input), a channel is allowed only if the admin
     pointed at it, in this request or an earlier one of the thread that the same person asked (see `ReadScope`). Once channel content has been read, only
     the read-only tools may run at all.
     """
@@ -58,10 +72,17 @@ class _ReadGuard:
         # have put a private channel's ID there.
         admin_messages = [m["content"] for m in history if m.get("role") == "user" and requester and m.get("author") == requester and isinstance(m.get("content"), str)]
         self.read_content = False
-        self._trusting = all(m.get("role") != "assistant" or m.get("content") == AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED for m in history)
+        self._trusting = all(_leaves_trust_open(message, requester) for message in history)
         self._scope = ReadScope("\n".join([*admin_messages, request]), channel)
 
-    def refusal(self, tool_name: str, args: dict) -> str | None:
+    def call(self, tool_name: str, args: dict, run: Callable[[], str]) -> str:
+        """Run a tool call through the guard: refused with the reason, or run, and either way noted for the calls after it."""
+        refusal = self._refusal(tool_name, args)
+        result = refusal or run()
+        self._record(tool_name, args, result, ran=refusal is None)
+        return result
+
+    def _refusal(self, tool_name: str, args: dict) -> str | None:
         """Why the call may not run, or None."""
         if self.read_content and tool_name not in ToolPolicy.READ_ONLY_TOOLS:
             return AgentLoopConfigs.READ_ONLY_REFUSAL_MESSAGE
@@ -69,7 +90,7 @@ class _ReadGuard:
             return AgentLoopConfigs.CHANNEL_OUT_OF_SCOPE_MESSAGE
         return None
 
-    def record(self, tool_name: str, args: dict, result: str, ran: bool) -> None:
+    def _record(self, tool_name: str, args: dict, result: str, ran: bool) -> None:
         """Note a call. A channel named while still trusting is the request's; a tool whose output others may have written, or a
         read of content, ends the trust."""
         if ran:
@@ -167,6 +188,24 @@ def _save_answer(thread_ts: str, history: list[dict], question: str, user_id: st
     save_history(thread_ts, history)
 
 
+def _authorization_note(user_id: str | None, admin_users: frozenset[str], unattended: UnattendedRun | None) -> str:
+    if user_id is None and unattended:
+        return f"[Scheduled run for {unattended.run_as or 'an unknown owner'} — authorized only for: {', '.join(sorted(unattended.categories))}]"
+    status = "authorized for schedule management]" if user_id in admin_users else "NOT authorized for schedule management]"
+    return f"[Current requester: {user_id or 'unknown'} — {status}"
+
+
+def _answer_without_tools(instructions: str, messages: list[dict]) -> str:
+    """Every iteration asked for another tool: take the tools away once, so what they returned is not thrown away."""
+    final = openai_client.create_response(
+        model=AgentConfigs.GPT_MODEL,
+        instructions=instructions,
+        input=[*messages, {"role": "user", "content": AgentLoopConfigs.TOOL_LIMIT_NOTICE}],
+        reasoning_effort=AgentConfigs.REASONING_EFFORT,
+    )
+    return final.output_text or AgentLoopConfigs.PROCESSING_LIMIT_MESSAGE
+
+
 def run_agent(
     question: str,
     thread_ts: str,
@@ -209,15 +248,7 @@ def run_agent(
 
     # Prepend the current user's authorization status so the LLM re-evaluates
     # permissions for this request rather than echoing a prior refusal from history.
-    is_authorized = user_id in admin_users
-    if user_id is None and unattended:
-        auth_note = f"[Scheduled run for {unattended.run_as or 'an unknown owner'} — authorized only for: {', '.join(sorted(unattended.categories))}]"
-    else:
-        auth_note = (
-            f"[Current requester: {user_id or 'unknown'} — "
-            + ("authorized for schedule management]" if is_authorized else "NOT authorized for schedule management]")
-        )
-    messages.append({"role": "user", "content": f"{auth_note}\n{question}"})
+    messages.append({"role": "user", "content": f"{_authorization_note(user_id, admin_users, unattended)}\n{question}"})
 
     guard = _ReadGuard(question, channel, history, user_id)
     for _ in range(10):
@@ -240,9 +271,8 @@ def run_agent(
 
         for tool_call in tool_calls:
             args = json.loads(tool_call.arguments)
-            refusal = guard.refusal(tool_call.name, args)
-            result = refusal or dispatch_tool(tool_call.name, args, user_id, admin_users, bot, channel, thread_ts, services, unattended)
-            guard.record(tool_call.name, args, result, ran=refusal is None)
+            run = partial(dispatch_tool, tool_call.name, args, user_id, admin_users, bot, channel, thread_ts, services, unattended)
+            result = guard.call(tool_call.name, args, run)
             messages.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})
 
             if tool_category(tool_call.name) == "data_access" and result == AccessControlConfigs.ACCESS_REQUEST_POSTED_MESSAGE:
@@ -251,13 +281,6 @@ def run_agent(
                 save_history(thread_ts, history)
                 return AgentReply("", character)
 
-    # Every iteration asked for another tool: take the tools away once, so what they returned is not thrown away.
-    final = openai_client.create_response(
-        model=AgentConfigs.GPT_MODEL,
-        instructions=instructions,
-        input=[*messages, {"role": "user", "content": AgentLoopConfigs.TOOL_LIMIT_NOTICE}],
-        reasoning_effort=AgentConfigs.REASONING_EFFORT,
-    )
-    answer = final.output_text or AgentLoopConfigs.PROCESSING_LIMIT_MESSAGE
+    answer = _answer_without_tools(instructions, messages)
     _save_answer(thread_ts, history, question, user_id, answer, guard.read_content)
     return AgentReply(answer, character)

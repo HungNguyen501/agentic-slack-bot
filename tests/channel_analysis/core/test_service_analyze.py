@@ -375,6 +375,7 @@ def test_files_are_not_read_unless_asked(service, history, extractor, files):
     result = analyze(service)
 
     assert "never read" not in extractor.calls[0][1] and result.files_not_read == ()
+    assert result.files_included is False
 
 
 def test_a_file_becomes_more_items_of_its_message(service, history, extractor, files):
@@ -386,6 +387,7 @@ def test_a_file_becomes_more_items_of_its_message(service, history, extractor, f
 
     user = extractor.calls[0][1]
     assert "agility_po_costs,skipped" in user and "file rows.csv (part 1)" in user
+    assert result.files_included is True
     # the message and its file both say the same row, and one message counts a row once
     assert result.messages_read == 1 and result.records == 1 and result.groups[0].messages == 1
 

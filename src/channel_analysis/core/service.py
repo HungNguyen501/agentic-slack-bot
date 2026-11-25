@@ -2,6 +2,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
+from typing import NamedTuple
 
 from bots.core.models import BotConfig
 from channel_analysis.core import extraction
@@ -83,6 +84,16 @@ class _FilesRead:
     read: dict[str, str] = field(default_factory=dict)
 
 
+class _Prepared(NamedTuple):
+    """The checked arguments of a read of a window: the filter terms, the channel, the window's bounds and where to read from."""
+
+    terms: tuple[str, ...]
+    channel_id: str
+    window_start: float
+    window_end: float
+    cursor: str
+
+
 @dataclass(frozen=True)
 class _Deferred:
     """The file texts of the message an analysis call left for the next one, so that call doesn't download and parse them again (the
@@ -105,6 +116,7 @@ class _Collected:
     replies_omitted: int
     resume_at: str | None
     scanned: int
+    files_included: bool
 
 
 def _resume_token(cursor: str, window_start: float) -> str:
@@ -159,9 +171,7 @@ class ChannelAnalysisService:
         Raises:
             ChannelAnalysisError: a bad argument, or the bot or the requester may not read the channel.
         """
-        terms = self._validate_window(lookback_days, end_days_ago, contains, before)
-        channel_id = self._require_access(bot, channel, requester_id)
-        window_start, window_end, cursor = self._window(lookback_days, end_days_ago, before)
+        terms, channel_id, window_start, window_end, cursor = self._prepare(bot, channel, requester_id, lookback_days, end_days_ago, contains, before)
 
         kept: list[ChannelMessage] = []
         chars = 0
@@ -204,9 +214,7 @@ class ChannelAnalysisService:
         """
         started = time.monotonic()
         extraction.validate_spec(spec, group_by)
-        terms = self._validate_window(lookback_days, end_days_ago, contains, before)
-        channel_id = self._require_access(bot, channel, requester_id)
-        window_start, window_end, cursor = self._window(lookback_days, end_days_ago, before)
+        terms, channel_id, window_start, window_end, cursor = self._prepare(bot, channel, requester_id, lookback_days, end_days_ago, contains, before)
 
         collected = self._collect(bot, channel_id, (window_start, window_end), cursor, terms, include_replies, include_files)
         outcomes = run_extraction(self._extractor, spec, collected.chunks)
@@ -249,6 +257,7 @@ class ChannelAnalysisService:
             records_omitted=totals.records_omitted,
             sample=totals.sample,
             next_before=_resume_token(collected.resume_at, window[0]) if collected.resume_at else None,
+            files_included=collected.files_included,
         )
 
     def _collect(
@@ -274,7 +283,7 @@ class ChannelAnalysisService:
                 messages_cut += 1
         else:
             resume_at = state.next_before
-        return _Collected(packer.chunks, files, messages_read, messages_cut, replies_omitted, resume_at, state.scanned)
+        return _Collected(packer.chunks, files, messages_read, messages_cut, replies_omitted, resume_at, state.scanned, include_files)
 
     def _take(
         self, bot: BotConfig, channel_id: str, packer: extraction.ChunkPacker, message: ChannelMessage, include_files: bool, files: _FilesRead,
@@ -378,6 +387,16 @@ class ChannelAnalysisService:
         text = self._files.text(file_id, bot.bot_token)
         page, next_offset = cut_page(text, offset, ChannelAnalysisConfigs.FILE_PAGE_CHARS, repeated_header(text, offset, meta.filetype), is_tabular(meta.filetype))
         return FilePage(meta.name, meta.filetype, meta.size, page, offset, next_offset, len(text))
+
+    def _prepare(
+        self, bot: BotConfig, channel: str, requester_id: str, lookback_days: int, end_days_ago: int, contains: tuple[str, ...], before: str | None
+    ) -> _Prepared:
+        """What every read of a window starts with, in this order so an argument error never depends on access: the arguments, access
+        to the channel, then the window and where to resume it."""
+        terms = self._validate_window(lookback_days, end_days_ago, contains, before)
+        channel_id = self._require_access(bot, channel, requester_id)
+        window_start, window_end, cursor = self._window(lookback_days, end_days_ago, before)
+        return _Prepared(terms, channel_id, window_start, window_end, cursor)
 
     def _window(self, lookback_days: int, end_days_ago: int, before: str | None) -> tuple[float, float, str]:
         """The window's bounds and the cursor to read below. A `before` from an earlier result carries the window start, so

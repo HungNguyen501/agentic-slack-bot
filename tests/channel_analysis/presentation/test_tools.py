@@ -211,6 +211,30 @@ def test_a_bad_offset_is_refused_in_words(service):
     service.read_file.assert_not_called()
 
 
+@pytest.mark.parametrize("value", [1.9, -0.5, 0.1, float("nan"), float("inf"), True], ids=["fraction", "negative-fraction", "small-fraction", "nan", "infinity", "bool"])
+@pytest.mark.parametrize("name", ["lookback_days", "end_days_ago"])
+def test_a_fractional_window_argument_is_refused_instead_of_cut_to_a_whole_number(service, name, value):
+    reply = run(service, "read_channel_messages", {"channel": "C1", name: value})
+
+    assert f"`{name}` must be a whole number" in reply
+    service.read.assert_not_called()
+
+
+def test_a_fractional_file_offset_is_refused(service):
+    reply = run(service, "read_channel_file", {"channel": "C1", "file_id": "F1", "offset": 2.5})
+
+    assert "`offset` must be a whole number" in reply
+    service.read_file.assert_not_called()
+
+
+def test_a_whole_number_sent_as_a_float_is_accepted(service):
+    service.read.return_value = page()
+
+    run(service, "read_channel_messages", {"channel": "C1", "lookback_days": 7.0})
+
+    assert service.read.call_args.kwargs["lookback_days"] == 7
+
+
 def test_read_file_without_an_id_asks_for_it(service):
     assert "file ID" in run(service, "read_channel_file", {"channel": "C1"})
     service.read_file.assert_not_called()
@@ -424,3 +448,17 @@ def test_a_long_value_is_cut_for_display_only():
 
     assert tools._shown(long) == "v" * ChannelAnalysisConfigs.MAX_VALUE_CHARS + "…"
     assert tools._shown("short") == "short" and tools._shown(None) == ChannelAnalysisConfigs.MISSING
+
+
+def test_with_files_off_the_summary_says_contents_were_not_included_instead_of_none_not_read(service):
+    service.analyze.return_value = analysis(files_included=False)
+
+    reply = run(service, "analyze_channel", ANALYZE_ARGS)
+
+    assert "File contents were not included" in reply and "Files not read" not in reply
+
+
+def test_with_files_on_and_none_skipped_the_summary_says_none(service):
+    service.analyze.return_value = analysis(files_included=True)
+
+    assert "Files not read: none" in run(service, "analyze_channel", ANALYZE_ARGS | {"include_files": True})

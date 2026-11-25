@@ -247,9 +247,19 @@ def test_the_author_of_a_saved_question_is_not_sent_to_the_model(llm, services):
 
 
 def test_a_thread_whose_only_answers_were_removed_for_channel_content_still_trusts_the_first_call(llm, services):
-    history = [{"role": "user", "content": "read #alerts"}, {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED}]
+    history = [{"role": "user", "content": "read #alerts", "author": "UADMIN"}, {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED}]
 
     assert run_channel_call(llm, services, "other-channel", history) == ["read_channel_messages"]
+
+
+def test_after_another_users_denied_read_the_admins_first_call_does_not_trust_the_channel_that_user_asked_for(llm, services):
+    # The denied read's answer was removed from the thread, but the other user's question stays in the model's input.
+    history = [
+        {"role": "user", "content": "read #secret-finance", "author": "UOTHER"},
+        {"role": "assistant", "content": AgentLoopConfigs.UNTRUSTED_ANSWER_REMOVED},
+    ]
+
+    assert run_channel_call(llm, services, "secret-finance", history) == []
 
 
 @pytest.mark.parametrize("tool, ran", [("list_schedules", True), ("list_characters", True), ("get_job_run_details", False)])
