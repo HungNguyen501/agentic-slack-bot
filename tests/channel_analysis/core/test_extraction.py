@@ -288,12 +288,21 @@ def test_an_item_number_that_looks_like_digits_but_is_not_one_rejects_the_record
     assert [r.values["table"] for r in records] == ["ok"] and rejected == 1
 
 
-def test_values_are_text_cut_to_a_label_and_undeclared_keys_are_dropped():
-    records, _ = read({"records": [{"m": "1", "table": 12345, "status": "loaded", "extra": "ignored"}, {"m": 1, "table": "x" * 500}]})
+def test_values_are_text_cut_at_the_stored_bound_and_undeclared_keys_are_dropped():
+    records, _ = read({"records": [{"m": "1", "table": 12345, "status": "loaded", "extra": "ignored"}, {"m": 1, "table": "x" * 5000}]})
 
     assert records[0].values == {"table": "12345", "status": "loaded"}
-    assert len(records[1].values["table"]) == limits.MAX_VALUE_CHARS
+    assert len(records[1].values["table"]) == limits.MAX_STORED_VALUE_CHARS
     assert records[1].values["status"] is None
+
+
+def test_values_that_differ_only_after_the_display_cut_stay_distinct_records_and_groups():
+    long = "x" * (limits.MAX_VALUE_CHARS + 50)
+    records, _ = read({"records": [{"m": 1, "table": long + "A"}, {"m": 1, "table": long + "B"}]})
+
+    assert len(records) == 2
+    assert len(extraction.drop_duplicates(records)) == 2
+    assert len(extraction.count_groups(records, ("table",))) == 2
 
 
 def test_without_allowed_values_any_value_is_taken():

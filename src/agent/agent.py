@@ -5,7 +5,7 @@ import traceback
 from typing import NamedTuple
 
 from agent.access_control.tools import ACCESS_REQUEST_POSTED_MESSAGE
-from agent.dispatch import READ_ONLY_TOOLS, UNTRUSTED_CONTENT_TOOLS, ToolServices, UnattendedRun, dispatch_tool, get_agent_tools, tool_category
+from agent.dispatch import ADMIN_AUTHORED_TOOLS, READ_ONLY_TOOLS, UNTRUSTED_CONTENT_TOOLS, ToolServices, UnattendedRun, dispatch_tool, get_agent_tools, tool_category
 from agent.history import load_history, save_history
 from agent.skills.loader import load_system_prompt
 from bots.core.models import BotConfig
@@ -24,10 +24,10 @@ TOOL_LIMIT_NOTICE = (
     "[Tool limit reached: no more tools are available. Answer now from the tool results above. Say plainly what you could not "
     "finish or read, and that any counts or findings cover only part of what was asked.]"
 )
-# A channel the admin's request doesn't name, asked for after channel content was read: that content could be what asked for it.
+# A channel the admin's request doesn't name, asked for after text from a channel or another tool came back: that text could be what asked for it.
 CHANNEL_OUT_OF_SCOPE_MESSAGE = (
-    "Refused: channel content was read in this request, and this channel is not one the admin's request names. "
-    "Ask the admin to request it in a new message."
+    "Refused: this channel is not one the admin's request names, and text read in this request (from a channel or a tool) may be what asked "
+    "for it. Ask the admin to name it in a new message."
 )
 READ_ONLY_REFUSAL_MESSAGE = (
     "Refused: channel or file content was read in this request, so only read-only tools may run now. Ask the admin to request this in a new message."
@@ -37,32 +37,43 @@ UNTRUSTED_ANSWER_REMOVED = "[An earlier answer built from channel content was re
 
 
 class _ReadGuard:
-    """What one run may still do once it has read channel content: only the read-only tools, and the channel tools only on the
-    channels the request points at (see `ReadScope`)."""
+    """What one run may do with channels, given what it has read.
 
-    def __init__(self, request: str, channel: str | None) -> None:
+    In a thread's first request, until a tool other than the channel tools and the admin-authored lists has run, a channel the agent
+    names is taken as the request's: the model has seen only the request. After that (a query result or a job's error text was
+    written by someone else, and a channel's content by anyone), and from the start of any later request in a thread that already
+    holds an answer (an earlier query result may have echoed a stranger's text into it), a channel is allowed only if the admin
+    pointed at it, in this request or an earlier one of the thread (see `ReadScope`). Once channel content has been read, only
+    the read-only tools may run at all.
+    """
+
+    def __init__(self, request: str, channel: str | None, history: list[dict]) -> None:
+        admin_messages = [m["content"] for m in history if m.get("role") == "user" and isinstance(m.get("content"), str)]
         self.read_content = False
-        self._scope = ReadScope(request, channel)
+        self._trusting = all(m.get("role") != "assistant" or m.get("content") == UNTRUSTED_ANSWER_REMOVED for m in history)
+        self._scope = ReadScope("\n".join([*admin_messages, request]), channel)
 
     def refusal(self, tool_name: str, args: dict) -> str | None:
         """Why the call may not run, or None."""
-        if not self.read_content:
-            return None
-        if tool_name not in READ_ONLY_TOOLS:
+        if self.read_content and tool_name not in READ_ONLY_TOOLS:
             return READ_ONLY_REFUSAL_MESSAGE
-        if tool_name in CHANNEL_TOOLS and not self._scope.permits(args.get("channel")):
+        if tool_name in CHANNEL_TOOLS and not self._trusting and not self._scope.permits(args.get("channel")):
             return CHANNEL_OUT_OF_SCOPE_MESSAGE
         return None
 
     def record(self, tool_name: str, args: dict, result: str, ran: bool) -> None:
-        """Note a call: the channels named before the first read are the request's, and a read of content closes the run."""
+        """Note a call. A channel named while still trusting is the request's; a tool whose output others may have written, or a
+        read of content, ends the trust."""
         if ran:
-            if tool_name in CHANNEL_TOOLS and not self.read_content:
+            if tool_name in CHANNEL_TOOLS and self._trusting:
                 self._scope.trust(args.get("channel"))
             if tool_name == "check_channel_access":
                 self._scope.trust_resolved(result)
+        if tool_name not in CHANNEL_TOOLS and tool_name not in ADMIN_AUTHORED_TOOLS:
+            self._trusting = False
         if tool_name in UNTRUSTED_CONTENT_TOOLS:
             self.read_content = True
+            self._trusting = False
 
 
 def _without_untrusted_answers(history: list[dict]) -> list[dict]:
@@ -190,7 +201,7 @@ def run_agent(
         )
     messages.append({"role": "user", "content": f"{auth_note}\n{question}"})
 
-    guard = _ReadGuard(question, channel)
+    guard = _ReadGuard(question, channel, history)
     for _ in range(10):
         response = openai_client.create_response(
             model=AgentConfigs.GPT_MODEL,

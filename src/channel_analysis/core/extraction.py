@@ -216,7 +216,7 @@ def _check_record(raw: object, items: list[ExtractionItem], spec: ExtractionSpec
     values: dict[str, str | None] = {}
     for field in spec.fields:
         value = raw.get(field.name)
-        text = None if value is None else str(value).strip()[: limits.MAX_VALUE_CHARS] or None
+        text = None if value is None else str(value).strip()[: limits.MAX_STORED_VALUE_CHARS] or None
         if text is not None and field.name in allowed:
             text = allowed[field.name].get(text.lower())
             if text is None:

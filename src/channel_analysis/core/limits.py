@@ -65,6 +65,8 @@ MAX_FILES_PER_CALL = 20
 MAX_FIELDS = 8
 MAX_GROUP_BY = 3
 MAX_VALUE_CHARS = 200
+# A value is kept whole up to this, so two values that differ only after the display cut are still two records and two groups.
+MAX_STORED_VALUE_CHARS = 2_000
 SAMPLE_RECORDS = 20
 MAX_GROUPS_LISTED = 100
 MAX_LINKS_PER_GROUP = 3

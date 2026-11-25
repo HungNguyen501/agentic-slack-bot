@@ -150,7 +150,9 @@ def _spec_arg(args: dict) -> ExtractionSpec:
 
 
 def _shown(value: str | None) -> str:
-    return MISSING if value is None else value
+    if value is None:
+        return MISSING
+    return value if len(value) <= limits.MAX_VALUE_CHARS else value[: limits.MAX_VALUE_CHARS] + "…"
 
 
 def _group_line(group: GroupCount, group_by: tuple[str, ...]) -> str:

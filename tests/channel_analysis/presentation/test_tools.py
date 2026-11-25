@@ -3,6 +3,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from bots.core.models import BotConfig
+from channel_analysis.core import limits
 from channel_analysis.core.errors import ChannelAnalysisError
 from channel_analysis.core.models import (
     AccessProblem,
@@ -416,3 +417,10 @@ def test_the_use_cases_refusal_is_the_reply(service):
     service.analyze.side_effect = ChannelAnalysisError("`group_by` names `nope`, which is not one of the fields (table, status).")
 
     assert "not one of the fields" in run(service, "analyze_channel", ANALYZE_ARGS)
+
+
+def test_a_long_value_is_cut_for_display_only():
+    long = "v" * (limits.MAX_VALUE_CHARS + 30)
+
+    assert tools._shown(long) == "v" * limits.MAX_VALUE_CHARS + "…"
+    assert tools._shown("short") == "short" and tools._shown(None) == tools.MISSING

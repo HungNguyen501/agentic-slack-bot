@@ -191,6 +191,56 @@ def test_after_a_channel_read_the_id_a_check_resolved_for_a_named_channel_can_be
     assert [c.args[1] for c in dispatch_tool.call_args_list] == [{"channel": "alpha"}, {"channel": "beta"}, {"channel": "C0BETA0001"}]
 
 
+def test_a_channel_the_request_does_not_name_is_refused_once_another_tool_returned_text_even_before_any_channel_read(llm, services):
+    llm.create_response.side_effect = [
+        MagicMock(output=[tool_call("execute_query", "c1", '{"query": "select 1"}')], output_text=""),
+        MagicMock(output=[tool_call("read_channel_messages", "c2", '{"channel": "C0SECRET001"}')], output_text=""),
+        MagicMock(output=[tool_call("read_channel_messages", "c3", '{"channel": "alerts"}')], output_text=""),
+        MagicMock(output=[], output_text="the answer"),
+    ]
+
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="rows") as dispatch_tool:
+        run(services, question="what failed in #alerts?")
+
+    assert [(c.args[0], c.args[1]) for c in dispatch_tool.call_args_list] == [("execute_query", {"query": "select 1"}), ("read_channel_messages", {"channel": "alerts"})]
+    outputs = [m["output"] for m in llm.create_response.call_args_list[-1].kwargs["input"] if m.get("type") == "function_call_output"]
+    assert outputs[1] == agent.CHANNEL_OUT_OF_SCOPE_MESSAGE
+
+
+def run_channel_call(llm, services, channel_arg, history=(), earlier_tool=None, question="what failed in #alerts?"):
+    calls = ([tool_call(earlier_tool, "c0", "{}")] if earlier_tool else []) + [tool_call("read_channel_messages", "c1", f'{{"channel": "{channel_arg}"}}')]
+    llm.create_response.side_effect = [MagicMock(output=[call], output_text="") for call in calls] + [MagicMock(output=[], output_text="the answer")]
+    agent.load_history.return_value = list(history)  # patched by the `llm` fixture
+    with patch("agent.agent.dispatch_tool", autospec=True, return_value="rows") as dispatch_tool:
+        run(services, question=question)
+    return [c.args[0] for c in dispatch_tool.call_args_list]
+
+
+def test_in_a_thread_that_already_holds_an_answer_a_channel_the_admin_never_pointed_at_is_refused_from_the_first_call(llm, services):
+    history = [{"role": "user", "content": "which tables?"}, {"role": "assistant", "content": "orders, users"}]
+
+    assert run_channel_call(llm, services, "C0SECRET001", history) == []
+
+
+def test_a_channel_the_admin_pointed_at_in_an_earlier_request_of_the_thread_is_still_allowed(llm, services):
+    history = [{"role": "user", "content": "how many failed in #billing?"}, {"role": "assistant", "content": "12"}]
+
+    assert run_channel_call(llm, services, "billing", history) == ["read_channel_messages"]
+
+
+def test_a_thread_whose_only_answers_were_removed_for_channel_content_still_trusts_the_first_call(llm, services):
+    history = [{"role": "user", "content": "read #alerts"}, {"role": "assistant", "content": agent.UNTRUSTED_ANSWER_REMOVED}]
+
+    assert run_channel_call(llm, services, "other-channel", history) == ["read_channel_messages"]
+
+
+@pytest.mark.parametrize("tool, ran", [("list_schedules", True), ("list_characters", True), ("get_job_run_details", False)])
+def test_only_admin_authored_lists_keep_the_trust_in_the_channels_the_agent_names(llm, services, tool, ran):
+    names = run_channel_call(llm, services, "unnamed-channel", earlier_tool=tool)
+
+    assert (names == [tool, "read_channel_messages"]) is ran
+
+
 def test_a_write_tool_called_after_a_channel_read_is_refused_without_running(llm, services):
     llm.create_response.side_effect = [
         MagicMock(output=[tool_call("read_channel_file")], output_text=""),
