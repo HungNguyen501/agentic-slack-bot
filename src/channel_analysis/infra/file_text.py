@@ -87,8 +87,9 @@ def _xlsx_text(data: bytes, max_chars: int) -> str:
 def _sheets_text(workbook, max_chars: int) -> str:
     out = io.StringIO()
     for sheet in workbook.worksheets:
-        # A quote in the name would flip the quote count that tells a record's end from a newline inside a cell.
-        title = sheet.title.replace('"', "'")
+        # A quote in the name would flip the quote count that tells a record's end from a newline inside a cell, and a line break would
+        # make the rest of the name look like the sheet's first record. Excel won't take either, but a crafted file can hold them.
+        title = sheet.title.replace('"', "'").replace("\r", " ").replace("\n", " ")
         out.write(f"{SHEET_MARKER}{title}\n")
         writer = csv.writer(out, lineterminator="\n")
         # A first cell that reads like a sheet marker is quoted, so a page cut can't mistake its row for the start of a sheet.

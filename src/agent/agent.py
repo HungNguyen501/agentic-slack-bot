@@ -29,8 +29,40 @@ CHANNEL_OUT_OF_SCOPE_MESSAGE = (
     "Refused: channel content was read in this request, and this channel is not one the admin's request names. "
     "Ask the admin to request it in a new message."
 )
+READ_ONLY_REFUSAL_MESSAGE = (
+    "Refused: channel or file content was read in this request, so only read-only tools may run now. Ask the admin to request this in a new message."
+)
 PROCESSING_LIMIT_MESSAGE = "Sorry, I hit a processing limit. Please try a more specific question."
 UNTRUSTED_ANSWER_REMOVED = "[An earlier answer built from channel content was removed from this conversation.]"
+
+
+class _ReadGuard:
+    """What one run may still do once it has read channel content: only the read-only tools, and the channel tools only on the
+    channels the request points at (see `ReadScope`)."""
+
+    def __init__(self, request: str, channel: str | None) -> None:
+        self.read_content = False
+        self._scope = ReadScope(request, channel)
+
+    def refusal(self, tool_name: str, args: dict) -> str | None:
+        """Why the call may not run, or None."""
+        if not self.read_content:
+            return None
+        if tool_name not in READ_ONLY_TOOLS:
+            return READ_ONLY_REFUSAL_MESSAGE
+        if tool_name in CHANNEL_TOOLS and not self._scope.permits(args.get("channel")):
+            return CHANNEL_OUT_OF_SCOPE_MESSAGE
+        return None
+
+    def record(self, tool_name: str, args: dict, result: str, ran: bool) -> None:
+        """Note a call: the channels named before the first read are the request's, and a read of content closes the run."""
+        if ran:
+            if tool_name in CHANNEL_TOOLS and not self.read_content:
+                self._scope.trust(args.get("channel"))
+            if tool_name == "check_channel_access":
+                self._scope.trust_resolved(result)
+        if tool_name in UNTRUSTED_CONTENT_TOOLS:
+            self.read_content = True
 
 
 def _without_untrusted_answers(history: list[dict]) -> list[dict]:
@@ -158,21 +190,20 @@ def run_agent(
         )
     messages.append({"role": "user", "content": f"{auth_note}\n{question}"})
 
-    read_untrusted_content = False
-    read_scope = ReadScope(question, channel)
+    guard = _ReadGuard(question, channel)
     for _ in range(10):
         response = openai_client.create_response(
             model=AgentConfigs.GPT_MODEL,
             instructions=instructions,
             input=messages,
-            tools=get_agent_tools(read_only=read_untrusted_content),
+            tools=get_agent_tools(read_only=guard.read_content),
             reasoning_effort=AgentConfigs.REASONING_EFFORT,
         )
         tool_calls = [item for item in response.output if item.type == "function_call"]
 
         if not tool_calls:
             answer = response.output_text or "I wasn't able to generate a response."
-            _save_answer(thread_ts, history, question, answer, read_untrusted_content)
+            _save_answer(thread_ts, history, question, answer, guard.read_content)
             return AgentReply(answer, character)
 
         # Reasoning items must be echoed back alongside their function_call items on the next turn.
@@ -180,18 +211,9 @@ def run_agent(
 
         for tool_call in tool_calls:
             args = json.loads(tool_call.arguments)
-            if read_untrusted_content and tool_call.name not in READ_ONLY_TOOLS:
-                result = "Refused: channel or file content was read in this request, so only read-only tools may run now. Ask the admin to request this in a new message."
-            elif read_untrusted_content and tool_call.name in CHANNEL_TOOLS and not read_scope.permits(args.get("channel")):
-                result = CHANNEL_OUT_OF_SCOPE_MESSAGE
-            else:
-                result = dispatch_tool(tool_call.name, args, user_id, admin_users, bot, channel, thread_ts, services, unattended)
-                if tool_call.name in CHANNEL_TOOLS and not read_untrusted_content:
-                    read_scope.trust(args.get("channel"))
-                if tool_call.name == "check_channel_access":
-                    read_scope.trust_resolved(result)
-            if tool_call.name in UNTRUSTED_CONTENT_TOOLS:
-                read_untrusted_content = True
+            refusal = guard.refusal(tool_call.name, args)
+            result = refusal or dispatch_tool(tool_call.name, args, user_id, admin_users, bot, channel, thread_ts, services, unattended)
+            guard.record(tool_call.name, args, result, ran=refusal is None)
             messages.append({"type": "function_call_output", "call_id": tool_call.call_id, "output": result})
 
             if tool_category(tool_call.name) == "data_access" and result == ACCESS_REQUEST_POSTED_MESSAGE:
@@ -208,5 +230,5 @@ def run_agent(
         reasoning_effort=AgentConfigs.REASONING_EFFORT,
     )
     answer = final.output_text or PROCESSING_LIMIT_MESSAGE
-    _save_answer(thread_ts, history, question, answer, read_untrusted_content)
+    _save_answer(thread_ts, history, question, answer, guard.read_content)
     return AgentReply(answer, character)

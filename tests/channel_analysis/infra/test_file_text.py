@@ -7,6 +7,7 @@ from pypdf import PdfWriter
 
 from channel_analysis.core import limits
 from channel_analysis.core.errors import FileUnreadableError
+from channel_analysis.core.file_pages import sheet_header
 from channel_analysis.infra.file_text import extract_text
 from tests.support.channel_analysis_files import pdf_with_text, xlsx_with
 
@@ -146,3 +147,12 @@ def test_a_first_cell_that_reads_like_a_sheet_marker_is_quoted_so_it_is_not_take
     text = extract_text("report.xlsx", "xlsx", data, MAX)
 
     assert text == '## Sheet: Real\nid,note\n"## Sheet: Revenue","1"\n2,b\n'
+
+
+def test_a_sheet_name_with_line_breaks_stays_on_one_line_so_the_first_record_is_the_real_header():
+    data = xlsx_with({"Sales\r\n2026": [["table", "rows"], ["a", 1]]})
+
+    text = extract_text("sales.xlsx", "xlsx", data, MAX)
+
+    assert text == "## Sheet: Sales  2026\ntable,rows\na,1\n"
+    assert sheet_header(text, text.index("a,1")) == "## Sheet: Sales  2026\ntable,rows"
